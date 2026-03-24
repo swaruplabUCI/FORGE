@@ -1,0 +1,1842 @@
+#!/usr/bin/env nextflow
+nextflow.enable.dsl=2
+
+// ============================================================================
+// REFACTOR5: Unified Multiomics Pipeline v3.0.0
+// Merges BD multi-sample and PBMC single-sample pipelines into one.
+// Handles both single-sample (10x-style) and multi-sample (BD-style)
+// datasets through config parameterization.
+//
+// Key changes from v2.x:
+//   - Generic batch_dirs map replaces hardcoded june/july/nov lookups
+//   - cell_type_key computed ONCE at pipeline start
+//   - On-ramp entry points for pre-computed intermediates
+//   - Fragment files passed as channel input to REGULATORY_ANALYSIS
+//   - Both PBMC and BD enhancer footprinting recipes included
+//   - BD multiome join diagnostics preserved (fail-fast with orphan warnings)
+//   - MAP_TF_TO_TARGET_GENES included
+//   - SCENICPLUS_VISUALIZE included
+// ============================================================================
+
+// ============================================================================
+// RNA MODULES
+// ============================================================================
+include { CELLBENDER } from './modules/rna/cellbender'
+include { RNA_QC } from './modules/rna/qc'
+include { CONCAT_BATCHES } from './modules/rna/concat'
+
+// ============================================================================
+// RNA INTEGRATION MODULES
+// ============================================================================
+include { PREPARE_REFERENCE } from './modules/integration/prepare_reference'
+include { TRAIN_SCVI } from './modules/integration/scvi'
+include { TRAIN_SCANVI } from './modules/integration/scanvi'
+include { RUN_CELLTYPIST } from './modules/cellannotator/celltypist'
+
+// ============================================================================
+// VISUALIZATION MODULES
+// ============================================================================
+include { PLOT_POST_SCANVI } from './modules/visualization/plot_post_scanvi'
+include { RUN_CELLCHAT } from './modules/cellchat/cellchat'
+include { CELLCHAT_PER_CONDITION } from './modules/cellchat/cellchat_compare'
+include { CELLCHAT_COMPARE } from './modules/cellchat/cellchat_compare'
+include { CONVERT_H5AD_TO_SEURAT } from './modules/conversion/h5ad_to_seurat'
+include { HDWGCNA_PER_CELLTYPE } from './modules/hdwgcna/hdwgcna.nf'
+include { HDWGCNA_DIFFERENTIAL } from './modules/hdwgcna/hdwgcna_differential'
+include { HDWGCNA_ENRICHMENT } from './modules/hdwgcna/hdwgcna_differential'
+
+// ============================================================================
+// RNA DIFFERENTIAL EXPRESSION MODULES
+// ============================================================================
+include { ASSIGN_TEST_GROUPS } from './modules/rna/differential_expression'
+include { CONVERT_H5AD_FOR_MAST } from './modules/rna/differential_expression'
+include { EXTRACT_CELL_TYPES_FOR_MAST } from './modules/rna/differential_expression'
+include { RUN_MAST_DE } from './modules/rna/differential_expression'
+include { CREATE_VOLCANO_PLOTS } from './modules/rna/differential_expression'
+include { RUN_GO_ENRICHMENT } from './modules/rna/differential_expression'
+
+// ============================================================================
+// ATAC MODULES (UNIFIED)
+// ============================================================================
+include { ATAC_INITIAL_QC; ATAC_MAKE_THRESHOLDS } from './modules/atac/atac_initial_qc'
+include { ATAC_FINAL_PIPELINE } from './modules/atac/consolidated_pipeline'
+
+// Cell-type annotation for ATAC
+include { ATAC_CELLTYPE_ANNOTATION } from './modules/atac/celltype_annotation'
+include { MERGE_ANNOTATIONS } from './modules/atac/merge_annotations'
+
+// Differential ATAC analysis
+include { SNAPATAC_DIFFERENTIAL } from './modules/atac/snapatac_diff'
+
+// ============================================================================
+// REGULATORY ANALYSIS MODULES
+// ============================================================================
+
+// Cicero modules
+include { CICERO_TRIPLETS } from './modules/cicero/cicero_triplets'
+include { CICERO_FULL } from './modules/cicero/cicero_full'
+include { CICERO_TARGET_PLOTS } from './modules/cicero/cicero_target_plots'
+
+// ChromVAR modules
+include { GPU_CHROMVAR } from './modules/chromvar/gpu_chromvar'
+include { VIS_CHROMVAR } from './modules/chromvar/vischromvar'
+include { EXTRACT_CHROMVAR_MOTIFS } from './modules/chromvar/extract_motifs'
+include { MAP_TF_TO_TARGET_GENES } from './modules/chromvar/map_tf_targets'
+
+// scPRINT modules
+include { SCPRINTER_BARCODES } from './modules/scprint/barcodes'
+include { RESOLVE_GENE_COORDINATES } from './modules/scprint/resolve_coordinates'
+include { SCPRINTER_BUILD_PRINTER } from './modules/scprint/build_printer'
+include { SCPRINTER_FOOTPRINTING } from './modules/scprint/footprinter'
+include { SCPRINTER_FOOTPRINTING as SCPRINTER_FOOTPRINTING_DIFF } from './modules/scprint/footprinter'
+include { SCPRINTER_MOTIF_SCAN } from './modules/scprint/motif_scan'
+
+// ============================================================================
+// MULTIOME INTEGRATION MODULES
+// ============================================================================
+include { BUILD_MUDATA } from './modules/multiome/build_mudata'
+
+// MOFA integration - supports both modes
+include { MOFA_INTEGRATE } from './modules/multiome/mofa_integrate'
+include { MOFA_VISUALIZE } from './modules/multiome/mofa_visualize'
+
+// Bootstrap MOFA components (preserved for low-memory systems)
+include { BOOTSTRAP_MOFA_INTEGRATION } from './modules/multiome/bootstrap_mofa'
+include { CONSENSUS_ANALYSIS } from './modules/multiome/bootstrap_mofa'
+include { ANALYZE_MEMORY_LOG } from './modules/multiome/bootstrap_mofa'
+
+// Optional cellismo conversion
+include { CONVERT_CELLISMO; CONCAT_CELLISMO } from './modules/multiome/convert_cellismo'
+
+// MultiVI integration
+include { MULTIVI_INTEGRATE } from './modules/multiome/multivi_integrate'
+include { MULTIVI_VISUALIZE } from './modules/multiome/multivi_visualize'
+
+// ============================================================================
+// PYcistopic / SCENIC+ / DORC MODULES
+// ============================================================================
+include { PYCISTOPIC_PREPARE } from './modules/multiome/pycistopic_prepare'
+include { SCENICPLUS_RUN       } from './modules/multiome/scenicplus_run'
+include { SCENICPLUS_VISUALIZE } from './modules/multiome/scenicplus_visualize'
+include { EXPORT_MUDATA_RNA } from './modules/multiome/export_mudata_rna'
+include { SCPRINTER_DORC       } from './modules/multiome/scprinter_dorc'
+
+// ============================================================================
+// ENHANCER FOOTPRINTING RECIPE MODULES (Recipes A/B/C/D)
+// ============================================================================
+
+// Phase 1: ATAC-Only Enhancer Footprinting (Recipe A)
+include { EXTRACT_CCAN_ENHANCERS } from './modules/scprint/extract_ccan_enhancers'
+include { MOTIF_SCAN_ENHANCERS   } from './modules/scprint/motif_scan_enhancers'
+include { ENHANCER_FOOTPRINTING  } from './modules/scprint/enhancer_footprinting'
+
+// Phase 2: Multiome Integration (Recipe B)
+include { EXTRACT_EREGULON_REGIONS } from './modules/multiome/extract_eregulon_regions'
+include { CROSS_MODAL_VALIDATION   } from './modules/multiome/cross_modal_validation'
+
+// Phase 3: CellChat-Guided Footprinting (Recipe C)
+include { CELLCHAT_TO_TF_HYPOTHESES } from './modules/cellchat/cellchat_to_tf_hypotheses'
+include { EXTRACT_SIGNALING_TARGETS } from './modules/cellchat/extract_signaling_targets'
+include { SIGNAL_CHAIN_CORRELATION  } from './modules/cellchat/signal_chain_correlation'
+
+// Phase 4: Composite Enhancer Visualization (Recipe D)
+include { PREPARE_ENHANCER_VIZ_TRACKS } from './modules/visualization/enhancer_viz'
+include { COMPOSITE_ENHANCER_VIZ      } from './modules/visualization/enhancer_viz'
+
+
+// ============================================================================
+// GLOBAL: Compute cell_type_key ONCE
+// ============================================================================
+def has_reference = (params.species == 'human' && params.ref_dir_human_integrated) ||
+                    (params.species == 'mouse' && params.ref_dir_mouse_integrated)
+def cell_type_key = has_reference ? 'scanvi_prediction' : 'celltypist_prediction'
+
+
+// ============================================================================
+// HELPER: Resolve directory for a manifest row using generic batch_dirs map
+// ============================================================================
+// For RNA data_dir lookups
+def resolveRnaDir(row) {
+    if (row.data_dir) return row.data_dir
+    def dir = params.batch_dirs?.get(row.batch, null)
+    if (!dir) error "No directory configured for batch '${row.batch}'. Set batch_dirs.${row.batch} in config."
+    // Support sub-directory pattern (e.g., nov batch with lane subdirs)
+    if (row.original_lane_id && params.batch_dirs_use_lane_subdir?.contains(row.batch)) {
+        return "${dir}/${row.original_lane_id}"
+    }
+    return dir
+}
+
+// For ATAC fragment directory lookups (barcode-sorted demux fragments)
+def resolveAtacDir(row) {
+    if (row.data_dir) return row.data_dir
+    def dir = params.atac_batch_dirs?.get(row.batch, null)
+    if (!dir) error "No ATAC directory configured for batch '${row.batch}'. Set atac_batch_dirs.${row.batch} in config."
+    return dir
+}
+
+// For ATAC coord-sorted fragment directory lookups
+def resolveAtacCoordDir(row) {
+    if (row.coord_data_dir) return row.coord_data_dir
+    def dir = params.atac_coord_batch_dirs?.get(row.batch, null)
+    if (!dir) error "No ATAC coord-sorted directory configured for batch '${row.batch}'. Set atac_coord_batch_dirs.${row.batch} in config."
+    return dir
+}
+
+
+// ============================================================================
+// RNA WORKFLOW
+// ============================================================================
+workflow RNA {
+    main:
+    log.info """
+    RNA PROCESSING WORKFLOW
+    Cell type key: ${cell_type_key}
+    """
+
+    // ========================================================================
+    // SOURCE-OF-TRUTH MANIFEST PARSING (RNA)
+    // ========================================================================
+    ch_all_files = Channel.fromPath(params.metadata_file)
+        .splitCsv(header: true)
+        .filter { it.sample_type == 'lane' }
+        .map { row ->
+            def rna_dir = resolveRnaDir(row)
+            def rna_fname = row.rna_file
+            def rna_file = file("${rna_dir}/${rna_fname}")
+            if (!workflow.preview && !rna_file.exists()) {
+                error "Manifest validation failed: RNA file not found -> ${rna_file}"
+            }
+            tuple(row.sample_id, rna_file)
+        }
+
+    // Step 1 - Run CellBender
+    log.info "Step 1: Running CellBender ambient RNA removal..."
+    CELLBENDER(ch_all_files)
+
+    // Step 2 - Run QC on CellBender-filtered data
+    log.info "Step 2: Running RNA QC and demultiplexing..."
+    RNA_QC(
+        CELLBENDER.out.filtered_h5,
+        file(params.june_metadata ?: 'NO_FILE'),
+        file(params.july_souporcell_dir ?: 'NO_FILE_JULY'),
+        file(params.nov_souporcell_dir ?: 'NO_FILE_NOV')
+    )
+
+    // Step 3: Flatten and collect all demultiplexed samples
+    log.info "Step 3: Concatenating RNA batches..."
+    ch_all_qc = RNA_QC.out.filtered_h5ad
+        .flatMap { sample, files -> files }
+        .collect()
+
+    CONCAT_BATCHES(ch_all_qc)
+
+    if (has_reference) {
+        // ============================================================
+        // PATH A: Reference atlas provided -> scANVI annotation
+        // ============================================================
+        log.info "Reference atlas detected -- using scANVI annotation path"
+
+        log.info "Step 4: Preparing reference for integration..."
+        PREPARE_REFERENCE(
+            CONCAT_BATCHES.out.concatenated,
+            params.species
+        )
+
+        log.info "Step 5: Training scVI foundation model..."
+        TRAIN_SCVI(
+            PREPARE_REFERENCE.out.prepared_ref
+        )
+
+        log.info "Step 6: Training scANVI model for cell-type annotation..."
+        TRAIN_SCANVI(
+            PREPARE_REFERENCE.out.prepared_ref,
+            PREPARE_REFERENCE.out.prepared_query,
+            PREPARE_REFERENCE.out.label_key,
+            TRAIN_SCVI.out.scvi_model_dir
+        )
+
+        log.info "Step 6b: Running CellTypist annotation..."
+        RUN_CELLTYPIST(TRAIN_SCANVI.out.annotated)
+
+        log.info "Step 7: Generating post-integration visualizations..."
+        PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad)
+
+    } else {
+        // ============================================================
+        // PATH B: No reference atlas -> CellTypist (direct)
+        // ============================================================
+        log.info "No reference atlas provided -- using CellTypist (direct) path"
+
+        log.info "Step 5-alt: Running CellTypist annotation..."
+        RUN_CELLTYPIST(CONCAT_BATCHES.out.concatenated)
+
+        log.info "Step 7: Generating post-integration visualizations..."
+        PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad)
+    }
+
+    // Debug: View what was emitted
+    PLOT_POST_SCANVI.out.annotated_updated.view { "H5AD file emitted: $it" }
+
+    // ====================================================================
+    // Step 8: CellChat L-R Analysis (global-first + optional differential)
+    // ====================================================================
+    if (params.cellchat.run) {
+        log.info "Step 8: Running CellChat ligand-receptor analysis..."
+
+        // --- Tier 1: Global CellChat (condition-agnostic) ---
+        log.info "  Step 8a: Global CellChat (all cells, no condition split)..."
+        ch_cellchat_input = PLOT_POST_SCANVI.out.annotated_updated
+            .map { file -> tuple("integrated", file) }
+
+        RUN_CELLCHAT(
+            ch_cellchat_input,
+            cell_type_key,
+            "none",
+            params.species
+        )
+
+        // --- Tier 2: Per-condition CellChat + comparison ---
+        def cellchat_has_conditions = (params.cellchat.condition_key &&
+                                       params.cellchat.condition_key != "none" &&
+                                       params.cellchat.conditions &&
+                                       !params.cellchat.conditions.isEmpty())
+
+        if (cellchat_has_conditions) {
+            log.info "  Step 8b: Per-condition CellChat comparative analysis..."
+            log.info "  Conditions: ${params.cellchat.conditions}"
+
+            ch_conditions = Channel.from(params.cellchat.conditions)
+
+            CELLCHAT_PER_CONDITION(
+                PLOT_POST_SCANVI.out.annotated_updated,
+                ch_conditions,
+                cell_type_key,
+                params.cellchat.condition_key,
+                params.species
+            )
+
+            CELLCHAT_COMPARE(
+                CELLCHAT_PER_CONDITION.out.cellchat_rds.collect(),
+                CELLCHAT_PER_CONDITION.out.condition_label.collect(),
+                params.species
+            )
+        } else {
+            log.info "  Skipping CellChat comparative analysis (no conditions defined)"
+        }
+    }
+
+    // ====================================================================
+    // Step 9: hdWGCNA Co-expression Network Analysis
+    // ====================================================================
+    if (params.hdwgcna.run) {
+        log.info "Step 9: Running hdWGCNA co-expression network analysis..."
+
+        // --- Step 9a: Convert h5ad to Seurat RDS ---
+        CONVERT_H5AD_TO_SEURAT(
+            PLOT_POST_SCANVI.out.annotated_updated,
+            cell_type_key
+        )
+
+        // --- Step 9b: Create per-cell-type channel ---
+        ch_hdwgcna_input = CONVERT_H5AD_TO_SEURAT.out.seurat_rds
+            .map { seurat_file ->
+                def cell_types_file = file(seurat_file.toString().replace('.rds', '_celltypes.txt'))
+                def cell_types = cell_types_file.readLines()
+                cell_types.collect { ct -> tuple(seurat_file, ct.trim()) }
+            }
+            .flatMap()
+
+        // --- Tier 1: Global per-cell-type network construction ---
+        log.info "  Step 9c: Tier 1 -- per-cell-type network construction..."
+        HDWGCNA_PER_CELLTYPE(
+            ch_hdwgcna_input,
+            cell_type_key,
+            params.hdwgcna.metadata ?: 'NO_FILE'
+        )
+
+        // --- Tier 1b: Enrichment + Network Visualization ---
+        log.info "  Step 9d: Tier 1 -- enrichment & network visualization..."
+        HDWGCNA_ENRICHMENT(
+            HDWGCNA_PER_CELLTYPE.out.results.map { ct, rds -> rds },
+            HDWGCNA_PER_CELLTYPE.out.results.map { ct, rds -> ct },
+            params.species
+        )
+
+        // --- Tier 2: Differential DME analysis ---
+        def hdwgcna_has_conditions = (params.hdwgcna.condition_key &&
+                                      params.hdwgcna.condition_key != "none" &&
+                                      params.hdwgcna.control_condition &&
+                                      params.hdwgcna.treatment_condition)
+
+        if (hdwgcna_has_conditions) {
+            log.info "  Step 9e: Tier 2 -- differential DME analysis..."
+            log.info "  ${params.hdwgcna.control_condition} vs ${params.hdwgcna.treatment_condition}"
+
+            def traits_str = params.hdwgcna.traits ? params.hdwgcna.traits.join(',') : ""
+
+            HDWGCNA_DIFFERENTIAL(
+                HDWGCNA_PER_CELLTYPE.out.results,
+                HDWGCNA_PER_CELLTYPE.out.results
+                    .map { rds_file ->
+                        def basename = rds_file.baseName
+                        def ct = basename.replaceAll(/^hdwgcna_/, '')
+                        ct
+                    },
+                cell_type_key,
+                params.hdwgcna.condition_key,
+                params.hdwgcna.control_condition,
+                params.hdwgcna.treatment_condition,
+                traits_str
+            )
+        } else {
+            log.info "  Skipping hdWGCNA differential analysis (no conditions defined)"
+        }
+    }
+
+    emit:
+    integrated_rna = RUN_CELLTYPIST.out.annotated_h5ad
+    qc_h5ads = RNA_QC.out.filtered_h5ad
+    pre_qc_plots = CONCAT_BATCHES.out.plots
+    post_qc_plots = PLOT_POST_SCANVI.out.plots
+    cellbender_reports = CELLBENDER.out.report
+
+    // CellChat outputs
+    cellchat_results    = params.cellchat.run ? RUN_CELLCHAT.out.cellchat_rds : Channel.empty()
+    cellchat_plots      = params.cellchat.run ? RUN_CELLCHAT.out.plots : Channel.empty()
+    cellchat_csv        = params.cellchat.run ? RUN_CELLCHAT.out.csv : Channel.empty()
+    cellchat_comparison = (params.cellchat.run && params.cellchat.conditions && !params.cellchat.conditions.isEmpty()) ?
+        CELLCHAT_COMPARE.out.comparison_rds : Channel.empty()
+    cellchat_comp_plots = (params.cellchat.run && params.cellchat.conditions && !params.cellchat.conditions.isEmpty()) ?
+        CELLCHAT_COMPARE.out.plots : Channel.empty()
+
+    // hdWGCNA outputs
+    hdwgcna_results     = params.hdwgcna.run ? HDWGCNA_PER_CELLTYPE.out.results : Channel.empty()
+    hdwgcna_figures     = params.hdwgcna.run ? HDWGCNA_PER_CELLTYPE.out.figures : Channel.empty()
+    hdwgcna_logs        = params.hdwgcna.run ? HDWGCNA_PER_CELLTYPE.out.log : Channel.empty()
+    hdwgcna_enrichment  = params.hdwgcna.run ? HDWGCNA_ENRICHMENT.out.enrichr_plots : Channel.empty()
+    hdwgcna_networks    = params.hdwgcna.run ? HDWGCNA_ENRICHMENT.out.network_plots : Channel.empty()
+    hdwgcna_dme         = (params.hdwgcna.run && params.hdwgcna.condition_key && params.hdwgcna.condition_key != "none") ?
+        HDWGCNA_DIFFERENTIAL.out.dme_results : Channel.empty()
+    hdwgcna_dme_plots   = (params.hdwgcna.run && params.hdwgcna.condition_key && params.hdwgcna.condition_key != "none") ?
+        HDWGCNA_DIFFERENTIAL.out.dme_plots : Channel.empty()
+    hdwgcna_trait_plots = (params.hdwgcna.run && params.hdwgcna.condition_key && params.hdwgcna.condition_key != "none") ?
+        HDWGCNA_DIFFERENTIAL.out.module_trait_plots : Channel.empty()
+}
+
+// ============================================================================
+// RNA DIFFERENTIAL EXPRESSION WORKFLOW
+// ============================================================================
+workflow RNA_DIFFERENTIAL {
+
+    take:
+        annotated_h5ad
+
+    main:
+        log.info """
+        RNA DIFFERENTIAL EXPRESSION (MAST)
+        Test Mode: Using arbitrary group assignments
+        """
+
+        // Step 1: Assign test groups
+        log.info "Step 1: Assigning test groups to samples..."
+        ASSIGN_TEST_GROUPS(
+            annotated_h5ad,
+            file(params.differential_rna.group_mapping)
+        )
+
+        // Step 2: Convert to Seurat RDS for MAST
+        log.info "Step 2: Converting h5ad to Seurat format for MAST..."
+        CONVERT_H5AD_FOR_MAST(
+            ASSIGN_TEST_GROUPS.out.h5ad
+        )
+
+        // Step 2b: Extract valid cell types for MAST
+        log.info "Step 2b: Extracting valid cell types for MAST..."
+
+        EXTRACT_CELL_TYPES_FOR_MAST(
+            ASSIGN_TEST_GROUPS.out.h5ad
+        )
+
+        def cell_types_file_ch = EXTRACT_CELL_TYPES_FOR_MAST.out.cell_types
+
+        def cell_types_list_ch = cell_types_file_ch.map { f ->
+            if( !f.exists() ) {
+                throw new IllegalStateException("Cell types file not found: $f")
+            }
+            def lst = f.readLines()
+                   .collect { it.trim() }
+                   .findAll { it }
+            log.info "Valid cell types for MAST (${lst.size()}): ${lst.join(', ')}"
+            return lst
+        }
+
+        def mast_cell_types = cell_types_list_ch.flatten()
+
+        // Step 3: Set up comparisons
+        log.info "Step 3: Setting up comparisons..."
+
+        def comparisons = [
+            [ group1: 'Group1', group2: 'Group2' ],
+            [ group1: 'Group1', group2: 'Group3' ],
+            [ group1: 'Group1', group2: 'Group4' ],
+            [ group1: 'Group2', group2: 'Group3' ],
+            [ group1: 'Group2', group2: 'Group4' ],
+            [ group1: 'Group3', group2: 'Group4' ],
+        ]
+
+        def comparisons_ch = Channel.from(comparisons)
+
+        def mast_de_params = mast_cell_types
+            .cross(comparisons_ch)
+            .map { String cell_type, cmp ->
+                tuple(cell_type, cmp.group1, cmp.group2)
+            }
+
+        // Step 4: Run MAST differential expression
+        log.info "Step 4: Running MAST differential expression..."
+
+        RUN_MAST_DE(
+            CONVERT_H5AD_FOR_MAST.out.seurat_rds,
+            mast_de_params
+        )
+
+        // Step 5: Create volcano plots
+        log.info "Step 5: Generating volcano plots..."
+        CREATE_VOLCANO_PLOTS(
+            RUN_MAST_DE.out.de_results
+        )
+
+        // Step 6: Run GO enrichment
+        if( params.differential_rna.run_go_enrichment ) {
+            log.info "Step 6: Running GO enrichment analysis..."
+            RUN_GO_ENRICHMENT(
+                RUN_MAST_DE.out.de_results
+            )
+        }
+
+    emit:
+        de_results    = RUN_MAST_DE.out.de_results
+        volcano_plots = CREATE_VOLCANO_PLOTS.out.plots
+        go_results    = params.differential_rna.run_go_enrichment ?
+                        RUN_GO_ENRICHMENT.out.enrichment_results :
+                        Channel.empty()
+}
+
+// ============================================================================
+// ATAC WORKFLOW (UNIFIED TWO-STAGE QC)
+// ============================================================================
+workflow ATAC_INITIAL {
+    main:
+    log.info """
+    ATAC INITIAL QC (Stage 1: Uniform Thresholds)
+    """
+
+    // ========================================================================
+    // SOURCE-OF-TRUTH MANIFEST PARSING (ATAC)
+    // ========================================================================
+    ch_all_fragments = Channel.fromPath(params.metadata_file)
+        .splitCsv(header: true)
+        .filter { it.sample_type == 'demux' }
+        .map { row ->
+            def atac_dir = resolveAtacDir(row)
+            def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
+            def fragment_file = file("${atac_dir}/${frag_fname}")
+            if (!workflow.preview && !fragment_file.exists()) {
+                error "Manifest validation failed: ATAC fragment file not found -> ${fragment_file}"
+            }
+            fragment_file
+        }
+        .collect()
+
+    // Debug: count files
+    ch_all_fragments.view { files -> "Total ATAC fragment files: ${files.size()}" }
+
+    // Run initial QC with uniform thresholds
+    ATAC_INITIAL_QC(
+        ch_all_fragments,
+        file(params.atac.sample_metadata)
+    )
+
+    // Build sample-specific thresholds from QC statistics
+    ATAC_MAKE_THRESHOLDS(
+        ATAC_INITIAL_QC.out.sample_stats
+    )
+
+    emit:
+    anndataset         = ATAC_INITIAL_QC.out.anndataset
+    qc_plots           = ATAC_INITIAL_QC.out.qc_plots
+    summary            = ATAC_INITIAL_QC.out.summary
+    sample_stats       = ATAC_INITIAL_QC.out.sample_stats
+    thresholds         = ATAC_MAKE_THRESHOLDS.out.thresholds_file
+    individual_samples = ATAC_INITIAL_QC.out.individual_samples
+}
+
+// ============================================================================
+// ATAC FINAL WORKFLOW (Stage 2: Sample-Specific Thresholds + Annotation)
+// ============================================================================
+workflow ATAC_FINAL {
+    take:
+    thresholds_file
+
+    main:
+    log.info """
+    ATAC FINAL QC (Stage 2: Sample-Specific Filtering)
+    """
+
+    // ========================================================================
+    // SOURCE-OF-TRUTH MANIFEST PARSING (ATAC FINAL)
+    // ========================================================================
+    ch_demux_fragments = Channel.fromPath(params.metadata_file)
+        .splitCsv(header: true)
+        .filter { it.sample_type == 'demux' }
+        .map { row ->
+            def atac_dir = resolveAtacDir(row)
+            def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
+            def fragment_file = file("${atac_dir}/${frag_fname}")
+            fragment_file
+        }
+
+    // Run final ATAC pipeline with sample-specific thresholds
+    ATAC_FINAL_PIPELINE(
+        ch_demux_fragments.collect(),
+        file(params.atac.sample_metadata),
+        thresholds_file
+    )
+
+    // Automated cell-type annotation (always run if ATAC present)
+    if (params.atac.auto_annotate) {
+        log.info "Running automated ATAC-based cell-type annotation..."
+
+        ch_cluster_scores_ready = ATAC_FINAL_PIPELINE.out.cluster_scores
+            .first()
+
+        ATAC_CELLTYPE_ANNOTATION(
+            ch_cluster_scores_ready
+        )
+
+        MERGE_ANNOTATIONS(
+            ATAC_FINAL_PIPELINE.out.peak_matrix,
+            ATAC_CELLTYPE_ANNOTATION.out.annotations,
+            file(params.atac.sample_metadata)
+        )
+
+        peak_matrix_annotated = MERGE_ANNOTATIONS.out.peak_matrix
+    } else {
+        peak_matrix_annotated = ATAC_FINAL_PIPELINE.out.peak_matrix
+    }
+
+    emit:
+    anndataset         = ATAC_FINAL_PIPELINE.out.anndataset
+    peak_matrix        = peak_matrix_annotated
+    peak_matrix_raw    = ATAC_FINAL_PIPELINE.out.peak_matrix
+    qc_plots           = ATAC_FINAL_PIPELINE.out.qc_plots
+    summary            = ATAC_FINAL_PIPELINE.out.summary
+    individual_samples = ATAC_FINAL_PIPELINE.out.individual_samples
+    cluster_scores     = ATAC_FINAL_PIPELINE.out.cluster_scores
+    atac_annotations   = params.atac.auto_annotate ? ATAC_CELLTYPE_ANNOTATION.out.annotations : Channel.empty()
+}
+
+// ============================================================================
+// DIFFERENTIAL ATAC ANALYSIS
+// ============================================================================
+workflow ATAC_DIFFERENTIAL {
+    take:
+    peak_matrix
+    metadata
+
+    main:
+    log.info """
+    DIFFERENTIAL ACCESSIBILITY ANALYSIS
+    Comparisons: ${params.differential.comparisons.size()}
+    Cell types: ${params.differential.cell_types.size()}
+    Total tests: ${params.differential.comparisons.size() * params.differential.cell_types.size()}
+    """
+
+    ch_comparisons = Channel.fromList(params.differential.comparisons)
+        .map { it -> tuple(it[0], it[1]) }
+
+    ch_cell_types = Channel.from(params.differential.cell_types)
+
+    ch_tasks = ch_comparisons
+        .combine(ch_cell_types)
+
+    SNAPATAC_DIFFERENTIAL(
+        peak_matrix,
+        metadata,
+        ch_tasks.map { tuple(it[0], it[1]) },
+        ch_tasks.map { it[2] }
+    )
+
+    emit:
+    da_peaks = SNAPATAC_DIFFERENTIAL.out.da_peaks
+    plots = SNAPATAC_DIFFERENTIAL.out.plots
+}
+
+// ============================================================================
+// REGULATORY ANALYSIS WORKFLOW
+// Uses PBMC's fragment_files input pattern for SCPRINTER_BUILD_PRINTER.
+// ============================================================================
+workflow REGULATORY_ANALYSIS {
+    take:
+    peak_matrix
+    individual_samples
+    da_peaks_optional
+    metadata
+    fragment_files    // Fragment files for SCPRINTER_BUILD_PRINTER (channel input)
+
+    main:
+
+    def has_da_peaks = (params.differential.run ?: false)
+
+    def is_discovery_mode = !params.scprinter.target_genes || params.scprinter.target_genes.isEmpty()
+
+    def use_chromvar_for_cicero = (params.cicero.use_chromvar_targets ?: false) && is_discovery_mode && params.chromvar.run
+
+    log.info """
+    REGULATORY ANALYSIS WORKFLOW (parallel architecture)
+    - Cicero:   Co-accessibility networks ${params.cicero.run ? '(ENABLED)' : '(disabled)'}
+    - ChromVAR: TF motif enrichment (global -- no conditions required)
+    - scPRINT:  TF footprinting (${is_discovery_mode ? 'DISCOVERY' : 'TARGETED'} mode)
+    - Mode:     ${is_discovery_mode ? 'Per-cell-type ChromVAR discovery -> fan-out' : 'User target genes -> single call'}
+    - Cicero targets: ${use_chromvar_for_cicero ? 'ChromVAR-driven (data-driven)' : 'config list'}
+    """
+
+    // ================================================================
+    // PARALLEL LEG A: Cicero Co-Accessibility (genome-wide)
+    // ================================================================
+    if (params.cicero.run) {
+        log.info "Running Cicero co-accessibility network analysis..."
+
+        CICERO_TRIPLETS(peak_matrix)
+
+        def sample_num = params.cicero.sample_num ?: 100
+
+        CICERO_FULL(
+            CICERO_TRIPLETS.out.triplets,
+            params.cicero.gtf_full,
+            sample_num
+        )
+
+        if (!use_chromvar_for_cicero && params.cicero.target_genes && !params.cicero.target_genes.isEmpty()) {
+            log.info "Rendering Cicero target plots with static gene list: ${params.cicero.target_genes}"
+            CICERO_TARGET_PLOTS(
+                CICERO_FULL.out.connections,
+                CICERO_FULL.out.ccan,
+                CICERO_FULL.out.cds,
+                params.cicero.gtf_plot,
+                params.cicero.target_genes
+            )
+        }
+    }
+
+    // ================================================================
+    // PARALLEL LEG B: GPU ChromVAR TF Motif Enrichment
+    // ================================================================
+    if (params.chromvar.run) {
+        log.info "Running GPU-accelerated ChromVAR analysis..."
+
+        def da_peaks_collected = has_da_peaks ?
+            da_peaks_optional.collect() :
+            Channel.value(file('NO_FILE_DA_PEAKS'))
+
+        GPU_CHROMVAR(
+            peak_matrix,
+            Channel.value(file('NO_FILE_METADATA')),
+            params.scprinter.cache_dir,
+            params.scprinter.pfms ?: '',
+            params.scprinter.genome,
+            da_peaks_collected
+        )
+
+        if (has_da_peaks) {
+            VIS_CHROMVAR(
+                GPU_CHROMVAR.out.chromvar_dev
+            )
+        } else {
+            log.info "Skipping VIS_CHROMVAR (requires differential conditions for permutation tests)"
+        }
+
+        if (is_discovery_mode && params.scprinter.run) {
+            EXTRACT_CHROMVAR_MOTIFS(
+                GPU_CHROMVAR.out.chromvar_dev,
+                params.chromvar.top_n_per_celltype,
+                params.chromvar.min_motif_zscore
+            )
+
+            EXTRACT_CHROMVAR_MOTIFS.out.report.view {
+                "\n==== PER-CELL-TYPE CHROMVAR MOTIFS ====\n${it.text}\n======================================="
+            }
+        }
+    }
+
+    // ================================================================
+    // ChromVAR-driven Cicero Target Plots
+    // ================================================================
+    if (use_chromvar_for_cicero && params.cicero.run && params.scprinter.run) {
+        log.info "Rendering Cicero target plots with ChromVAR-discovered TFs..."
+
+        ch_chromvar_target_genes = EXTRACT_CHROMVAR_MOTIFS.out.motif_list
+            .map { json_file ->
+                new groovy.json.JsonSlurper().parseText(json_file.text).all_unique_tfs
+            }
+
+        CICERO_TARGET_PLOTS(
+            CICERO_FULL.out.connections,
+            CICERO_FULL.out.ccan,
+            CICERO_FULL.out.cds,
+            params.cicero.gtf_plot,
+            ch_chromvar_target_genes
+        )
+    }
+
+    // ================================================================
+    // STEP 3: scPRINTER TF Footprinting
+    // ================================================================
+    if (params.scprinter.run) {
+        log.info "Running scPRINT TF footprinting workflow..."
+
+        // ---- Shared setup: barcodes + printer (both modes) ----
+        ch_samples_with_names = individual_samples.flatten()
+            .map { h5ad_file ->
+                def sample_name = h5ad_file.baseName.replaceAll('.h5ad$', '')
+                tuple(h5ad_file, sample_name)
+        }
+
+        SCPRINTER_BARCODES(
+            ch_samples_with_names.map { it[0] }.collect(),
+            ch_samples_with_names.map { it[1] }.collect()
+        )
+
+        // PBMC-style: fragments come via channel input
+        SCPRINTER_BUILD_PRINTER(
+            SCPRINTER_BARCODES.out.barcodes,
+            fragment_files
+        )
+
+        // Manual coordinate overrides (both modes)
+        def manual_coords = params.scprinter.gene_coordinates ?
+            file(params.scprinter.gene_coordinates) :
+            file('NO_FILE')
+
+        // ============================================================
+        // DISCOVERY MODE: per-cell-type ChromVAR TFs -> fan-out
+        // ============================================================
+        if (is_discovery_mode && params.chromvar.run) {
+            log.info "DISCOVERY MODE -- mapping ChromVAR TFs to target genes via motif-peak-CCAN linkage"
+
+            MAP_TF_TO_TARGET_GENES(
+                GPU_CHROMVAR.out.chromvar_raw,
+                EXTRACT_CHROMVAR_MOTIFS.out.motif_list,
+                CICERO_FULL.out.ccan,
+                params.scprinter.gtf_human
+            )
+
+            MAP_TF_TO_TARGET_GENES.out.report.view {
+                "\n==== TF -> TARGET GENE MAPPING ====\n${it.text}\n===================================="
+            }
+
+            ch_per_celltype = MAP_TF_TO_TARGET_GENES.out.tf_targets
+                .flatMap { json_file ->
+                    def data = new groovy.json.JsonSlurper().parseText(json_file.text)
+                    data.per_celltype_targets.collect { ct_name, target_list ->
+                        tuple(ct_name, target_list)
+                    }
+                }
+
+            ch_all_targets = MAP_TF_TO_TARGET_GENES.out.tf_targets
+                .map { json_file ->
+                    new groovy.json.JsonSlurper().parseText(json_file.text).all_target_genes
+                }
+
+            RESOLVE_GENE_COORDINATES(
+                params.species,
+                ch_all_targets,
+                manual_coords
+            )
+
+            RESOLVE_GENE_COORDINATES.out.report.view {
+                "\n==== GENE COORDINATE RESOLUTION ====\n${it.text}\n===================================="
+            }
+
+            ch_fp = ch_per_celltype
+                .combine(RESOLVE_GENE_COORDINATES.out.coordinates)
+
+            log.info "Fan-out footprinting at TF target gene promoters..."
+
+            def cicero_conns_for_fp = params.cicero.run ?
+                CICERO_FULL.out.connections.ifEmpty(file('NO_FILE')).first() :
+                Channel.value(file('NO_FILE'))
+            def pfm_for_fp = params.scprinter.pfms ?
+                Channel.value(file(params.scprinter.pfms)) :
+                Channel.value(file('NO_FILE'))
+
+            SCPRINTER_FOOTPRINTING(
+                peak_matrix,
+                metadata,
+                SCPRINTER_BUILD_PRINTER.out.printer,
+                ch_fp.map { it[0] },
+                ch_fp.map { it[1] },
+                ch_fp.map { it[2] },
+                '',
+                '',
+                MAP_TF_TO_TARGET_GENES.out.tf_targets,
+                cicero_conns_for_fp,
+                pfm_for_fp
+            )
+
+            if (has_da_peaks) {
+                log.info "DISCOVERY differential footprinting per cell type..."
+
+                SCPRINTER_FOOTPRINTING_DIFF(
+                    peak_matrix,
+                    metadata,
+                    SCPRINTER_BUILD_PRINTER.out.printer,
+                    ch_fp.map { it[0] },
+                    ch_fp.map { it[1] },
+                    ch_fp.map { it[2] },
+                    params.differential.control_condition,
+                    params.differential.treatment_condition,
+                    MAP_TF_TO_TARGET_GENES.out.tf_targets,
+                    cicero_conns_for_fp,
+                    pfm_for_fp
+                )
+
+                SCPRINTER_MOTIF_SCAN(
+                    peak_matrix,
+                    da_peaks_optional.collect(),
+                    SCPRINTER_BUILD_PRINTER.out.printer,
+                    ch_fp.map { it[0] },
+                    SCPRINTER_FOOTPRINTING_DIFF.out.footprints.collect()
+                )
+            }
+
+        // ============================================================
+        // TARGETED MODE: user genes -> single call + optional differential
+        // ============================================================
+        } else if (!is_discovery_mode) {
+            log.info "TARGETED MODE -- user-specified genes: ${params.scprinter.target_genes}"
+
+            RESOLVE_GENE_COORDINATES(
+                params.species,
+                Channel.value(params.scprinter.target_genes),
+                manual_coords
+            )
+
+            RESOLVE_GENE_COORDINATES.out.report.view {
+                "\n==== GENE COORDINATE RESOLUTION ====\n${it.text}\n===================================="
+            }
+
+            SCPRINTER_FOOTPRINTING(
+                peak_matrix,
+                metadata,
+                SCPRINTER_BUILD_PRINTER.out.printer,
+                'targeted',
+                Channel.value(params.scprinter.target_genes),
+                RESOLVE_GENE_COORDINATES.out.coordinates,
+                '',
+                '',
+                file('NO_FILE'),
+                file('NO_FILE'),
+                params.scprinter.pfms ? file(params.scprinter.pfms) : file('NO_FILE')
+            )
+
+            if (has_da_peaks && params.differential.cell_types && !params.differential.cell_types.isEmpty()) {
+                log.info "TARGETED differential footprinting per cell type..."
+
+                ch_ct_diff = Channel.from(params.differential.cell_types)
+
+                SCPRINTER_FOOTPRINTING_DIFF(
+                    peak_matrix,
+                    metadata,
+                    SCPRINTER_BUILD_PRINTER.out.printer,
+                    ch_ct_diff,
+                    Channel.value(params.scprinter.target_genes),
+                    RESOLVE_GENE_COORDINATES.out.coordinates,
+                    params.differential.control_condition,
+                    params.differential.treatment_condition,
+                    file('NO_FILE'),
+                    file('NO_FILE'),
+                    params.scprinter.pfms ? file(params.scprinter.pfms) : file('NO_FILE')
+                )
+
+                SCPRINTER_MOTIF_SCAN(
+                    peak_matrix,
+                    da_peaks_optional.collect(),
+                    SCPRINTER_BUILD_PRINTER.out.printer,
+                    ch_ct_diff,
+                    SCPRINTER_FOOTPRINTING_DIFF.out.footprints.collect()
+                )
+            } else if (has_da_peaks) {
+                log.warn """
+                WARNING: differential.run = true but differential.cell_types is empty.
+                Cannot fan-out differential footprinting without cell types.
+                Set differential.cell_types = ['Astrocytes', 'Microglia', ...] to enable.
+                """
+            }
+
+        // ============================================================
+        // EDGE CASE: discovery mode but chromvar.run = false
+        // ============================================================
+        } else {
+            error """
+            ERROR: Discovery mode (empty target_genes) requires chromvar.run = true.
+            Either:
+              1. Set chromvar.run = true for discovery mode, OR
+              2. Provide scprinter.target_genes = ['GENE1', 'GENE2', ...] for targeted mode.
+            """
+        }
+    }
+
+    // ================================================================
+    // EMIT
+    // ================================================================
+    emit:
+    cicero_connections   = params.cicero.run ? CICERO_FULL.out.connections : Channel.empty()
+    cicero_ccan          = params.cicero.run ? CICERO_FULL.out.ccan : Channel.empty()
+    chromvar_deviations  = params.chromvar.run ? GPU_CHROMVAR.out.chromvar_dev : Channel.empty()
+    chromvar_per_ct      = (is_discovery_mode && params.chromvar.run && params.scprinter.run) ?
+        EXTRACT_CHROMVAR_MOTIFS.out.motif_list : Channel.empty()
+    scprinter_printer    = params.scprinter.run ?
+        SCPRINTER_BUILD_PRINTER.out.printer : Channel.empty()
+    scprinter_footprints = params.scprinter.run ?
+        SCPRINTER_FOOTPRINTING.out.footprints : Channel.empty()
+    scprinter_diff       = (has_da_peaks && params.scprinter.run) ?
+        SCPRINTER_FOOTPRINTING_DIFF.out.footprints : Channel.empty()
+}
+
+// ============================================================================
+// MULTIOME INTEGRATION WORKFLOW
+// ============================================================================
+workflow MULTIOME_INTEGRATION {
+    take:
+    rna_h5ad_files
+    atac_h5ad_files
+    scanvi_predictions
+    metadata_csv
+
+    main:
+    log.info """
+    MULTIOME INTEGRATION WORKFLOW
+    """
+
+    // Step 1: Build unified MuData object
+    log.info "Building MuData with sample-matched RNA+ATAC pairing..."
+
+    BUILD_MUDATA(
+        rna_h5ad_files.flatten().collect(),
+        atac_h5ad_files.flatten().collect(),
+        scanvi_predictions,
+        metadata_csv
+    )
+
+    // Export RNA modality from MuData for DORC / downstream use
+    EXPORT_MUDATA_RNA(
+        BUILD_MUDATA.out.mudata
+    )
+
+    // Step 2: MOFA integration (mode-dependent)
+    if (params.mofa.run) {
+
+        if (params.mofa.mode == 'high_memory') {
+            log.info """
+            MOFA+ HIGH-MEMORY MODE (Single-Shot Integration)
+            - Using ALL cells (no subsampling)
+            - Factors: ${params.mofa.n_factors}
+            """.stripIndent()
+
+            MOFA_INTEGRATE(
+                BUILD_MUDATA.out.mudata
+            )
+
+            MOFA_VISUALIZE(
+                MOFA_INTEGRATE.out.model,
+                BUILD_MUDATA.out.mudata,
+                MOFA_INTEGRATE.out.metadata
+            )
+
+            integrated_output = MOFA_VISUALIZE.out.integrated_mudata
+            mofa_model = MOFA_INTEGRATE.out.model
+            mofa_plots = MOFA_VISUALIZE.out.plots
+            bootstrap_outputs = Channel.empty()
+
+        } else if (params.mofa.mode == 'bootstrap') {
+            log.info """
+            BOOTSTRAP MOFA INTEGRATION (Low-Memory Mode)
+            - Iterations: ${params.mofa.bootstrap.n_iterations}
+            - Sample fraction: ${params.mofa.bootstrap.sample_fraction}
+            - Memory will be logged to memory_log.jsonl
+            """.stripIndent()
+
+            BOOTSTRAP_MOFA_INTEGRATION(
+                BUILD_MUDATA.out.mudata,
+                params.mofa.bootstrap.n_iterations,
+                params.mofa.bootstrap.sample_fraction,
+                params.mofa.n_factors
+            )
+
+            ANALYZE_MEMORY_LOG(
+                BOOTSTRAP_MOFA_INTEGRATION.out.memory_log
+            )
+
+            CONSENSUS_ANALYSIS(
+                BOOTSTRAP_MOFA_INTEGRATION.out.results_dir
+            )
+
+            integrated_output = BUILD_MUDATA.out.mudata
+            mofa_model = BOOTSTRAP_MOFA_INTEGRATION.out.models
+            mofa_plots = CONSENSUS_ANALYSIS.out.stability_plot
+            bootstrap_outputs = BOOTSTRAP_MOFA_INTEGRATION.out.results_dir
+
+        } else {
+            error "Invalid MOFA mode: ${params.mofa.mode}. Use 'high_memory' or 'bootstrap'"
+        }
+
+    } else {
+        integrated_output = BUILD_MUDATA.out.mudata
+        mofa_model = Channel.empty()
+        mofa_plots = Channel.empty()
+        bootstrap_outputs = Channel.empty()
+    }
+
+    // Step 3: MultiVI integration (always run when enabled)
+    if (params.multivi.run) {
+        log.info "Starting MultiVI integration on MuData (rna+atac)"
+
+        MULTIVI_INTEGRATE(
+            BUILD_MUDATA.out.mudata
+        )
+
+        log.info "Generating MultiVI visualizations and metrics..."
+        MULTIVI_VISUALIZE(
+            MULTIVI_INTEGRATE.out.integrated,
+            MULTIVI_INTEGRATE.out.model
+        )
+
+    } else {
+        log.info "Skipping MultiVI integration (disabled in config)"
+    }
+
+    emit:
+    mudata = BUILD_MUDATA.out.mudata
+    integrated = integrated_output
+    stats = BUILD_MUDATA.out.stats
+    mofa_model = mofa_model
+    mofa_plots = mofa_plots
+    rna_for_dorc = EXPORT_MUDATA_RNA.out
+
+    // MultiVI outputs
+    multivi_model = params.multivi.run ? MULTIVI_INTEGRATE.out.model : Channel.empty()
+    multivi_output = params.multivi.run ? MULTIVI_INTEGRATE.out.integrated : Channel.empty()
+    multivi_plots = params.multivi.run ? MULTIVI_VISUALIZE.out.plots : Channel.empty()
+    multivi_metrics = params.multivi.run ? MULTIVI_VISUALIZE.out.metrics : Channel.empty()
+    multivi_report = params.multivi.run ? MULTIVI_VISUALIZE.out.report : Channel.empty()
+
+    // Bootstrap-specific outputs for debugging
+    bootstrap_summary = (params.mofa.mode == 'bootstrap') ?
+        BOOTSTRAP_MOFA_INTEGRATION.out.summary : Channel.empty()
+    memory_log = (params.mofa.mode == 'bootstrap') ?
+        ANALYZE_MEMORY_LOG.out.memory_stats : Channel.empty()
+    consensus_results = (params.mofa.mode == 'bootstrap') ?
+        CONSENSUS_ANALYSIS.out.results_dir : Channel.empty()
+}
+
+// ============================================================================
+// MULTIOME GRN WORKFLOW (pycisTopic + SCENIC+ + DORC)
+// ============================================================================
+workflow MULTIOME_GRN {
+    take:
+    rna_h5ad
+    atac_peak_matrix
+    metadata_csv
+    rna_for_dorc
+    mudata_stats
+    blacklist_bed
+
+    main:
+    log.info """
+    MULTIOME GRN WORKFLOW
+    - pycisTopic: topics, DARs, gene activity
+    - SCENIC+: eRegulons & AUCell
+    - DORC: peak-gene associations and DORC scores
+    """
+
+    // pycisTopic preparation
+    if (params.pycistopic.run) {
+        log.info "Running pycisTopic preparation..."
+
+        PYCISTOPIC_PREPARE(
+            metadata_csv,
+            rna_for_dorc,
+            params.pycistopic.species ?: params.species,
+            mudata_stats,
+            blacklist_bed,
+            file(params.pycistopic.gtf)
+        )
+    }
+
+    // SCENIC+ via Snakemake
+    if (params.scenicplus.run && params.pycistopic.run) {
+        log.info "Running SCENIC+ Snakemake pipeline..."
+
+        SCENICPLUS_RUN(
+            PYCISTOPIC_PREPARE.out.cistopic_obj,
+            rna_for_dorc,
+            PYCISTOPIC_PREPARE.out.region_sets,
+            params.scenicplus.ctx_rankings,
+            params.scenicplus.ctx_scores,
+            params.scenicplus.motif_annotations,
+            params.scenicplus.bc_transform_func
+        )
+
+        // SCENIC+ visualization
+        SCENICPLUS_VISUALIZE(
+            SCENICPLUS_RUN.out.scplus_mudata,
+            SCENICPLUS_RUN.out.aucell_direct,
+            SCENICPLUS_RUN.out.ereg_direct,
+            cell_type_key
+        )
+    }
+
+    // DORC analysis with scPrinter
+    if (params.dorc.run) {
+        log.info "Running scPrinter DORC analysis..."
+
+        SCPRINTER_DORC(
+            atac_peak_matrix,
+            rna_for_dorc,
+            "none"
+        )
+    }
+
+    emit:
+    // pycisTopic outputs
+    cistopic_obj   = params.pycistopic.run ? PYCISTOPIC_PREPARE.out.cistopic_obj   : Channel.empty()
+    region_sets    = params.pycistopic.run ? PYCISTOPIC_PREPARE.out.region_sets    : Channel.empty()
+    gene_activity  = (params.pycistopic.run && PYCISTOPIC_PREPARE.out.gene_activity) ?
+                     PYCISTOPIC_PREPARE.out.gene_activity : Channel.empty()
+    pseudobulk_bigwigs = params.pycistopic.run ? PYCISTOPIC_PREPARE.out.pseudobulk_bigwigs : Channel.empty()
+
+    // SCENIC+ outputs
+    scplus_mudata      = (params.scenicplus.run && params.pycistopic.run) ? SCENICPLUS_RUN.out.scplus_mudata      : Channel.empty()
+    scplus_acc_gex     = (params.scenicplus.run && params.pycistopic.run) ? SCENICPLUS_RUN.out.acc_gex_mudata     : Channel.empty()
+    scplus_ereg_direct = (params.scenicplus.run && params.pycistopic.run) ? SCENICPLUS_RUN.out.ereg_direct        : Channel.empty()
+    scplus_r2g         = (params.scenicplus.run && params.pycistopic.run) ? SCENICPLUS_RUN.out.r2g                : Channel.empty()
+    scplus_ereg_ext    = (params.scenicplus.run && params.pycistopic.run) ? SCENICPLUS_RUN.out.ereg_extended      : Channel.empty()
+    scplus_aucell_dir  = (params.scenicplus.run && params.pycistopic.run) ? SCENICPLUS_RUN.out.aucell_direct      : Channel.empty()
+    scplus_aucell_ext  = (params.scenicplus.run && params.pycistopic.run) ? SCENICPLUS_RUN.out.aucell_extended    : Channel.empty()
+
+    // DORC outputs
+    dorc_all      = params.dorc.run ? SCPRINTER_DORC.out.dorc_all    : Channel.empty()
+    dorc_sig      = params.dorc.run ? SCPRINTER_DORC.out.dorc_sig    : Channel.empty()
+    dorc_scores   = params.dorc.run ? SCPRINTER_DORC.out.dorc_scores : Channel.empty()
+}
+
+// ============================================================================
+// ENHANCER FOOTPRINTING RECIPES (A/B/C/D)
+// ============================================================================
+workflow ENHANCER_FOOTPRINTING_RECIPES {
+    take:
+    peak_matrix
+    printer
+    chromvar_dev_ch
+    chromvar_motifs_ch
+    cicero_conns_ch
+    cicero_ccan_ch
+    ereg_direct_ch
+    r2g_ch
+    dorc_sig_ch
+    rna_h5ad_ch
+    cellchat_csv_ch
+    pseudobulk_bigwigs_ch
+
+    main:
+
+    // ================================================================
+    // PHASE 1: ATAC-Only Enhancer Footprinting (Recipe A)
+    // ================================================================
+    log.info "ENHANCER FOOTPRINTING RECIPES: Phase 1 (ATAC-only)"
+
+    EXTRACT_CCAN_ENHANCERS(
+        cicero_conns_ch,
+        cicero_ccan_ch,
+        params.scprinter.gtf_human
+    )
+
+    MOTIF_SCAN_ENHANCERS(
+        EXTRACT_CCAN_ENHANCERS.out.enhancer_peaks,
+        chromvar_motifs_ch
+    )
+
+    ch_enhancer_tasks = MOTIF_SCAN_ENHANCERS.out.manifest
+        .flatMap { manifest_file ->
+            def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+            data.region_sets.collect { entry ->
+                tuple(entry.cell_type, entry.tf, entry.bed_file)
+            }
+        }
+
+    ch_enhancer_fp = ch_enhancer_tasks
+        .combine(MOTIF_SCAN_ENHANCERS.out.region_sets)
+        .map { ct, tf, bed_fname, region_sets_dir ->
+            tuple(file("${region_sets_dir}/${bed_fname}"), ct, tf)
+        }
+
+    ENHANCER_FOOTPRINTING(
+        ch_enhancer_fp.map { it[0] },
+        printer,
+        peak_matrix,
+        ch_enhancer_fp.map { it[1] },
+        ch_enhancer_fp.map { it[2] },
+        cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')).first()
+    )
+
+    // ================================================================
+    // PHASE 2: Multiome Integration (Recipe B)
+    // ================================================================
+    def has_scenic = (params.scenicplus.run ?: false) && (params.pycistopic.run ?: false)
+    def has_dorc = (params.dorc.run ?: false)
+
+    if (has_scenic) {
+        log.info "ENHANCER FOOTPRINTING RECIPES: Phase 2 (Multiome integration)"
+
+        def dorc_sig_file = has_dorc ?
+            dorc_sig_ch : Channel.value(file('NO_FILE_dorc'))
+
+        EXTRACT_EREGULON_REGIONS(
+            ereg_direct_ch,
+            r2g_ch,
+            dorc_sig_file
+        )
+
+        CROSS_MODAL_VALIDATION(
+            ENHANCER_FOOTPRINTING.out.footprints.collect(),
+            rna_h5ad_ch,
+            EXTRACT_EREGULON_REGIONS.out.target_genes
+        )
+    }
+
+    // ================================================================
+    // PHASE 3: CellChat-Guided Footprinting (Recipe C)
+    // ================================================================
+    if (params.enhancer_recipe_c.run) {
+        log.info "ENHANCER FOOTPRINTING RECIPES: Phase 3 (CellChat-guided)"
+
+        CELLCHAT_TO_TF_HYPOTHESES(
+            cellchat_csv_ch,
+            chromvar_dev_ch,
+            file("${projectDir}/data/pathway_to_tfs.json")
+        )
+
+        def ereg_regions_ch = has_scenic ?
+            EXTRACT_EREGULON_REGIONS.out.region_sets :
+            Channel.value(file('NO_FILE_ereg_regions'))
+        def ereg_manifest_ch = has_scenic ?
+            EXTRACT_EREGULON_REGIONS.out.manifest :
+            Channel.value(file('NO_FILE_ereg_manifest'))
+        def ccan_regions_ch = MOTIF_SCAN_ENHANCERS.out.region_sets
+        def ccan_manifest_ch = MOTIF_SCAN_ENHANCERS.out.manifest
+
+        EXTRACT_SIGNALING_TARGETS(
+            CELLCHAT_TO_TF_HYPOTHESES.out.validated_pairs,
+            ereg_regions_ch,
+            ereg_manifest_ch,
+            ccan_regions_ch,
+            ccan_manifest_ch
+        )
+
+        SIGNAL_CHAIN_CORRELATION(
+            ENHANCER_FOOTPRINTING.out.footprints.collect(),
+            rna_h5ad_ch,
+            EXTRACT_SIGNALING_TARGETS.out.metadata
+        )
+    }
+
+    // ================================================================
+    // PHASE 4: Composite Enhancer Visualization (Recipe D)
+    // ================================================================
+    if (params.enhancer_viz.run) {
+        log.info "ENHANCER FOOTPRINTING RECIPES: Phase 4 (Composite Visualization)"
+
+        def bigwig_dir_ch = pseudobulk_bigwigs_ch
+            .ifEmpty(file('NO_BIGWIGS'))
+            .collect()
+
+        PREPARE_ENHANCER_VIZ_TRACKS(
+            cicero_conns_ch,
+            EXTRACT_CCAN_ENHANCERS.out.enhancer_peaks,
+            bigwig_dir_ch,
+            file(params.scprinter.gtf_human),
+            params.enhancer_viz.target_genes,
+            MOTIF_SCAN_ENHANCERS.out.manifest
+        )
+
+        ch_viz_tasks = MOTIF_SCAN_ENHANCERS.out.manifest
+            .flatMap { manifest_file ->
+                def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                def seen = new HashSet()
+                data.region_sets.collect { entry ->
+                    def key = "${entry.cell_type}_${entry.tf}"
+                    if (!seen.contains(key)) {
+                        seen.add(key)
+                        tuple(entry.tf, entry.tf)
+                    } else {
+                        null
+                    }
+                }.findAll { it != null }
+            }
+
+        if (params.enhancer_viz.target_genes && !params.enhancer_viz.target_genes.isEmpty()) {
+            ch_viz_tasks = MOTIF_SCAN_ENHANCERS.out.manifest
+                .flatMap { manifest_file ->
+                    def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                    def tfs = data.region_sets.collect { it.tf }.unique()
+                    def genes = params.enhancer_viz.target_genes
+                    def pairs = []
+                    genes.each { gene ->
+                        tfs.each { tf ->
+                            pairs.add(tuple(gene, tf))
+                        }
+                    }
+                    pairs
+                }
+        }
+
+        def fp_dir_ch = Channel.value(file("${params.outdir}/enhancer_footprinting/footprints"))
+
+        COMPOSITE_ENHANCER_VIZ(
+            PREPARE_ENHANCER_VIZ_TRACKS.out.track_manifest,
+            PREPARE_ENHANCER_VIZ_TRACKS.out.track_inis.collect(),
+            MOTIF_SCAN_ENHANCERS.out.motif_scan,
+            ch_viz_tasks.map { it[0] },
+            ch_viz_tasks.map { it[1] },
+            fp_dir_ch
+        )
+    }
+
+    emit:
+    enhancer_peaks     = EXTRACT_CCAN_ENHANCERS.out.enhancer_peaks
+    motif_scan         = MOTIF_SCAN_ENHANCERS.out.motif_scan
+    region_sets        = MOTIF_SCAN_ENHANCERS.out.region_sets
+    enhancer_fps       = ENHANCER_FOOTPRINTING.out.footprints
+    cross_modal        = has_scenic ? CROSS_MODAL_VALIDATION.out.validation_table : Channel.empty()
+    evidence_tiers     = params.enhancer_recipe_c.run ? SIGNAL_CHAIN_CORRELATION.out.evidence_tiers : Channel.empty()
+    enhancer_viz       = (params.enhancer_viz.run ?: false) ? COMPOSITE_ENHANCER_VIZ.out.composite_png : Channel.empty()
+}
+
+// ============================================================================
+// MAIN WORKFLOW (UNIFIED ENTRY POINT)
+// ============================================================================
+workflow {
+
+    log.info """
+
+    REFACTOR5: Unified Multiomics Pipeline v3.0.0
+    RNA + ATAC Integration & Regulatory Analysis
+
+    Species:       ${params.species}
+    Output:        ${params.outdir}
+    Metadata:      ${params.metadata_file}
+    Cell type key: ${cell_type_key}
+
+    On-ramps:
+      rna_integrated_h5ad:    ${params.onramp?.rna_integrated_h5ad ?: 'none'}
+      atac_peak_matrix_h5ad:  ${params.onramp?.atac_peak_matrix_h5ad ?: 'none'}
+      mudata_h5mu:            ${params.onramp?.mudata_h5mu ?: 'none'}
+      printer_h5ad:           ${params.onramp?.printer_h5ad ?: 'none'}
+      cicero_connections:     ${params.onramp?.cicero_connections ?: 'none'}
+      chromvar_deviations:    ${params.onramp?.chromvar_deviations ?: 'none'}
+
+    """
+
+    // ========================================================================
+    // RNA PROCESSING (with on-ramp)
+    // ========================================================================
+    if (params.onramp?.rna_integrated_h5ad) {
+        log.info "ON-RAMP: Using pre-integrated RNA: ${params.onramp.rna_integrated_h5ad}"
+        ch_integrated_rna = Channel.value(file(params.onramp.rna_integrated_h5ad))
+        rna_completed = true
+        rna_from_onramp = true
+    } else if (params.rna.run) {
+        log.info "Starting RNA workflow..."
+        RNA()
+        ch_integrated_rna = RNA.out.integrated_rna
+        rna_completed = true
+        rna_from_onramp = false
+    } else {
+        log.info "Skipping RNA workflow (disabled in config)"
+        rna_completed = false
+        rna_from_onramp = false
+    }
+
+    // ========================================================================
+    // RNA DIFFERENTIAL EXPRESSION
+    // ========================================================================
+    if (params.differential_rna.run && rna_completed) {
+        log.info """
+        RNA DIFFERENTIAL EXPRESSION ENABLED
+        Comparisons: ${params.differential_rna.comparisons.size()}
+        """
+
+        RNA_DIFFERENTIAL(
+            ch_integrated_rna
+        )
+    }
+
+    // ========================================================================
+    // ATAC PROCESSING (with on-ramp)
+    // ========================================================================
+    if (params.onramp?.atac_peak_matrix_h5ad) {
+        log.info "ON-RAMP: Using pre-computed ATAC peak matrix: ${params.onramp.atac_peak_matrix_h5ad}"
+        ch_atac_peak_matrix = Channel.value(file(params.onramp.atac_peak_matrix_h5ad))
+        atac_completed = true
+        atac_from_onramp = true
+    } else if (params.atac.run && params.atac.run_initial_qc) {
+        log.info "Starting ATAC workflow..."
+
+        // Stage 1: Initial QC
+        ATAC_INITIAL()
+
+        // Stage 2: Final QC with sample-specific thresholds
+        ATAC_FINAL(ATAC_INITIAL.out.thresholds)
+
+        ch_atac_peak_matrix = ATAC_FINAL.out.peak_matrix
+        atac_completed = true
+        atac_from_onramp = false
+
+        // Differential ATAC Analysis (requires condition_key)
+        if (params.differential.run && params.differential.condition_key) {
+            log.info """
+            DIFFERENTIAL ATAC ANALYSIS ENABLED
+            Condition key: ${params.differential.condition_key}
+            Control:   ${params.differential.control_condition}
+            Treatment: ${params.differential.treatment_condition}
+            """
+
+            ATAC_DIFFERENTIAL(
+                ATAC_FINAL.out.peak_matrix,
+                file(params.atac.sample_metadata)
+            )
+
+            da_peaks_ch = ATAC_DIFFERENTIAL.out.da_peaks
+        } else {
+            log.info "Skipping differential ATAC (no condition_key in metadata)"
+            da_peaks_ch = Channel.empty()
+        }
+
+        // REGULATORY ANALYSIS (Cicero, ChromVAR, scPRINT)
+        log.info "Starting regulatory analysis workflow..."
+
+        // Parse fragment files from manifest for SCPRINTER_BUILD_PRINTER
+        ch_reg_fragments = Channel.fromPath(params.metadata_file)
+            .splitCsv(header: true)
+            .filter { it.sample_type == 'demux' }
+            .map { row ->
+                def atac_dir = resolveAtacDir(row)
+                def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
+                file("${atac_dir}/${frag_fname}")
+            }
+            .collect()
+
+        REGULATORY_ANALYSIS(
+            ATAC_FINAL.out.peak_matrix,
+            ATAC_FINAL.out.individual_samples,
+            da_peaks_ch,
+            file(params.atac.sample_metadata),
+            ch_reg_fragments
+        )
+
+    } else {
+        log.info "Skipping ATAC workflow (disabled in config)"
+        atac_completed = false
+        atac_from_onramp = false
+    }
+
+    // ========================================================================
+    // MULTIOME INTEGRATION (requires both RNA and ATAC)
+    // ========================================================================
+    if (params.onramp?.mudata_h5mu) {
+        log.info "ON-RAMP: Using pre-computed MuData: ${params.onramp.mudata_h5mu}"
+        // Skip MULTIOME_INTEGRATION entirely -- downstream GRN workflows
+        // should read from the on-ramp mudata directly.
+    } else if (params.run_multiome_integration && rna_completed && atac_completed && !atac_from_onramp && !rna_from_onramp) {
+        log.info """
+        MULTIOME INTEGRATION
+        Waiting for RNA and ATAC workflows to complete...
+        """
+
+        // Explicit dependency: wait for ATAC_FINAL to complete
+        ATAC_FINAL.out.individual_samples
+            .collect()
+            .subscribe { atac_files ->
+                log.info "ATAC processing complete: ${atac_files.size()} samples"
+            }
+
+        // ========================================================================
+        // FAIL-FAST MODALITY JOINING (RNA + ATAC)
+        // BD multiome join diagnostics: logs all channel keys, warns on orphans,
+        // reports ALL mismatches before erroring.
+        // ========================================================================
+        ch_expected_samples = Channel.fromPath(params.metadata_file)
+            .splitCsv(header: true)
+            .filter { it.sample_type == 'demux' }
+            .map { row ->
+                def meta = [id: row.sample_id, batch: row.batch, condition: row.condition_group ?: 'Control']
+                tuple(row.sample_id, meta)
+            }
+
+        // Map flat RNA outputs back to tuples with keys
+        // For single-file (non-demux) lanes, use lane_sample_id directly.
+        // For demux (BD brain): reconstruct donor + batch from filename.
+        ch_rna_mapped = RNA.out.qc_h5ads
+            .flatMap { sample_id, files ->
+                def file_list = files instanceof List ? files : [files]
+                if (file_list.size() == 1) {
+                    return [tuple(sample_id, file_list[0])]
+                }
+                file_list.collect { f ->
+                    def donor = f.baseName.replaceAll(/^.*_filtered_/, '')
+                    def batch = sample_id.tokenize('_').last()
+                    tuple("${donor}_${batch}", f)
+                }
+            }
+
+        // Map flat ATAC outputs back to tuples with keys
+        ch_atac_mapped = ATAC_FINAL.out.individual_samples
+            .flatMap { it instanceof List ? it : [it] }
+            .map { file ->
+                def sample_id = file.baseName
+                tuple(sample_id, file)
+            }
+
+        // Log available keys from each channel for debugging
+        ch_rna_mapped.map { it[0] }.collect().subscribe { keys ->
+            log.info "MULTIOME JOIN: RNA keys (${keys.size()}): ${keys.sort().take(10)}${keys.size() > 10 ? '... (+' + (keys.size()-10) + ' more)' : ''}"
+        }
+        ch_atac_mapped.map { it[0] }.collect().subscribe { keys ->
+            log.info "MULTIOME JOIN: ATAC keys (${keys.size()}): ${keys.sort().take(10)}${keys.size() > 10 ? '... (+' + (keys.size()-10) + ' more)' : ''}"
+        }
+        ch_expected_samples.map { it[0] }.collect().subscribe { keys ->
+            log.info "MULTIOME JOIN: Expected keys (${keys.size()}): ${keys.sort().take(10)}${keys.size() > 10 ? '... (+' + (keys.size()-10) + ' more)' : ''}"
+        }
+
+        // Join with remainder to detect mismatches, then validate
+        ch_joined_raw = ch_expected_samples
+            .join(ch_rna_mapped, by: 0, remainder: true)
+            .join(ch_atac_mapped, by: 0, remainder: true)
+
+        // Separate orphans (keys not in manifest) from expected samples
+        ch_joined_raw
+            .filter { it[1] == null }
+            .map { it[0] }
+            .collect()
+            .subscribe { orphans ->
+                if (orphans) {
+                    log.warn "MULTIOME JOIN: ${orphans.size()} orphan key(s) found in RNA/ATAC but not in manifest: ${orphans.sort()}"
+                    log.warn "These samples will be EXCLUDED from multiome integration. If unexpected, check manifest sample_id values."
+                }
+            }
+
+        // Collect all validation errors for expected samples, then report
+        ch_joined_raw
+            .filter { it[1] != null }
+            .collect(flat: false)
+            .subscribe { items ->
+                if (items == null || items.isEmpty()) {
+                    log.warn "MULTIOME JOIN: No expected samples found in join -- check manifest and channel emissions."
+                    return
+                }
+                def missing_rna = items.findAll { it.size() < 3 || it[2] == null }.collect { it[0] }
+                def missing_atac = items.findAll { it.size() < 4 || it[3] == null }.collect { it[0] }
+                if (missing_rna) {
+                    log.error "MULTIOME JOIN: ${missing_rna.size()} sample(s) missing RNA: ${missing_rna.sort()}"
+                }
+                if (missing_atac) {
+                    log.error "MULTIOME JOIN: ${missing_atac.size()} sample(s) missing ATAC: ${missing_atac.sort()}"
+                }
+            }
+
+        ch_paired_multiome = ch_joined_raw
+            .filter { it[1] != null }
+            .map { it ->
+                def sample_id = it[0]
+                def meta = it[1]
+                def rna = it[2]
+                def atac = it[3]
+                if (rna == null) error "Fail-fast: Missing RNA for sample ${sample_id}. Check RNA_QC output filenames vs manifest sample_id."
+                if (atac == null) error "Fail-fast: Missing ATAC for sample ${sample_id}. Check ATAC h5ad basenames vs manifest sample_id."
+
+                return [meta, rna, atac]
+            }
+
+        ch_synced_rna = ch_paired_multiome.map { meta, rna, atac -> rna }.collect()
+        ch_synced_atac = ch_paired_multiome.map { meta, rna, atac -> atac }.collect()
+
+        MULTIOME_INTEGRATION(
+            ch_synced_rna,
+            ch_synced_atac,
+            ch_integrated_rna,
+            file(params.metadata_file)
+        )
+    } else if (params.run_multiome_integration && (!rna_completed || !atac_completed)) {
+        log.warn """
+        MULTIOME INTEGRATION SKIPPED
+        Reason: Both RNA and ATAC workflows must complete successfully
+        RNA completed: ${rna_completed}
+        ATAC completed: ${atac_completed}
+        """
+    }
+
+    // ========================================================================
+    // MULTIOME GRN (pycistopic + SCENIC+ + DORC)
+    // ========================================================================
+    if (rna_completed && atac_completed && !atac_from_onramp && !rna_from_onramp &&
+        params.run_multiome_integration && !params.onramp?.mudata_h5mu &&
+        (params.pycistopic.run || params.scenicplus.run || params.dorc.run)) {
+        log.info """
+        MULTIOME GRN ANALYSIS
+        Running pycisTopic, SCENIC+ and/or DORC as requested in config
+        """
+        MULTIOME_GRN(
+            ch_integrated_rna,
+            ATAC_FINAL.out.peak_matrix,
+            file(params.metadata_file),
+            MULTIOME_INTEGRATION.out.rna_for_dorc,
+            MULTIOME_INTEGRATION.out.stats,
+            file(params.pycistopic.blacklist_bed)
+        )
+    }
+
+    // ========================================================================
+    // ENHANCER FOOTPRINTING RECIPES (A/B/C/D)
+    // Requires: ATAC completed + REGULATORY_ANALYSIS (Cicero, ChromVAR, scPRINTER)
+    // ========================================================================
+    if (params.enhancer_footprinting.run && atac_completed && !atac_from_onramp &&
+        params.cicero.run && params.chromvar.run && params.scprinter.run) {
+        log.info """
+        ENHANCER FOOTPRINTING RECIPES
+        Phase 1 (ATAC-only):     always
+        Phase 2 (Multiome):      ${(params.scenicplus.run ?: false) ? 'enabled' : 'disabled'}
+        Phase 3 (CellChat):      ${(params.enhancer_recipe_c.run ?: false) ? 'enabled' : 'disabled'}
+        Phase 4 (Visualization): ${(params.enhancer_viz.run ?: false) ? 'enabled' : 'disabled'}
+        """
+
+        def has_grn = rna_completed && atac_completed && !atac_from_onramp && !rna_from_onramp &&
+                      params.run_multiome_integration && !params.onramp?.mudata_h5mu &&
+                      (params.pycistopic.run || params.scenicplus.run || params.dorc.run)
+
+        def ereg_direct_ch = (has_grn && params.scenicplus.run && params.pycistopic.run) ?
+            MULTIOME_GRN.out.scplus_ereg_direct : Channel.empty()
+        def r2g_ch = (has_grn && params.scenicplus.run && params.pycistopic.run) ?
+            MULTIOME_GRN.out.scplus_r2g : Channel.empty()
+        def dorc_sig_ch = (has_grn && params.dorc.run) ?
+            MULTIOME_GRN.out.dorc_sig : Channel.empty()
+        def rna_ch = rna_completed ? ch_integrated_rna : Channel.empty()
+        def cellchat_csv_ch = (rna_completed && !rna_from_onramp && params.cellchat.run) ?
+            RNA.out.cellchat_csv : Channel.empty()
+        def bigwigs_ch = (has_grn && params.pycistopic.run) ?
+            MULTIOME_GRN.out.pseudobulk_bigwigs : Channel.empty()
+
+        ENHANCER_FOOTPRINTING_RECIPES(
+            ATAC_FINAL.out.peak_matrix,
+            REGULATORY_ANALYSIS.out.scprinter_printer,
+            REGULATORY_ANALYSIS.out.chromvar_deviations,
+            REGULATORY_ANALYSIS.out.chromvar_per_ct,
+            REGULATORY_ANALYSIS.out.cicero_connections,
+            REGULATORY_ANALYSIS.out.cicero_ccan,
+            ereg_direct_ch,
+            r2g_ch,
+            dorc_sig_ch,
+            rna_ch,
+            cellchat_csv_ch,
+            bigwigs_ch
+        )
+    }
+}
+
+// ============================================================================
+// WORKFLOW COMPLETION HANDLER
+// ============================================================================
+workflow.onComplete {
+    def status_text = workflow.success ? 'SUCCESS' : 'FAILED'
+
+    log.info """
+
+    PIPELINE EXECUTION SUMMARY
+
+    Status:    ${status_text}
+    Duration:  ${workflow.duration}
+    Completed: ${workflow.complete}
+
+    Results Directory: ${params.outdir}/
+
+    Output Locations:
+
+    RNA Results:
+      - CellBender reports:  ${params.outdir}/cellbender/
+      - QC h5ad files:       ${params.outdir}/rna_qc/
+      - Integrated h5ad:     ${params.outdir}/integration/
+      - CellChat results:    ${params.outdir}/cellchat/
+      - hdWGCNA results:     ${params.outdir}/hdwgcna/
+      - Differential expr:   ${params.outdir}/rna_differential/
+
+    ATAC Results:
+      - Initial QC:          ${params.outdir}/atac/initial_qc/
+      - Final QC:            ${params.outdir}/atac/final/
+      - Peak matrix:         ${params.outdir}/atac/final/peak_matrix.h5ad
+      - Cell-type annot:     ${params.outdir}/atac/final/celltype_annotations.json
+      - Differential peaks:  ${params.outdir}/differential/
+
+    Regulatory Analysis:
+      - Cicero connections:  ${params.outdir}/cicero/
+      - ChromVAR results:    ${params.outdir}/chromvar/
+      - scPRINT footprints:  ${params.outdir}/scprinter/
+
+    Multiome Integration:
+      - MuData object:       ${params.outdir}/multiome/mudata/
+      - MOFA factors:        ${params.outdir}/multiome/mofa/
+      - Bootstrap results:   ${params.outdir}/multiome/mofa_bootstrap/
+      - MultiVI model:       ${params.outdir}/multiome/multivi/
+      - MultiVI plots:       ${params.outdir}/multiome/multivi/visualizations/
+
+    Enhancer Visualization:
+      - Track configs:       ${params.outdir}/enhancer_viz/tracks/
+      - Composite figures:   ${params.outdir}/enhancer_viz/composites/
+
+    Logs:
+      - Execution trace:     logs/nextflow/trace.txt
+      - Timeline:            logs/nextflow/timeline.html
+      - Report:              logs/nextflow/report.html
+
+    """.stripIndent()
+
+    if (!workflow.success) {
+        log.error """
+
+        TROUBLESHOOTING TIPS:
+
+        1. Check error logs: logs/nextflow/trace.txt
+        2. Resume failed run: nextflow run main.nf -resume
+        3. Check individual process logs in work/ directory
+        4. Verify input files exist and are readable
+
+        """
+    }
+}
+
+// ============================================================================
+// WORKFLOW ERROR HANDLER
+// ============================================================================
+workflow.onError {
+    log.error """
+
+    PIPELINE ERROR
+
+    Error message: ${workflow.errorMessage}
+    Error report: ${workflow.errorReport}
+
+    Check the logs directory for details:
+      ${params.outdir}/logs/nextflow/
+
+    """
+}
