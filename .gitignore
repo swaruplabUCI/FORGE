@@ -1,0 +1,39 @@
+# Nextflow runtime
+work/
+.nextflow/
+.nextflow.log*
+trace-*.txt
+timeline-*.html
+report-*.html
+dag-*.dot
+
+# Results (large outputs, not code)
+results/
+output/
+
+# Singularity containers (large binaries)
+singularity_cache/
+
+# HPC job logs
+slurm-*.out
+
+# Data files (too large for git)
+*.h5
+*.h5ad
+*.h5mu
+*.rds
+*.pkl
+*.bam
+*.bai
+*.bed.gz
+*.tsv.gz
+*.bigWig
+*.bw
+
+# OS/editor
+.DS_Store
+*.swp
+*~
+
+# Secrets
+.env

@@ -1,0 +1,77 @@
+{
+    "_description": "CellChat pathway -> canonical downstream TFs in receiver cells. Sources: KEGG, Reactome, primary literature.",
+
+    "TGFb":     ["SMAD2", "SMAD3", "SMAD4"],
+    "BMP":      ["SMAD1", "SMAD5", "SMAD9", "SMAD4"],
+    "ACTIVIN":  ["SMAD2", "SMAD3"],
+    "GDF":      ["SMAD1", "SMAD5"],
+    "NODAL":    ["SMAD2", "SMAD3", "FOXH1"],
+
+    "WNT":      ["TCF7", "LEF1", "TCF7L1", "TCF7L2"],
+    "ncWNT":    ["JUN", "FOS", "ATF2", "NFAT5"],
+
+    "NOTCH":    ["RBPJ", "HES1", "HEY1", "HEY2"],
+
+    "IFN-I":    ["STAT1", "STAT2", "IRF9"],
+    "IFN-II":   ["STAT1"],
+    "IL6":      ["STAT3"],
+    "IL2":      ["STAT5A", "STAT5B"],
+    "IL4":      ["STAT6"],
+    "IL10":     ["STAT3"],
+    "IL1":      ["NFKB1", "RELA", "JUN"],
+    "OSM":      ["STAT3"],
+    "LIF":      ["STAT3"],
+    "CSF":      ["STAT5A", "SPI1"],
+    "CSF3":     ["STAT3", "CEBPE"],
+
+    "TNF":      ["NFKB1", "RELA", "NFKB2", "RELB"],
+    "LIGHT":    ["NFKB1", "RELA"],
+    "RANKL":    ["NFKB1", "FOS", "NFATC1"],
+    "TWEAK":    ["NFKB1"],
+    "CD40":     ["NFKB1", "RELA", "NFKB2"],
+    "BAFF":     ["NFKB2", "RELB"],
+
+    "EGF":      ["FOS", "JUN", "ELK1", "MYC", "ETS1"],
+    "FGF":      ["ETS1", "ETS2", "FOS", "JUN"],
+    "PDGF":     ["FOS", "JUN", "ETS1", "SRF"],
+    "HGF":      ["FOS", "JUN", "ETS1"],
+    "VEGF":     ["ETS1", "FOS", "JUN"],
+    "IGF":      ["FOXO1", "FOXO3", "MYC"],
+    "KIT":      ["MITF", "FOS", "JUN"],
+    "NGF":      ["CREB1", "FOS", "JUN"],
+
+    "SHH":      ["GLI1", "GLI2", "GLI3"],
+    "IHH":      ["GLI1", "GLI2"],
+
+    "HIPPO":    ["TEAD1", "TEAD2", "TEAD3", "TEAD4"],
+
+    "RA":       ["RARA", "RARB", "RARG", "RXRA"],
+
+    "CXCL":     ["NFKB1", "STAT3", "FOS", "JUN"],
+    "CCL":      ["NFKB1", "STAT3", "FOS"],
+
+    "CDH":      ["CTNNB1", "TCF7", "LEF1"],
+    "JAM":      ["CEBPB"],
+    "NECTIN":   ["FOS", "JUN"],
+    "EPHA":     ["FOS", "JUN"],
+    "EPHB":     ["FOS", "JUN"],
+
+    "COLLAGEN": ["SRF", "FOS", "JUN"],
+    "LAMININ":  ["FOS", "JUN"],
+    "FN1":      ["SRF", "FOS", "JUN"],
+    "SPP1":     ["NFKB1", "FOS", "JUN"],
+    "THBS":     ["NFKB1"],
+    "TENASCIN": ["FOS", "JUN"],
+
+    "SEMA3":    ["NFAT5", "FOS"],
+    "GAS":      ["STAT3"],
+    "PROS":     ["AXL"],
+    "ANNEXIN":  ["NFKB1"],
+    "MK":       ["STAT3", "FOS"],
+    "PTN":      ["FOS", "JUN"],
+    "GALECTIN": ["NFKB1", "NFAT5"],
+    "ANGPT":    ["STAT3", "FOXO1"],
+    "APELIN":   ["KLF2", "NRF2"],
+    "EDN":      ["FOS", "JUN", "NFAT5"],
+    "MIF":      ["NFKB1", "AP1"]
+}

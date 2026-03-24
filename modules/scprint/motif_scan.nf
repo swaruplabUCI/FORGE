@@ -1,0 +1,33 @@
+process SCPRINTER_MOTIF_SCAN {
+    publishDir "${params.outdir}/scprinter/motifs/${cell_type}", mode: 'copy'
+
+    input:
+    path peak_matrix
+    path da_peaks
+    path printer
+    val cell_type
+    val footprints_done
+
+    output:
+    path "motif_enrichment_*.csv", emit: enrichment
+    path "tfbs_*.h5ad", emit: tfbs
+    path "motif_plots/*.png", emit: plots, optional: true
+
+    script:
+    """
+    # FIX-35c: Persistent model cache (see footprinter.nf for details)
+    export SCPRINTER_DATA='${params.scprinter.cache_dir}'
+
+    run_scprinter_motif_scan.py \\
+        --peak-matrix '${peak_matrix}' \\
+        --da-peaks '${da_peaks}' \\
+        --cell-type '${cell_type}' \\
+        --cache-dir '${params.scprinter.cache_dir}' \\
+        --genome '${params.scprinter.genome}' \\
+        --fdr ${params.scprinter.fdr_threshold} \\
+        --printer-path '${printer}' \\
+        --control-condition '${params.differential.control_condition}' \\
+        --treatment-condition '${params.differential.treatment_condition}' \\
+        --cpus ${task.cpus}
+    """
+}
