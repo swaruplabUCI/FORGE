@@ -27,6 +27,7 @@ if not hasattr(builtins, "long"):
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 
 import argparse
+import re
 from pathlib import Path
 
 import scprinter as scp
@@ -123,17 +124,52 @@ def tail_only(bc: str) -> str:
     return bc
 
 
-def choose_normalization(peak_barcodes, printer_barcodes: set) -> str:
-    """FIX-42: Auto-detect barcode normalization mode.
+# FIX-37e: 10x barcode regex — matches ACGTN+-\d+ at the end of a string,
+# preceded by a colon or underscore separator.  Handles sample names that
+# contain underscores (e.g. '10k_PBMC:ACGTACGT-1' or '10k_PBMC_ACGTACGT-1').
+_10X_BC_PATTERN = re.compile(r'[_:]([ACGTN]+-\d+)$')
 
-    Same logic as run_scprinter_footprinting.py — probes head_tail vs tail_only
-    on a sample of barcodes and returns the strategy with more matches.
+
+def strip_10x(bc: str) -> str:
+    """FIX-37e: Extract the 10x-style barcode from a prefixed barcode string.
+
+    Examples:
+        '10k_PBMC:ACGTACGT-1'    → 'ACGTACGT-1'
+        '10k_PBMC_ACGTACGT-1'    → 'ACGTACGT-1'
+        'L1_Donor_0_july:100602' → '100602'  (BD style, less relevant)
+        'ACGTACGT-1'             → 'ACGTACGT-1'  (no prefix, returned as-is)
+    """
+    m = _10X_BC_PATTERN.search(bc)
+    if m:
+        return m.group(1)
+    return bc
+
+
+def choose_normalization(peak_barcodes, printer_barcodes: set) -> str:
+    """FIX-42: Auto-detect which barcode normalization maps peak→printer barcodes.
+
+    Probes a sample of peak-matrix barcodes with three strategies:
+      - 'head_tail': replace first colon with underscore (FIX-37 default for BD)
+      - 'tail_only': strip everything before the first colon/underscore
+      - '10x_strip': regex-extract the 10x barcode (ACGTN+-\\d+) from the end
+                     (FIX-37e: handles sample names with underscores like '10k_PBMC')
+
+    Returns the strategy name that produces the most matches.  Falls back to
+    'head_tail' on ties (the safer default for BD Rhapsody data).
     """
     sample = peak_barcodes[:min(500, len(peak_barcodes))]
+
     n_head_tail = sum(1 for bc in sample if normalize_peak_barcode(bc) in printer_barcodes)
     n_tail_only = sum(1 for bc in sample if tail_only(bc) in printer_barcodes)
-    chosen = "tail_only" if n_tail_only > n_head_tail else "head_tail"
-    print(f"  FIX-42 choose_normalization: head_tail={n_head_tail}, tail_only={n_tail_only} → '{chosen}'")
+    n_10x_strip = sum(1 for bc in sample if strip_10x(bc) in printer_barcodes)
+
+    counts = {'head_tail': n_head_tail, 'tail_only': n_tail_only, '10x_strip': n_10x_strip}
+    chosen = max(counts, key=counts.get)
+    # On all-zero ties, fall back to head_tail (BD default)
+    if counts[chosen] == 0:
+        chosen = 'head_tail'
+    print(f"  FIX-42 choose_normalization: head_tail={n_head_tail}, tail_only={n_tail_only}, "
+          f"10x_strip={n_10x_strip} (of {len(sample)} sampled) → using '{chosen}'")
     return chosen
 
 
@@ -141,6 +177,8 @@ def apply_normalization(bc: str, mode: str) -> str:
     """Apply the chosen barcode normalization strategy."""
     if mode == "tail_only":
         return tail_only(bc)
+    if mode == "10x_strip":
+        return strip_10x(bc)
     return normalize_peak_barcode(bc)
 
 
