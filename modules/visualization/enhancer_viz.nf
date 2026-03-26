@@ -57,7 +57,7 @@ process COMPOSITE_ENHANCER_VIZ {
     path motif_scan            // Enhancer motif scan TSV
     val  gene                  // Gene name
     val  tf_name               // TF name
-    path footprints_dir        // Directory with pre-computed footprint PNGs
+    path "footprints/*"        // FIX-P0-2: Collected footprint PNGs from channel (not publishDir)
 
     output:
     path "composite_${gene}_${tf_name}.png",  emit: composite_png, optional: true
@@ -73,7 +73,7 @@ process COMPOSITE_ENHANCER_VIZ {
         --motif-scan '${motif_scan}' \\
         --gene '${gene}' \\
         --tf-name '${tf_name}' \\
-        --footprints-dir '${footprints_dir}' \\
+        --footprints-dir footprints \\
         --dpi ${params.enhancer_viz.dpi} \\
         --outdir .
     """

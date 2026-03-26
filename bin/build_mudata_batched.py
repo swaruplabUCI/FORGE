@@ -261,41 +261,66 @@ def main():
             log_message(f"  ATAC cells: {atac_adata.n_obs:,}", LOG_FILE)
             
             # ============================================================
-            # NEW: Smart barcode matching
+            # FIX-P0-5 (C2): Smart barcode matching with normalization
             # ============================================================
-            # Check if barcodes are numeric IDs or standard 10x format
             rna_sample_bc = str(rna_adata.obs_names[0])
             atac_sample_bc = str(atac_adata.obs_names[0])
-            
+
             log_message(f"  RNA barcode example: {rna_sample_bc}", LOG_FILE)
             log_message(f"  ATAC barcode example: {atac_sample_bc}", LOG_FILE)
-            
-            # Try direct overlap first
-            common_barcodes = sorted(list(
-                set(rna_adata.obs_names) & set(atac_adata.obs_names)
-            ))
-            
-            # If no direct overlap, try positional matching (same order, same sample)
-            if len(common_barcodes) == 0:
-                log_message("  ⚠ No direct barcode overlap - attempting positional matching", LOG_FILE, "WARN")
-                
-                # Take the minimum number of cells between modalities
+
+            # FIX-P0-5: Normalize barcodes by stripping -N suffix before matching
+            # This handles 10x multiome where RNA has '-1' suffix but ATAC does not
+            def _strip_suffix(bc):
+                return re.sub(r'-\d+$', '', str(bc))
+
+            rna_raw = list(rna_adata.obs_names)
+            atac_raw = list(atac_adata.obs_names)
+            rna_normalized = [_strip_suffix(bc) for bc in rna_raw]
+            atac_normalized = [_strip_suffix(bc) for bc in atac_raw]
+
+            # Build lookup: normalized → original index
+            rna_norm_to_idx = {bc: i for i, bc in enumerate(rna_normalized)}
+            atac_norm_to_idx = {bc: i for i, bc in enumerate(atac_normalized)}
+
+            common_normalized = sorted(set(rna_normalized) & set(atac_normalized))
+
+            if len(common_normalized) > 0:
+                # Use normalized matching — subset to common cells via original indices
+                rna_idx = [rna_norm_to_idx[bc] for bc in common_normalized]
+                atac_idx = [atac_norm_to_idx[bc] for bc in common_normalized]
+                rna_adata = rna_adata[rna_idx, :].copy()
+                atac_adata = atac_adata[atac_idx, :].copy()
+                # Assign consistent barcode names (use normalized form)
+                rna_adata.obs_names = common_normalized
+                atac_adata.obs_names = common_normalized
+                common_barcodes = common_normalized
+
+                # FIX-P0-5: Warn if join yield is suspiciously low
+                join_yield = len(common_barcodes) / min(len(rna_raw), len(atac_raw))
+                if join_yield < 0.10:
+                    log_message(
+                        f"  ⚠ Very low RNA-ATAC barcode overlap ({join_yield*100:.1f}%) for {sample_id}. "
+                        f"Check that RNA and ATAC data come from the same multiome experiment.",
+                        LOG_FILE, "WARN"
+                    )
+                log_message(f"  ✓ {len(common_barcodes):,} cells matched via normalized barcodes", LOG_FILE)
+            else:
+                # No overlap even after normalization — fall back to positional matching
+                log_message("  ⚠ No barcode overlap after normalization - attempting positional matching", LOG_FILE, "WARN")
+                log_message("  ⚠ WARNING: Positional matching assumes cells are in the same order!", LOG_FILE, "WARN")
+
                 n_cells = min(rna_adata.n_obs, atac_adata.n_obs)
-                
-                # Create synthetic shared barcodes
                 synthetic_barcodes = [f"{sample_id}:cell_{i:06d}" for i in range(n_cells)]
-                
-                # Subset and rename
+
                 rna_adata = rna_adata[:n_cells, :].copy()
                 atac_adata = atac_adata[:n_cells, :].copy()
-                
                 rna_adata.obs_names = synthetic_barcodes
                 atac_adata.obs_names = synthetic_barcodes
-                
                 common_barcodes = synthetic_barcodes
-                
-                log_message(f"  ✓ Created {len(common_barcodes)} matched cell pairs", LOG_FILE)
-            
+
+                log_message(f"  ✓ Created {len(common_barcodes)} positionally matched cell pairs", LOG_FILE)
+
             if len(common_barcodes) == 0:
                 log_message(f"  ⚠ Still no overlapping cells, skipping", LOG_FILE, "WARN")
                 continue

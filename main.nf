@@ -185,6 +185,184 @@ def resolveAtacCoordDir(row) {
 
 
 // ============================================================================
+// FIX-P0-7 (A2): Normalize sample_type for case-insensitive matching
+// ============================================================================
+def normalizeSampleType(String raw) {
+    if (!raw) return raw
+    def v = raw.trim().toLowerCase()
+    // Accept common aliases
+    if (v in ['rna', 'lane'])  return 'lane'
+    if (v in ['atac', 'demux']) return 'demux'
+    return v
+}
+
+def isLane(row)  { normalizeSampleType(row.sample_type) == 'lane' }
+def isDemux(row) { normalizeSampleType(row.sample_type) == 'demux' }
+
+// ============================================================================
+// FIX-P0: STARTUP VALIDATION
+// Catches genome build mismatches, species inconsistencies, manifest issues,
+// and parameter divergence BEFORE any compute starts.
+// ============================================================================
+def validateStartupParams() {
+    def errors = []
+
+    // --- P0-7 (A2): sample_type normalization is handled in-line at each
+    //     splitCsv filter (see below). Here we warn if non-standard values exist.
+    if (params.metadata_file) {
+        def csv = file(params.metadata_file)
+        if (csv.exists()) {
+            def lines = csv.readLines()
+            if (lines.size() > 1) {
+                def header = lines[0].split(',').collect { it.trim() }
+                def stIdx = header.findIndexOf { it == 'sample_type' }
+                def sidIdx = header.findIndexOf { it == 'sample_id' }
+
+                // P0 (A1-partial): Check required columns exist
+                def required = ['sample_id', 'sample_type']
+                def missing = required.findAll { col -> !header.contains(col) }
+                if (missing) {
+                    errors << "Manifest CSV missing required columns: ${missing}. Found: ${header}"
+                }
+
+                // P0-7 (A2): Warn on non-standard sample_type values
+                if (stIdx >= 0) {
+                    def types = lines[1..-1]
+                        .findAll { it.trim() }  // skip blank lines
+                        .collect { it.split(',')[stIdx]?.trim() }
+                        .findAll { it }
+                        .unique()
+                    def nonStandard = types.findAll { !(it in ['lane', 'demux']) }
+                    if (nonStandard) {
+                        def couldBe = nonStandard.findAll { it.toLowerCase() in ['lane', 'demux', 'rna', 'atac'] }
+                        if (couldBe) {
+                            errors << "Manifest sample_type contains non-standard values: ${nonStandard}. " +
+                                      "Expected 'lane' or 'demux' (case-sensitive). Did you mean: ${couldBe.collect { it.toLowerCase() == 'rna' ? 'lane' : it.toLowerCase() }}?"
+                        }
+                    }
+                }
+
+                // P0-3 (A3-partial): Check sample_id uniqueness per sample_type
+                if (sidIdx >= 0 && stIdx >= 0) {
+                    def rows = lines[1..-1].findAll { it.trim() }
+                    def sampleIds = rows.collect { line ->
+                        def cols = line.split(',')
+                        [cols[sidIdx]?.trim(), cols[stIdx]?.trim()]
+                    }
+                    def laneIds = sampleIds.findAll { it[1] == 'lane' }.collect { it[0] }
+                    def demuxIds = sampleIds.findAll { it[1] == 'demux' }.collect { it[0] }
+                    def laneDupes = laneIds.countBy { it }.findAll { k, v -> v > 1 }.keySet()
+                    def demuxDupes = demuxIds.countBy { it }.findAll { k, v -> v > 1 }.keySet()
+                    if (laneDupes) errors << "Duplicate sample_id in lane rows: ${laneDupes}"
+                    if (demuxDupes) errors << "Duplicate sample_id in demux rows: ${demuxDupes}"
+                }
+
+                // P0-11 (A4): Require condition_group column if differential analysis is enabled
+                def cgIdx = header.findIndexOf { it == 'condition_group' }
+                if (cgIdx < 0 && (params.differential?.run ?: false)) {
+                    errors << "Manifest CSV missing 'condition_group' column but differential analysis is enabled. " +
+                              "All samples will default to 'Control', producing zero DE genes."
+                } else if (cgIdx >= 0) {
+                    // Check for empty/missing condition_group values
+                    def emptyRows = lines[1..-1].findAll { it.trim() }.findAll { line ->
+                        def cols = line.split(',')
+                        cgIdx >= cols.size() || !cols[cgIdx]?.trim()
+                    }
+                    if (emptyRows) {
+                        log.warn "Found ${emptyRows.size()} manifest row(s) with empty condition_group. " +
+                                 "These will default to 'Control' in differential analysis."
+                    }
+                }
+            }
+        }
+    }
+
+    // --- P0-6 (B2) + P0-8 (E1/E2): Species consistency
+    def speciesMap = [human: 'hsapiens', mouse: 'mmusculus']
+    def expectedPycisSpecies = speciesMap[params.species]
+    if (expectedPycisSpecies && params.pycistopic?.species) {
+        if (params.pycistopic.species != expectedPycisSpecies) {
+            errors << "Species mismatch: params.species='${params.species}' implies " +
+                      "pycistopic.species='${expectedPycisSpecies}' but got '${params.pycistopic.species}'. " +
+                      "This will cause pycisTopic to use wrong genome annotations."
+        }
+    }
+
+    // P0-4 (B1): GTF genome build consistency check
+    // Check that GTF path contains species-consistent build string
+    def gtfPath = params.species == 'human' ? params.gtf_human_full : params.gtf_mouse_full
+    if (gtfPath) {
+        def gtfStr = gtfPath.toString().toLowerCase()
+        if (params.species == 'human' && (gtfStr.contains('mm10') || gtfStr.contains('mm39') || gtfStr.contains('grcm'))) {
+            errors << "GTF genome build mismatch: params.species='human' but GTF path contains mouse build: ${gtfPath}"
+        }
+        if (params.species == 'mouse' && (gtfStr.contains('hg38') || gtfStr.contains('hg19') || gtfStr.contains('grch'))) {
+            errors << "GTF genome build mismatch: params.species='mouse' but GTF path contains human build: ${gtfPath}"
+        }
+    }
+
+    // P0-4 (B1): pycisTopic GTF check
+    if (params.pycistopic?.gtf) {
+        def ptGtf = params.pycistopic.gtf.toString().toLowerCase()
+        if (params.species == 'human' && (ptGtf.contains('mm10') || ptGtf.contains('mm39') || ptGtf.contains('grcm'))) {
+            errors << "pycisTopic GTF contains mouse build string but params.species='human': ${params.pycistopic.gtf}"
+        }
+        if (params.species == 'mouse' && (ptGtf.contains('hg38') || ptGtf.contains('hg19') || ptGtf.contains('grch'))) {
+            errors << "pycisTopic GTF contains human build string but params.species='mouse': ${params.pycistopic.gtf}"
+        }
+    }
+
+    // P0-9 (B4): SCENIC+ cisTarget species check
+    if (params.scenicplus?.cistarget_rankings) {
+        def ctStr = params.scenicplus.cistarget_rankings.toString().toLowerCase()
+        if (params.species == 'human' && (ctStr.contains('mm10') || ctStr.contains('mm9'))) {
+            errors << "SCENIC+ cisTarget rankings appear to be for mouse but params.species='human': ${params.scenicplus.cistarget_rankings}"
+        }
+        if (params.species == 'mouse' && (ctStr.contains('hg38') || ctStr.contains('hg19'))) {
+            errors << "SCENIC+ cisTarget rankings appear to be for human but params.species='mouse': ${params.scenicplus.cistarget_rankings}"
+        }
+    }
+
+    // P0-13 (B5): Blacklist BED genome build check
+    def blacklist = params.blacklist_bed ?: params.pycistopic?.blacklist_bed
+    if (blacklist) {
+        def blStr = blacklist.toString().toLowerCase()
+        if (params.species == 'human' && (blStr.contains('mm10') || blStr.contains('mm9'))) {
+            errors << "Blacklist BED appears to be for mouse but params.species='human': ${blacklist}"
+        }
+        if (params.species == 'mouse' && (blStr.contains('hg38') || blStr.contains('hg19'))) {
+            errors << "Blacklist BED appears to be for human but params.species='mouse': ${blacklist}"
+        }
+    }
+
+    // P0-14 (E3): CellBender expected_cells sanity check
+    if (params.cellbender?.expected_cells) {
+        def ec = params.cellbender.expected_cells as int
+        if (ec > 50000) {
+            log.warn "CellBender expected_cells=${ec} is very high (>50000). " +
+                     "Verify this matches your data or ambient RNA removal may be degraded."
+        }
+        if (ec < 100) {
+            log.warn "CellBender expected_cells=${ec} is very low (<100). " +
+                     "Verify this matches your data or ambient RNA removal may be degraded."
+        }
+    }
+
+    // Fail hard on validation errors
+    if (errors) {
+        def msg = "\n" + "="*80 + "\n" +
+                  "STARTUP VALIDATION FAILED (${errors.size()} error(s)):\n" +
+                  "="*80 + "\n" +
+                  errors.withIndex().collect { err, i -> "  ${i+1}. ${err}" }.join("\n") + "\n" +
+                  "="*80
+        error msg
+    }
+
+    log.info "✓ Startup validation passed"
+}
+
+
+// ============================================================================
 // RNA WORKFLOW
 // ============================================================================
 workflow RNA {
@@ -199,7 +377,7 @@ workflow RNA {
     // ========================================================================
     ch_all_files = Channel.fromPath(params.metadata_file)
         .splitCsv(header: true)
-        .filter { it.sample_type == 'lane' }
+        .filter { isLane(it) }  // FIX-P0-7: case-insensitive sample_type
         .map { row ->
             def rna_dir = resolveRnaDir(row)
             def rna_fname = row.rna_file
@@ -537,7 +715,7 @@ workflow ATAC_INITIAL {
     // ========================================================================
     ch_all_fragments = Channel.fromPath(params.metadata_file)
         .splitCsv(header: true)
-        .filter { it.sample_type == 'demux' }
+        .filter { isDemux(it) }  // FIX-P0-7: case-insensitive sample_type
         .map { row ->
             def atac_dir = resolveAtacDir(row)
             def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -589,7 +767,7 @@ workflow ATAC_FINAL {
     // ========================================================================
     ch_demux_fragments = Channel.fromPath(params.metadata_file)
         .splitCsv(header: true)
-        .filter { it.sample_type == 'demux' }
+        .filter { isDemux(it) }  // FIX-P0-7: case-insensitive sample_type
         .map { row ->
             def atac_dir = resolveAtacDir(row)
             def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -1168,7 +1346,8 @@ workflow MULTIOME_GRN {
         PYCISTOPIC_PREPARE(
             metadata_csv,
             rna_for_dorc,
-            params.pycistopic.species ?: params.species,
+            // FIX-P0-8: Auto-derive pycistopic species from params.species
+            params.pycistopic.species ?: [human: 'hsapiens', mouse: 'mmusculus'].get(params.species, params.species),
             mudata_stats,
             blacklist_bed,
             file(params.pycistopic.gtf)
@@ -1402,7 +1581,8 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
                 }
         }
 
-        def fp_dir_ch = Channel.value(file("${params.outdir}/enhancer_footprinting/footprints"))
+        // FIX-P0-2: Use channel output instead of reading from publishDir
+        def fp_pngs_ch = ENHANCER_FOOTPRINTING.out.plots.collect().ifEmpty([])
 
         COMPOSITE_ENHANCER_VIZ(
             PREPARE_ENHANCER_VIZ_TRACKS.out.track_manifest,
@@ -1410,7 +1590,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             MOTIF_SCAN_ENHANCERS.out.motif_scan,
             ch_viz_tasks.map { it[0] },
             ch_viz_tasks.map { it[1] },
-            fp_dir_ch
+            fp_pngs_ch
         )
     }
 
@@ -1428,6 +1608,9 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
 // MAIN WORKFLOW (UNIFIED ENTRY POINT)
 // ============================================================================
 workflow {
+
+    // FIX-P0: Run startup validation before any compute
+    validateStartupParams()
 
     log.info """
 
@@ -1530,7 +1713,7 @@ workflow {
         // Parse fragment files from manifest for SCPRINTER_BUILD_PRINTER
         ch_reg_fragments = Channel.fromPath(params.metadata_file)
             .splitCsv(header: true)
-            .filter { it.sample_type == 'demux' }
+            .filter { isDemux(it) }  // FIX-P0-7: case-insensitive sample_type
             .map { row ->
                 def atac_dir = resolveAtacDir(row)
                 def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -1579,9 +1762,15 @@ workflow {
         // ========================================================================
         ch_expected_samples = Channel.fromPath(params.metadata_file)
             .splitCsv(header: true)
-            .filter { it.sample_type == 'demux' }
+            .filter { isDemux(it) }  // FIX-P0-7: case-insensitive sample_type
             .map { row ->
-                def meta = [id: row.sample_id, batch: row.batch, condition: row.condition_group ?: 'Control']
+                // FIX-P0-11: Warn if condition_group is missing instead of silently defaulting
+                def condition = row.condition_group?.trim()
+                if (!condition) {
+                    log.warn "Sample '${row.sample_id}' has no condition_group — defaulting to 'Control'"
+                    condition = 'Control'
+                }
+                def meta = [id: row.sample_id, batch: row.batch, condition: condition]
                 tuple(row.sample_id, meta)
             }
 

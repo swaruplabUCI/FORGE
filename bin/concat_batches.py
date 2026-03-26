@@ -62,13 +62,22 @@ def concatenate_and_qc(h5ad_files, output_file, metrics_file, plots_dir):
     # CONCATENATION
     # ============================================
     
+    # FIX-P0-3: Validate sample name uniqueness before concatenation
+    sample_names = list(adatas.keys())
+    if len(sample_names) != len(set(sample_names)):
+        from collections import Counter
+        dupes = [k for k, v in Counter(sample_names).items() if v > 1]
+        raise ValueError(
+            f"Duplicate sample names detected: {dupes}. "
+            "Each sample must have a unique name to prevent barcode collisions."
+        )
+
     print("\nStarting concatenation of adata objects...")
-    adata = ad.concat(adatas, join='outer', label="sample", index_unique=None)
+    # FIX-P0-3: index_unique='-' prefixes barcodes with sample name to prevent
+    # cross-sample barcode collisions that corrupt cell pairing downstream.
+    adata = ad.concat(adatas, join='outer', label="sample", index_unique='-')
     print("Concatenation done.")
-    
-    # Make names unique
-    adata.obs_names_make_unique()
-    print("Observation names made unique.")
+
     adata.var_names_make_unique()
     print("Variable names made unique.")
     
