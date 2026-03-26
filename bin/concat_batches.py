@@ -103,16 +103,22 @@ def concatenate_and_qc(h5ad_files, output_file, metrics_file, plots_dir):
     
     print("\nApplying experiment-level QC metrics...")
     
-    # Define gene categories based on species
-    # Assuming human based on your data
-    adata.var["mt"] = adata.var_names.str.startswith("MT-")  # MT for human
-    print("Identified mitochondrial genes.")
-    
-    adata.var["ribo"] = adata.var_names.str.startswith(("RPS", "RPL"))  # uppercase for human
-    print("Identified ribosomal genes.")
-    
-    adata.var["hb"] = adata.var_names.str.contains(r"^HB[^P]")
-    print("Identified hemoglobin genes.")
+    # FIX-R1-9: Detect both human (MT-) and mouse (mt-) mitochondrial genes
+    mt_human = adata.var_names.str.startswith("MT-")
+    mt_mouse = adata.var_names.str.startswith("mt-")
+    adata.var["mt"] = mt_human | mt_mouse
+    n_mt = adata.var["mt"].sum()
+    mt_source = "MT-" if mt_human.sum() > 0 else ("mt-" if mt_mouse.sum() > 0 else "none")
+    print(f"Identified {n_mt} mitochondrial genes (prefix: {mt_source}).")
+    if n_mt == 0:
+        print("  WARNING: No mitochondrial genes found — QC filtering on MT% will be ineffective.")
+
+    # Detect both human (RPS/RPL) and mouse (Rps/Rpl) ribosomal genes
+    adata.var["ribo"] = adata.var_names.str.startswith(("RPS", "RPL", "Rps", "Rpl"))
+    print(f"Identified {adata.var['ribo'].sum()} ribosomal genes.")
+
+    adata.var["hb"] = adata.var_names.str.contains(r"^HB[^P]", case=False)
+    print(f"Identified {adata.var['hb'].sum()} hemoglobin genes.")
     
     # Calculate QC metrics
     sc.pp.calculate_qc_metrics(adata, qc_vars=["mt", "ribo", "hb"], inplace=True, log1p=True)

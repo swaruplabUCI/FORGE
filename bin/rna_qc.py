@@ -514,10 +514,13 @@ def main():
     metrics['post_ngbc_filter_genes'] = adata.n_vars
     metrics['ngbc_frac_filt'] = (pre_ngbc - adata.n_obs) / metrics['unfiltered_cells'] * 100
     
-    # Filter by mitochondrial percentage
+    # FIX-E4: mt_threshold <= 0 disables MT filtering (previously 0 filtered all cells)
     pre_mt = adata.n_obs
-    adata = adata[adata.obs["pct_counts_mt"] < args.mt_threshold].copy()
-    
+    if args.mt_threshold > 0:
+        adata = adata[adata.obs["pct_counts_mt"] < args.mt_threshold].copy()
+    else:
+        print(f"  MT filtering disabled (mt_threshold={args.mt_threshold})")
+
     metrics['post_pctcountsmt_filter_cells'] = adata.n_obs
     metrics['post_pctcountsmt_filter_genes'] = adata.n_vars
     metrics['pctmt_frac_filt'] = (pre_mt - adata.n_obs) / metrics['unfiltered_cells'] * 100

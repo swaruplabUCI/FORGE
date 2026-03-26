@@ -69,7 +69,8 @@ export SINGULARITY_BINDPATH="/dfs7,/tmp"
 # =========================================================================
 MANIFEST=$(grep 'metadata_file' "$DATASET_CONFIG" | grep -oP "'[^']+'" | tr -d "'" | head -1)
 if [[ -n "$MANIFEST" && -f "$MANIFEST" ]]; then
-    N_SAMPLES=$(tail -n +2 "$MANIFEST" | wc -l)
+    # FIX-F10: Exclude blank lines from sample count
+    N_SAMPLES=$(tail -n +2 "$MANIFEST" | grep -c '[^[:space:]]')
     if [[ $N_SAMPLES -le 5 ]]; then
         RESOURCE_TIER="small"
     elif [[ $N_SAMPLES -le 50 ]]; then

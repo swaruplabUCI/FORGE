@@ -199,6 +199,11 @@ def normalizeSampleType(String raw) {
 def isLane(row)  { normalizeSampleType(row.sample_type) == 'lane' }
 def isDemux(row) { normalizeSampleType(row.sample_type) == 'demux' }
 
+// FIX-A5: Trim whitespace from all CSV fields to prevent path resolution failures
+// FIX-A6: Filter predicate to skip empty/blank rows from trailing newlines
+def trimRow(row) { row.collectEntries { k, v -> [k, v?.trim()] } }
+def isNonEmptyRow(row) { row.sample_id?.trim() }
+
 // ============================================================================
 // FIX-P0: STARTUP VALIDATION
 // Catches genome build mismatches, species inconsistencies, manifest issues,
@@ -377,7 +382,9 @@ workflow RNA {
     // ========================================================================
     ch_all_files = Channel.fromPath(params.metadata_file)
         .splitCsv(header: true)
-        .filter { isLane(it) }  // FIX-P0-7: case-insensitive sample_type
+        .filter { isNonEmptyRow(it) }  // FIX-A6: skip phantom rows
+        .map { trimRow(it) }           // FIX-A5: trim whitespace from fields
+        .filter { isLane(it) }         // FIX-P0-7: case-insensitive sample_type
         .map { row ->
             def rna_dir = resolveRnaDir(row)
             def rna_fname = row.rna_file
@@ -715,7 +722,9 @@ workflow ATAC_INITIAL {
     // ========================================================================
     ch_all_fragments = Channel.fromPath(params.metadata_file)
         .splitCsv(header: true)
-        .filter { isDemux(it) }  // FIX-P0-7: case-insensitive sample_type
+        .filter { isNonEmptyRow(it) }  // FIX-A6: skip phantom rows
+        .map { trimRow(it) }           // FIX-A5: trim whitespace from fields
+        .filter { isDemux(it) }        // FIX-P0-7: case-insensitive sample_type
         .map { row ->
             def atac_dir = resolveAtacDir(row)
             def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -767,7 +776,9 @@ workflow ATAC_FINAL {
     // ========================================================================
     ch_demux_fragments = Channel.fromPath(params.metadata_file)
         .splitCsv(header: true)
-        .filter { isDemux(it) }  // FIX-P0-7: case-insensitive sample_type
+        .filter { isNonEmptyRow(it) }  // FIX-A6: skip phantom rows
+        .map { trimRow(it) }           // FIX-A5: trim whitespace from fields
+        .filter { isDemux(it) }        // FIX-P0-7: case-insensitive sample_type
         .map { row ->
             def atac_dir = resolveAtacDir(row)
             def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -1713,7 +1724,9 @@ workflow {
         // Parse fragment files from manifest for SCPRINTER_BUILD_PRINTER
         ch_reg_fragments = Channel.fromPath(params.metadata_file)
             .splitCsv(header: true)
-            .filter { isDemux(it) }  // FIX-P0-7: case-insensitive sample_type
+            .filter { isNonEmptyRow(it) }  // FIX-A6
+            .map { trimRow(it) }           // FIX-A5
+            .filter { isDemux(it) }        // FIX-P0-7: case-insensitive sample_type
             .map { row ->
                 def atac_dir = resolveAtacDir(row)
                 def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -1762,7 +1775,9 @@ workflow {
         // ========================================================================
         ch_expected_samples = Channel.fromPath(params.metadata_file)
             .splitCsv(header: true)
-            .filter { isDemux(it) }  // FIX-P0-7: case-insensitive sample_type
+            .filter { isNonEmptyRow(it) }  // FIX-A6
+            .map { trimRow(it) }           // FIX-A5
+            .filter { isDemux(it) }        // FIX-P0-7: case-insensitive sample_type
             .map { row ->
                 // FIX-P0-11: Warn if condition_group is missing instead of silently defaulting
                 def condition = row.condition_group?.trim()
