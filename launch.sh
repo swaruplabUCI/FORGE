@@ -54,7 +54,6 @@ PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "${PROJECT_DIR}" || exit 1
 mkdir -p logs work results
 
-source /pub/lesolano/miniconda3/etc/profile.d/conda.sh
 module load singularity 2>/dev/null || true
 export PATH="/dfs7/swaruplab/lesolano/tools:$PATH"
 

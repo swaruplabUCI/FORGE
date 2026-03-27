@@ -49,10 +49,10 @@ Round 1 identified 25 issues from code review of the Nextflow orchestration, con
 | 12 | R1-10 | Fragile NO_FILE sentinel pattern across main.nf | Silent corruption | P0 | Nextflow config | Round 1 |
 | 13 | B5 | Blacklist BED file for wrong genome build | Silent corruption | P0 | Reference files | NEW |
 | 14 | E3 | cellbender.expected_cells wildly wrong causes quality degradation | Silent corruption | P0 | Config params | NEW |
-| 15 | R1-5 | User-specific conda path in launch.sh | Immediate crash | P1 | Portability | Round 1 |
-| 16 | R1-24 | SLURM account hardcoded to vswarup_lab | Immediate crash | P1 | Portability | Round 1 |
-| 17 | R1-4 | Hardcoded /dfs7 absolute paths throughout configs | Immediate crash | P1 | Portability | Round 1 |
-| 18 | R1-14 | Hardcoded SLURM partition names | Immediate crash | P1 | Portability | Round 1 |
+| 15 | R1-5 | ~~User-specific conda path in launch.sh~~ | ~~Immediate crash~~ | ~~P1~~ | ~~Portability~~ | **FIXED** — Removed dead conda source line; pipeline is fully containerized, nextflow is a standalone binary on PATH |
+| 16 | R1-24 | ~~SLURM account hardcoded to vswarup_lab~~ | ~~Immediate crash~~ | ~~P1~~ | ~~Portability~~ | **RESOLVED (no change needed)** — Already parameterized via `params.slurm_account`/`params.slurm_account_gpu` in nextflow.config; collaborators override in dataset config. Only hardcoded instance is `#SBATCH -A` in launch.sh for the launcher job itself, which is expected. |
+| 17 | R1-4 | ~~Hardcoded /dfs7 absolute paths throughout configs~~ | ~~Immediate crash~~ | ~~P1~~ | ~~Portability~~ | **RESOLVED (no change needed)** — Dataset configs intentionally contain site-specific data/reference paths (collaborators write their own). launch.sh environment block (`PATH`, `SINGULARITY_BINDPATH`) is inherently site-specific infrastructure. |
+| 18 | R1-14 | ~~Hardcoded SLURM partition names~~ | ~~Immediate crash~~ | ~~P1~~ | ~~Portability~~ | **RESOLVED (no change needed)** — Default partitions already parameterized in nextflow.config. Per-process overrides (`highmem`, `hugemem`, `maxmem`) in resource tier configs are site-specific HPC tuning that collaborators would re-profile for their own cluster. |
 | 19 | R1-6 | Missing medium resource tier | Silent degradation | P1 | Config system | Round 1 |
 | 20 | R1-23 | pycistopic.gtf = null but enabled by default | Immediate crash | P1 | Config params | Round 1 |
 | 21 | E4 | mt_threshold=0 filters all cells | Silent empty results | P1 | Config params | NEW |
@@ -160,21 +160,21 @@ CellBender's `expected_cells` parameter strongly influences ambient RNA removal.
 
 ### P1: Fix Before Sharing with Collaborators (16 issues)
 
-**15. R1-5: User-specific conda path in launch.sh** (Round 1)
-Any collaborator who clones the repo gets an immediate launch failure due to `/pub/lesolano/miniconda3`. Trivial fix, guaranteed to hit every new user.
-*Fix: Use `$(conda info --base)` or require CONDA_PREFIX environment variable.*
+**15. R1-5: User-specific conda path in launch.sh** (Round 1) — **FIXED**
+~~Any collaborator who clones the repo gets an immediate launch failure due to `/pub/lesolano/miniconda3`.~~
+*Resolution: Removed dead `source /pub/lesolano/miniconda3/etc/profile.d/conda.sh` line. Pipeline is fully containerized; Nextflow is a standalone binary available via PATH. No conda environment is activated or needed.*
 
-**16. R1-24: SLURM account hardcoded to vswarup_lab** (Round 1)
-All clusterOptions use `params.slurm_account` defaulting to `vswarup_lab`. Any external collaborator's jobs are rejected by the scheduler immediately.
-*Fix: Require slurm_account in dataset config with no default; fail with a clear message if unset.*
+**16. R1-24: SLURM account hardcoded to vswarup_lab** (Round 1) — **RESOLVED (no change needed)**
+~~All clusterOptions use `params.slurm_account` defaulting to `vswarup_lab`. Any external collaborator's jobs are rejected by the scheduler immediately.~~
+*Resolution: Upon review, SLURM account is already properly parameterized in nextflow.config (`params.slurm_account`, `params.slurm_account_gpu`). All process configs reference the parameter, not the raw string. Collaborators override via their dataset config. The only hardcoded instance (`#SBATCH -A vswarup_lab` in launch.sh) is for the lightweight launcher job and is expected to be edited alongside other SBATCH directives.*
 
-**17. R1-4: Hardcoded /dfs7 absolute paths throughout configs** (Round 1)
-Binds the pipeline to UCI HPC3. Affects launch.sh, singularity runOptions, and tool paths. No collaborator at another institution can run this without editing multiple files.
-*Fix: Use params.base_dir or projectDir-relative paths; document required environment variables.*
+**17. R1-4: Hardcoded /dfs7 absolute paths throughout configs** (Round 1) — **RESOLVED (no change needed)**
+~~Binds the pipeline to UCI HPC3. Affects launch.sh, singularity runOptions, and tool paths.~~
+*Resolution: The `/dfs7` paths fall into two categories: (1) Dataset configs contain site-specific data/reference paths by design — collaborators write their own dataset config with their own paths. (2) launch.sh environment block (PATH, SINGULARITY_BINDPATH) is inherently site-specific infrastructure that any collaborator would customize for their HPC. No abstraction adds value here.*
 
-**18. R1-14: Hardcoded SLURM partition names** (Round 1)
-20+ clusterOptions lines reference UCI-specific partitions (`highmem`, `hugemem`, `maxmem`). Job submission fails at any other site.
-*Fix: Parameterize partition names in dataset config; provide UCI defaults as an example.*
+**18. R1-14: Hardcoded SLURM partition names** (Round 1) — **RESOLVED (no change needed)**
+~~20+ clusterOptions lines reference UCI-specific partitions (`highmem`, `hugemem`, `maxmem`). Job submission fails at any other site.~~
+*Resolution: Default partitions (`standard`, `gpu`, `gpu-hugemem`) are already parameterized in nextflow.config. Per-process overrides in resource tier configs (e.g., `highmem` for ANNOTATE_ATAC, `maxmem` for BUILD_MUDATA) are site-specific HPC tuning based on memory profiling. A collaborator would need to re-profile resource requirements for their own cluster regardless — parameterizing partition names alone doesn't solve the portability problem.*
 
 **19. R1-6: Missing medium resource tier** (Round 1)
 launch.sh assigns `medium` for 6-50 samples but only `small` and `large` configs exist. Falls back to `small`, causing OOM kills on moderately sized datasets.
