@@ -15,6 +15,18 @@ def main():
 
     df = pd.read_csv(args.stats)
 
+    # FIX-F5: Validate expected columns before processing
+    required_cols = ['sample', 'fragments_q05', 'fragments_q95', 'tsse_q05',
+                     'fragments_min', 'fragments_max', 'tsse_min',
+                     'n_cells_after_frag_5_95_and_tsse_q05']
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        raise ValueError(
+            f"sample_statistics.csv missing required columns: {missing_cols}\n"
+            f"Expected: {required_cols}\n"
+            f"Found:    {list(df.columns)}"
+        )
+
     thresholds = {}
     for row in df.itertuples():
         sample = row.sample

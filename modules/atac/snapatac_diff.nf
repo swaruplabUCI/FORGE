@@ -1,4 +1,31 @@
 // modules/atac/snapatac_diff.nf
+
+// FIX-E7: Extract cell types from annotated peak matrix when params.differential.cell_types is empty.
+// Reinforces wiring from celltypist/scanvi predictions into differential analysis.
+process EXTRACT_ATAC_CELL_TYPES {
+    label 'process_low'
+    publishDir "${params.outdir}/differential", mode: 'copy'
+
+    input:
+    path peak_matrix
+
+    output:
+    path "atac_cell_types.txt", emit: cell_types
+
+    script:
+    def ct_key = params.differential.condition_key ?: 'cell_type'
+    // Use the same annotation key the pipeline writes during MERGE_ANNOTATIONS
+    def annotation_key = 'cell_type'
+    """
+    python ${projectDir}/bin/extract_cell_types.py \\
+        --h5ad ${peak_matrix} \\
+        --cell_type_key ${annotation_key} \\
+        --min_cells ${params.differential.min_cells} \\
+        --output atac_cell_types.txt \\
+        --counts_output atac_cell_type_counts.csv
+    """
+}
+
 process SNAPATAC_DIFFERENTIAL {
     label 'process_medium'
     publishDir "${params.outdir}/differential", mode: 'copy'

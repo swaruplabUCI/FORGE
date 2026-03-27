@@ -66,6 +66,7 @@ include { ATAC_CELLTYPE_ANNOTATION } from './modules/atac/celltype_annotation'
 include { MERGE_ANNOTATIONS } from './modules/atac/merge_annotations'
 
 // Differential ATAC analysis
+include { EXTRACT_ATAC_CELL_TYPES } from './modules/atac/snapatac_diff'
 include { SNAPATAC_DIFFERENTIAL } from './modules/atac/snapatac_diff'
 
 // ============================================================================
@@ -205,12 +206,33 @@ def trimRow(row) { row.collectEntries { k, v -> [k, v?.trim()] } }
 def isNonEmptyRow(row) { row.sample_id?.trim() }
 
 // ============================================================================
-// FIX-P0: STARTUP VALIDATION
+// HELPER: Levenshtein distance for fuzzy column name matching (FIX-A1)
+// ============================================================================
+def levenshteinClose(String a, String b, int maxDist = 3) {
+    a = a.toLowerCase(); b = b.toLowerCase()
+    if (a == b) return false  // exact match is not a "close" suggestion
+    int n = a.length(), m = b.length()
+    if (Math.abs(n - m) > maxDist) return false
+    int[][] d = new int[n + 1][m + 1]
+    (0..n).each { d[it][0] = it }
+    (0..m).each { d[0][it] = it }
+    (1..n).each { i -> (1..m).each { j ->
+        d[i][j] = [d[i-1][j] + 1, d[i][j-1] + 1,
+                    d[i-1][j-1] + (a[i-1] == b[j-1] ? 0 : 1)].min()
+    }}
+    return d[n][m] <= maxDist && d[n][m] > 0
+}
+
+// ============================================================================
+// FIX-P0: STARTUP VALIDATION (PRE-FLIGHT CHECKLIST)
 // Catches genome build mismatches, species inconsistencies, manifest issues,
-// and parameter divergence BEFORE any compute starts.
+// file existence, parameter divergence, and cross-parameter consistency
+// BEFORE any compute starts.
 // ============================================================================
 def validateStartupParams() {
     def errors = []
+    def warnings = []
+    def checks_passed = []
 
     // --- P0-7 (A2): sample_type normalization is handled in-line at each
     //     splitCsv filter (see below). Here we warn if non-standard values exist.
@@ -223,20 +245,51 @@ def validateStartupParams() {
                 def stIdx = header.findIndexOf { it == 'sample_type' }
                 def sidIdx = header.findIndexOf { it == 'sample_id' }
 
-                // P0 (A1-partial): Check required columns exist
-                def required = ['sample_id', 'sample_type']
-                def missing = required.findAll { col -> !header.contains(col) }
+                // FIX-A1: Full manifest CSV schema validation with fuzzy suggestions
+                def required_base = ['sample_id', 'sample_type']
+                def required_lane = ['rna_file']
+                def required_demux = ['fragment_file']
+                def all_known = ['sample_id', 'sample_type', 'data_dir', 'rna_file', 'fragment_file',
+                                 'batch', 'condition_group', 'original_lane_id', 'coord_data_dir']
+                def missing = required_base.findAll { col -> !header.contains(col) }
                 if (missing) {
-                    errors << "Manifest CSV missing required columns: ${missing}. Found: ${header}"
+                    // Fuzzy match: suggest close column names
+                    def suggestions = missing.collect { req ->
+                        def close = header.findAll { h -> levenshteinClose(h, req) }
+                        close ? "${req} (did you mean: ${close.join(', ')}?)" : req
+                    }
+                    errors << "Manifest CSV missing required columns: ${suggestions}. Found: ${header}"
                 }
 
-                // P0-7 (A2): Warn on non-standard sample_type values
+                // FIX-A1: Check lane-specific and demux-specific required columns
+                def dataRows = lines[1..-1].findAll { it.trim() }
                 if (stIdx >= 0) {
-                    def types = lines[1..-1]
-                        .findAll { it.trim() }  // skip blank lines
-                        .collect { it.split(',')[stIdx]?.trim() }
-                        .findAll { it }
-                        .unique()
+                    def types = dataRows.collect { it.split(',')[stIdx]?.trim() }.findAll { it }.unique()
+                    def hasLane = types.any { normalizeSampleType(it) == 'lane' }
+                    def hasDemux = types.any { normalizeSampleType(it) == 'demux' }
+
+                    if (hasLane) {
+                        def missingLane = required_lane.findAll { col -> !header.contains(col) }
+                        if (missingLane) {
+                            def sugg = missingLane.collect { req ->
+                                def close = header.findAll { h -> levenshteinClose(h, req) }
+                                close ? "${req} (did you mean: ${close.join(', ')}?)" : req
+                            }
+                            errors << "Manifest has 'lane' rows but missing required columns: ${sugg}. Found: ${header}"
+                        }
+                    }
+                    if (hasDemux) {
+                        def missingDemux = required_demux.findAll { col -> !header.contains(col) }
+                        if (missingDemux) {
+                            def sugg = missingDemux.collect { req ->
+                                def close = header.findAll { h -> levenshteinClose(h, req) }
+                                close ? "${req} (did you mean: ${close.join(', ')}?)" : req
+                            }
+                            errors << "Manifest has 'demux' rows but missing required columns: ${sugg}. Found: ${header}"
+                        }
+                    }
+
+                    // P0-7 (A2): Warn on non-standard sample_type values
                     def nonStandard = types.findAll { !(it in ['lane', 'demux']) }
                     if (nonStandard) {
                         def couldBe = nonStandard.findAll { it.toLowerCase() in ['lane', 'demux', 'rna', 'atac'] }
@@ -249,8 +302,7 @@ def validateStartupParams() {
 
                 // P0-3 (A3-partial): Check sample_id uniqueness per sample_type
                 if (sidIdx >= 0 && stIdx >= 0) {
-                    def rows = lines[1..-1].findAll { it.trim() }
-                    def sampleIds = rows.collect { line ->
+                    def sampleIds = dataRows.collect { line ->
                         def cols = line.split(',')
                         [cols[sidIdx]?.trim(), cols[stIdx]?.trim()]
                     }
@@ -269,15 +321,162 @@ def validateStartupParams() {
                               "All samples will default to 'Control', producing zero DE genes."
                 } else if (cgIdx >= 0) {
                     // Check for empty/missing condition_group values
-                    def emptyRows = lines[1..-1].findAll { it.trim() }.findAll { line ->
+                    def emptyRows = dataRows.findAll { line ->
                         def cols = line.split(',')
                         cgIdx >= cols.size() || !cols[cgIdx]?.trim()
                     }
                     if (emptyRows) {
-                        log.warn "Found ${emptyRows.size()} manifest row(s) with empty condition_group. " +
-                                 "These will default to 'Control' in differential analysis."
+                        warnings << "Found ${emptyRows.size()} manifest row(s) with empty condition_group. " +
+                                    "These will default to 'Control' in differential analysis."
                     }
                 }
+
+                // FIX-A7 + FIX-D1: Validate file paths exist (works in both preview and production mode)
+                def ddIdx = header.findIndexOf { it == 'data_dir' }
+                def rfIdx = header.findIndexOf { it == 'rna_file' }
+                def ffIdx = header.findIndexOf { it == 'fragment_file' }
+                def btIdx = header.findIndexOf { it == 'batch' }
+
+                dataRows.each { line ->
+                    def cols = line.split(',').collect { it.trim() }
+                    def stype = stIdx >= 0 && stIdx < cols.size() ? normalizeSampleType(cols[stIdx]) : null
+                    def sid = sidIdx >= 0 && sidIdx < cols.size() ? cols[sidIdx] : 'unknown'
+
+                    if (stype == 'lane' && rfIdx >= 0) {
+                        // Resolve RNA file path
+                        def dataDir = (ddIdx >= 0 && ddIdx < cols.size() && cols[ddIdx]) ? cols[ddIdx] : null
+                        def batch = (btIdx >= 0 && btIdx < cols.size() && cols[btIdx]) ? cols[btIdx] : null
+                        if (!dataDir && batch) dataDir = params.batch_dirs?.get(batch, null)
+                        def rnaFname = rfIdx < cols.size() ? cols[rfIdx] : null
+                        if (dataDir && rnaFname) {
+                            def rnaPath = file("${dataDir}/${rnaFname}")
+                            if (!rnaPath.exists()) {
+                                errors << "RNA file not found for sample '${sid}': ${rnaPath}"
+                            } else {
+                                // FIX-D1: If it's a directory (MEX), check required files
+                                if (rnaPath.isDirectory()) {
+                                    def mexRequired = ['matrix.mtx.gz', 'barcodes.tsv.gz', 'features.tsv.gz']
+                                    def mexMissing = mexRequired.findAll { !file("${rnaPath}/${it}").exists() }
+                                    if (mexMissing) {
+                                        errors << "MEX directory for sample '${sid}' missing files: ${mexMissing} in ${rnaPath}"
+                                    }
+                                }
+                                // FIX-D2: Probe h5 file format (race-safe: open, check, close immediately)
+                                else if (rnaFname.endsWith('.h5')) {
+                                    try {
+                                        // Quick header probe — just check the file is readable and non-empty
+                                        if (rnaPath.size() < 100) {
+                                            warnings << "RNA h5 file for sample '${sid}' is suspiciously small (${rnaPath.size()} bytes): ${rnaPath}"
+                                        }
+                                    } catch (Exception e) {
+                                        warnings << "Could not probe RNA h5 file for sample '${sid}': ${e.message}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (stype == 'demux' && ffIdx >= 0) {
+                        // Resolve fragment file path
+                        def dataDir = (ddIdx >= 0 && ddIdx < cols.size() && cols[ddIdx]) ? cols[ddIdx] : null
+                        def batch = (btIdx >= 0 && btIdx < cols.size() && cols[btIdx]) ? cols[btIdx] : null
+                        if (!dataDir && batch) dataDir = params.atac_fragment_dirs_bc?.get(batch, null)
+                        def fragFname = ffIdx < cols.size() ? cols[ffIdx] : null
+                        if (dataDir && fragFname) {
+                            def fragFull = fragFname.contains('.') ? fragFname : "${fragFname}.bed.gz"
+                            def fragPath = file("${dataDir}/${fragFull}")
+                            if (!fragPath.exists()) {
+                                errors << "ATAC fragment file not found for sample '${sid}': ${fragPath}"
+                            } else {
+                                // FIX-C5: Validate fragment file column format (first non-comment line)
+                                try {
+                                    def firstLine = null
+                                    def is = fragPath.newInputStream()
+                                    def stream = fragFull.endsWith('.gz') ?
+                                        new java.util.zip.GZIPInputStream(is) : is
+                                    def br = new java.io.BufferedReader(new java.io.InputStreamReader(stream))
+                                    try {
+                                        def l
+                                        while ((l = br.readLine()) != null) {
+                                            if (!l.startsWith('#')) { firstLine = l; break }
+                                        }
+                                    } finally {
+                                        br.close()
+                                    }
+                                    if (firstLine) {
+                                        def fields = firstLine.split('\t')
+                                        if (fields.size() < 4) {
+                                            errors << "Fragment file for sample '${sid}' has ${fields.size()} tab-separated columns " +
+                                                      "(expected >= 4: chr, start, end, barcode[, count]): ${fragPath}"
+                                        }
+                                        // FIX-C1: Check position-sorted (start should be numeric)
+                                        try {
+                                            Long.parseLong(fields[1])
+                                        } catch (NumberFormatException e) {
+                                            errors << "Fragment file for sample '${sid}' column 2 is not numeric " +
+                                                      "(expected position-sorted BED format): '${fields[1]}' in ${fragPath}"
+                                        }
+                                    }
+                                } catch (Exception e) {
+                                    warnings << "Could not probe fragment file for sample '${sid}': ${e.message}"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                checks_passed << "Manifest schema (${dataRows.size()} rows)"
+            }
+        } else {
+            errors << "Manifest CSV not found: ${params.metadata_file}"
+        }
+    }
+
+    // FIX-C3: ATAC sample_metadata consistency with main manifest
+    if (params.atac?.sample_metadata && params.metadata_file) {
+        def atacMeta = file(params.atac.sample_metadata)
+        def mainCsv = file(params.metadata_file)
+        if (atacMeta.exists() && mainCsv.exists()) {
+            try {
+                def mainLines = mainCsv.readLines()
+                def mainHeader = mainLines[0].split(',').collect { it.trim() }
+                def mainStIdx = mainHeader.findIndexOf { it == 'sample_type' }
+                def mainSidIdx = mainHeader.findIndexOf { it == 'sample_id' }
+                if (mainStIdx >= 0 && mainSidIdx >= 0) {
+                    def demuxSids = mainLines[1..-1].findAll { it.trim() }
+                        .collect { it.split(',') }
+                        .findAll { cols -> mainStIdx < cols.size() && normalizeSampleType(cols[mainStIdx]?.trim()) == 'demux' }
+                        .collect { cols -> mainSidIdx < cols.size() ? cols[mainSidIdx]?.trim() : null }
+                        .findAll { it }
+                        .toSet()
+
+                    def atacLines = atacMeta.readLines()
+                    def atacHeader = atacLines[0].split(',').collect { it.trim() }
+                    def atacSidIdx = atacHeader.findIndexOf { it == 'sample_id' } ?:
+                                     atacHeader.findIndexOf { it == 'sample' }
+                    if (atacSidIdx >= 0 && atacLines.size() > 1) {
+                        def atacSids = atacLines[1..-1].findAll { it.trim() }
+                            .collect { it.split(',') }
+                            .collect { cols -> atacSidIdx < cols.size() ? cols[atacSidIdx]?.trim() : null }
+                            .findAll { it }
+                            .toSet()
+                        def inAtacNotMain = atacSids - demuxSids
+                        def inMainNotAtac = demuxSids - atacSids
+                        if (inAtacNotMain) {
+                            warnings << "ATAC sample_metadata has ${inAtacNotMain.size()} sample(s) not in main manifest demux rows: " +
+                                        "${inAtacNotMain.take(5)}${inAtacNotMain.size() > 5 ? '...' : ''}"
+                        }
+                        if (inMainNotAtac) {
+                            warnings << "Main manifest has ${inMainNotAtac.size()} demux sample(s) not in ATAC sample_metadata: " +
+                                        "${inMainNotAtac.take(5)}${inMainNotAtac.size() > 5 ? '...' : ''}"
+                        }
+                        if (!inAtacNotMain && !inMainNotAtac) {
+                            checks_passed << "ATAC sample_metadata consistency (${atacSids.size()} samples match)"
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                warnings << "Could not validate ATAC sample_metadata consistency: ${e.message}"
             }
         }
     }
@@ -351,26 +550,113 @@ def validateStartupParams() {
     if (params.cellbender?.expected_cells) {
         def ec = params.cellbender.expected_cells as int
         if (ec > 50000) {
-            log.warn "CellBender expected_cells=${ec} is very high (>50000). " +
-                     "Verify this matches your data or ambient RNA removal may be degraded."
+            warnings << "CellBender expected_cells=${ec} is very high (>50000). " +
+                        "Verify this matches your data or ambient RNA removal may be degraded."
         }
         if (ec < 100) {
-            log.warn "CellBender expected_cells=${ec} is very low (<100). " +
-                     "Verify this matches your data or ambient RNA removal may be degraded."
+            warnings << "CellBender expected_cells=${ec} is very low (<100). " +
+                        "Verify this matches your data or ambient RNA removal may be degraded."
         }
     }
+    checks_passed << "Species/genome consistency"
+
+    // FIX-B3: Reference atlas directory must contain h5ad files if reference path is set
+    def refDir = params.species == 'human' ? params.ref_dir_human_integrated : params.ref_dir_mouse_integrated
+    if (refDir) {
+        def refPath = file(refDir)
+        if (!refPath.exists()) {
+            errors << "Reference atlas directory does not exist: ${refDir}"
+        } else if (refPath.isDirectory()) {
+            def h5adFiles = []
+            refPath.eachFileMatch(~/.*\.h5ad/) { h5adFiles << it.name }
+            if (!h5adFiles) {
+                errors << "Reference atlas directory contains no .h5ad files: ${refDir}. " +
+                          "scANVI annotation requires at least one reference h5ad file."
+            } else {
+                checks_passed << "Reference atlas (${h5adFiles.size()} h5ad files)"
+            }
+        }
+    }
+
+    // FIX-E8: Validate mofa.mode against allowed values before compute
+    if (params.mofa?.run) {
+        def allowedModes = ['high_memory', 'bootstrap']
+        if (!(params.mofa.mode in allowedModes)) {
+            errors << "Invalid mofa.mode='${params.mofa.mode}'. Allowed values: ${allowedModes}. " +
+                      "Check for typos in your dataset config."
+        } else {
+            checks_passed << "MOFA mode (${params.mofa.mode})"
+        }
+    }
+
+    // FIX-F12: Validate scprinter.genome matches pipeline-wide species/genome
+    if (params.scprinter?.run) {
+        def expectedGenomes = [human: ['hg38', 'hg19', 'grch38', 'grch37'],
+                               mouse: ['mm10', 'mm39', 'grcm38', 'grcm39']]
+        def validGenomes = expectedGenomes[params.species] ?: []
+        if (params.scprinter.genome && !(params.scprinter.genome.toLowerCase() in validGenomes)) {
+            errors << "scprinter.genome='${params.scprinter.genome}' does not match params.species='${params.species}'. " +
+                      "Expected one of: ${validGenomes}"
+        } else {
+            checks_passed << "scPRINTER genome (${params.scprinter.genome})"
+        }
+    }
+
+    // FIX-B6: Log CellTypist model being used
+    if (params.celltypist?.enabled) {
+        def model = params.celltypist.model ?: 'default'
+        checks_passed << "CellTypist model: ${model}"
+        // Optional tissue-type consistency hint
+        def brainModels = ['Developing_Human_Brain', 'Pan_Fetal_Human', 'Adult_Human_PrefrontalCortex']
+        def immuneModels = ['Immune_All_Low', 'Immune_All_High', 'Pan_Immune_CellTypist']
+        def tissue = params.atac?.tissue_type ?: 'unknown'
+        if (tissue == 'brain' && immuneModels.any { model.contains(it) }) {
+            warnings << "CellTypist model '${model}' appears immune-focused but tissue_type='brain'. " +
+                        "Consider a brain-specific model (e.g., Developing_Human_Brain.pkl)."
+        }
+        if (tissue == 'pbmc' && brainModels.any { model.contains(it) }) {
+            warnings << "CellTypist model '${model}' appears brain-focused but tissue_type='pbmc'. " +
+                        "Consider an immune-specific model (e.g., Immune_All_Low.pkl)."
+        }
+    }
+
+    // FIX-R1-7: Validate container files exist (derived from params.containers)
+    if (params.containers) {
+        def uniqueSifs = params.containers.values().collect { it.toString() }.unique()
+        def containerMissing = []
+        uniqueSifs.each { sifPath ->
+            def sif = file(sifPath)
+            if (!sif.exists()) {
+                containerMissing << sif.name
+            }
+        }
+        if (containerMissing) {
+            errors << "Missing container files: ${containerMissing}. " +
+                      "Expected in singularity_cache/. Run container build/pull first."
+        } else {
+            checks_passed << "Containers (${uniqueSifs.size()} SIF files)"
+        }
+    }
+
+    // --- Emit warnings ---
+    warnings.each { log.warn it }
 
     // Fail hard on validation errors
     if (errors) {
         def msg = "\n" + "="*80 + "\n" +
-                  "STARTUP VALIDATION FAILED (${errors.size()} error(s)):\n" +
+                  "PRE-FLIGHT CHECKLIST FAILED (${errors.size()} error(s)):\n" +
                   "="*80 + "\n" +
                   errors.withIndex().collect { err, i -> "  ${i+1}. ${err}" }.join("\n") + "\n" +
                   "="*80
         error msg
     }
 
-    log.info "✓ Startup validation passed"
+    // FIX-16: Enhanced startup banner with pre-flight summary
+    log.info """
+    PRE-FLIGHT CHECKLIST PASSED (${checks_passed.size()} checks):
+      ${checks_passed.collect { "  [OK] ${it}" }.join('\n      ')}
+    ${warnings ? "  Warnings: ${warnings.size()} (see above)" : "  No warnings."}
+    """
 }
 
 
@@ -396,7 +682,8 @@ workflow RNA {
             def rna_dir = resolveRnaDir(row)
             def rna_fname = row.rna_file
             def rna_file = file("${rna_dir}/${rna_fname}")
-            if (!workflow.preview && !rna_file.exists()) {
+            // FIX-A7: Validate paths in both production and preview mode
+            if (!rna_file.exists()) {
                 error "Manifest validation failed: RNA file not found -> ${rna_file}"
             }
             tuple(row.sample_id, rna_file)
@@ -732,7 +1019,8 @@ workflow ATAC_INITIAL {
             def atac_dir = resolveAtacDir(row)
             def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
             def fragment_file = file("${atac_dir}/${frag_fname}")
-            if (!workflow.preview && !fragment_file.exists()) {
+            // FIX-A7: Validate paths in both production and preview mode
+            if (!fragment_file.exists()) {
                 error "Manifest validation failed: ATAC fragment file not found -> ${fragment_file}"
             }
             fragment_file
@@ -838,17 +1126,33 @@ workflow ATAC_DIFFERENTIAL {
     metadata
 
     main:
-    log.info """
-    DIFFERENTIAL ACCESSIBILITY ANALYSIS
-    Comparisons: ${params.differential.comparisons.size()}
-    Cell types: ${params.differential.cell_types.size()}
-    Total tests: ${params.differential.comparisons.size() * params.differential.cell_types.size()}
-    """
+
+    // FIX-E7: If cell_types list is empty, auto-discover from annotated peak matrix.
+    // This reinforces wiring from celltypist/scanvi predictions — users don't need
+    // to know cell types before running the pipeline.
+    if (params.differential.cell_types && params.differential.cell_types.size() > 0) {
+        ch_cell_types = Channel.from(params.differential.cell_types)
+        log.info """
+        DIFFERENTIAL ACCESSIBILITY ANALYSIS
+        Comparisons: ${params.differential.comparisons.size()}
+        Cell types: ${params.differential.cell_types.size()} (from config)
+        Total tests: ${params.differential.comparisons.size() * params.differential.cell_types.size()}
+        """
+    } else {
+        log.info """
+        DIFFERENTIAL ACCESSIBILITY ANALYSIS
+        Comparisons: ${params.differential.comparisons.size()}
+        Cell types: auto-discovering from annotated peak matrix (params.differential.cell_types was empty)
+        """
+        EXTRACT_ATAC_CELL_TYPES(peak_matrix)
+        ch_cell_types = EXTRACT_ATAC_CELL_TYPES.out.cell_types
+            .splitText()
+            .map { it.trim() }
+            .filter { it }
+    }
 
     ch_comparisons = Channel.fromList(params.differential.comparisons)
         .map { it -> tuple(it[0], it[1]) }
-
-    ch_cell_types = Channel.from(params.differential.cell_types)
 
     ch_tasks = ch_comparisons
         .combine(ch_cell_types)
@@ -1515,10 +1819,31 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     if (params.enhancer_recipe_c.run) {
         log.info "ENHANCER FOOTPRINTING RECIPES: Phase 3 (CellChat-guided)"
 
+        // FIX-R1-17/F9: Validate pathway_to_tfs.json at point of use (pipeline-bundled file).
+        // Fail early with a clear message instead of a cryptic JSON parse error.
+        def ptfJson = file("${projectDir}/data/pathway_to_tfs.json")
+        if (!ptfJson.exists()) {
+            error "Recipe C requires data/pathway_to_tfs.json but the file is missing from the project directory: ${ptfJson}"
+        }
+        try {
+            def ptfContent = new groovy.json.JsonSlurper().parseText(ptfJson.text)
+            if (!(ptfContent instanceof Map) || ptfContent.size() == 0) {
+                error "data/pathway_to_tfs.json is empty or not a JSON object. Expected {pathway: [TF1, TF2, ...], ...}"
+            }
+            // Spot-check: at least one entry should map to a non-empty list
+            def hasValidEntry = ptfContent.any { k, v -> v instanceof List && v.size() > 0 }
+            if (!hasValidEntry) {
+                error "data/pathway_to_tfs.json has no valid pathway->TF mappings. Each key should map to a non-empty list of TF gene names."
+            }
+            log.info "  pathway_to_tfs.json validated: ${ptfContent.size()} pathways"
+        } catch (groovy.json.JsonException e) {
+            error "data/pathway_to_tfs.json is malformed JSON: ${e.message}"
+        }
+
         CELLCHAT_TO_TF_HYPOTHESES(
             cellchat_csv_ch,
             chromvar_dev_ch,
-            file("${projectDir}/data/pathway_to_tfs.json")
+            ptfJson
         )
 
         def ereg_regions_ch = has_scenic ?

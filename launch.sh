@@ -125,15 +125,30 @@ for dir in modules bin; do
 done
 echo ""
 
+# FIX-R1-7: Derive container list from nextflow.config params.containers map
+# instead of hardcoding. Nextflow also validates at startup (validateStartupParams).
 echo "Container check:"
-for c in scgpu_extended snapatac_extended seurat_extended cicero scenicplus; do
-    if [ -f "singularity_cache/${c}.sif" ]; then
-        echo "  OK: ${c}.sif"
+CONTAINER_SIFS=$(grep -A20 'containers = \[' nextflow.config \
+    | grep '\.sif"' \
+    | grep -oP 'singularity_cache/[^"]+' \
+    | sort -u)
+if [[ -z "$CONTAINER_SIFS" ]]; then
+    echo "  WARNING: Could not parse container list from nextflow.config; falling back to known list"
+    CONTAINER_SIFS="singularity_cache/scgpu_extended.sif singularity_cache/snapatac_extended.sif singularity_cache/seurat_extended.sif singularity_cache/cicero.sif singularity_cache/scenicplus.sif"
+fi
+CONTAINER_OK=true
+for sif in $CONTAINER_SIFS; do
+    if [ -f "$sif" ]; then
+        echo "  OK: $(basename "$sif")"
     else
-        echo "  MISSING: singularity_cache/${c}.sif"
-        exit 1
+        echo "  MISSING: $sif"
+        CONTAINER_OK=false
     fi
 done
+if [[ "$CONTAINER_OK" != "true" ]]; then
+    echo "  ERROR: Missing containers. Pull/build before launching."
+    exit 1
+fi
 echo ""
 
 # =========================================================================
