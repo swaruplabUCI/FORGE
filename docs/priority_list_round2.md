@@ -53,10 +53,10 @@ Round 1 identified 25 issues from code review of the Nextflow orchestration, con
 | 16 | R1-24 | ~~SLURM account hardcoded to vswarup_lab~~ | ~~Immediate crash~~ | ~~P1~~ | ~~Portability~~ | **RESOLVED (no change needed)** — Already parameterized via `params.slurm_account`/`params.slurm_account_gpu` in nextflow.config; collaborators override in dataset config. Only hardcoded instance is `#SBATCH -A` in launch.sh for the launcher job itself, which is expected. |
 | 17 | R1-4 | ~~Hardcoded /dfs7 absolute paths throughout configs~~ | ~~Immediate crash~~ | ~~P1~~ | ~~Portability~~ | **RESOLVED (no change needed)** — Dataset configs intentionally contain site-specific data/reference paths (collaborators write their own). launch.sh environment block (`PATH`, `SINGULARITY_BINDPATH`) is inherently site-specific infrastructure. |
 | 18 | R1-14 | ~~Hardcoded SLURM partition names~~ | ~~Immediate crash~~ | ~~P1~~ | ~~Portability~~ | **RESOLVED (no change needed)** — Default partitions already parameterized in nextflow.config. Per-process overrides (`highmem`, `hugemem`, `maxmem`) in resource tier configs are site-specific HPC tuning that collaborators would re-profile for their own cluster. |
-| 19 | R1-6 | Missing medium resource tier | Silent degradation | P1 | Config system | Round 1 |
-| 20 | R1-23 | pycistopic.gtf = null but enabled by default | Immediate crash | P1 | Config params | Round 1 |
-| 21 | E4 | mt_threshold=0 filters all cells | Silent empty results | P1 | Config params | NEW |
-| 22 | E5 / R1-15 | Hardcoded Group1-4 DE comparisons vs. user group names | Silent empty results | P1 | Config params | Round 1 + Round 2 |
+| 19 | R1-6 | ~~Missing medium resource tier~~ | ~~Silent degradation~~ | ~~P1~~ | ~~Config system~~ | **FIXED** — Created medium.config (6-50 samples); >250GB→highmem, >450GB→hugemem; wired into resource_tier loading |
+| 20 | R1-23 | ~~pycistopic.gtf = null but enabled by default~~ | ~~Immediate crash~~ | ~~P1~~ | ~~Config params~~ | **FIXED** — Added GTF to BD config; added startup validation that pycistopic.gtf!=null when pycistopic.run=true |
+| 21 | E4 | mt_threshold=0 filters all cells | Silent empty results | P1 | Config params | **FIXED** (commit bedea5c) |
+| 22 | E5 / R1-15 | ~~Hardcoded Group1-4 DE comparisons vs. user group names~~ | ~~Silent empty results~~ | ~~P1~~ | ~~Config params~~ | **FIXED** — Replaced hardcoded Group1-4 array with `params.differential_rna.comparisons` from config, matching ATAC pattern |
 | 23 | D1 | BD MEX directory with missing matrix files | Immediate crash | P1 | RNA input | NEW |
 | 24 | A1 | No schema validation of CSV column names | Silent corruption | P1 | Manifest CSV | NEW |
 | 25 | C4 | annotation_resolution referencing non-existent clustering resolution | Silent empty results | P1 | ATAC input | NEW |
@@ -176,21 +176,21 @@ CellBender's `expected_cells` parameter strongly influences ambient RNA removal.
 ~~20+ clusterOptions lines reference UCI-specific partitions (`highmem`, `hugemem`, `maxmem`). Job submission fails at any other site.~~
 *Resolution: Default partitions (`standard`, `gpu`, `gpu-hugemem`) are already parameterized in nextflow.config. Per-process overrides in resource tier configs (e.g., `highmem` for ANNOTATE_ATAC, `maxmem` for BUILD_MUDATA) are site-specific HPC tuning based on memory profiling. A collaborator would need to re-profile resource requirements for their own cluster regardless — parameterizing partition names alone doesn't solve the portability problem.*
 
-**19. R1-6: Missing medium resource tier** (Round 1)
-launch.sh assigns `medium` for 6-50 samples but only `small` and `large` configs exist. Falls back to `small`, causing OOM kills on moderately sized datasets.
-*Fix: Create medium.config or adjust tier boundaries.*
+**19. R1-6: Missing medium resource tier** (Round 1) — **FIXED**
+~~launch.sh assigns `medium` for 6-50 samples but only `small` and `large` configs exist. Falls back to `small`, causing OOM kills on moderately sized datasets.~~
+*Resolution: Created `configs/resource_tiers/medium.config` with intermediate allocations between small and large. Processes >250GB spill to highmem, >450GB to hugemem (validated with 8-sample external batch). Wired into nextflow.config resource_tier loading.*
 
-**20. R1-23: pycistopic.gtf = null but enabled by default** (Round 1)
-pycisTopic is enabled (`run = true`) but its required GTF defaults to null. Runtime fails with an unhelpful null-pointer error.
-*Fix: Validate that all required params for enabled modules are non-null at startup.*
+**20. R1-23: pycistopic.gtf = null but enabled by default** (Round 1) — **FIXED**
+~~pycisTopic is enabled (`run = true`) but its required GTF defaults to null. Runtime fails with an unhelpful null-pointer error.~~
+*Resolution: Added GTF path to bd_90plus_brain.config pycistopic block (was already present in pbmc_10x_10k.config). Added startup validation in validateStartupParams() that errors if pycistopic.run=true but pycistopic.gtf is null, with a clear message about the BioMart fallback issue.*
 
 **21. E4: mt_threshold=0 filters all cells** (NEW)
 Setting `mt_threshold = 0` (intending "no filter") actually filters every cell since all cells have >= 0% mitochondrial reads. The parameter semantics are inverted from user expectation.
 *Fix: Use null or -1 as "disabled" sentinel; document that 0 means "remove all cells with any mito reads."*
 
-**22. E5 / R1-15: Hardcoded Group1-4 DE comparisons vs. user group names** (Round 1 + Round 2)
-RNA_DIFFERENTIAL hardcodes 6 pairwise comparisons between Group1-Group4. Any experiment with different condition names produces silent empty DE results (zero genes, no error). Round 2 confirms this affects both RNA and ATAC differential modules.
-*Fix: Read comparisons from params or auto-generate from unique condition_group values in the manifest.*
+**22. E5 / R1-15: Hardcoded Group1-4 DE comparisons vs. user group names** (Round 1 + Round 2) — **FIXED**
+~~RNA_DIFFERENTIAL hardcodes 6 pairwise comparisons between Group1-Group4. Any experiment with different condition names produces silent empty DE results (zero genes, no error).~~
+*Resolution: Replaced hardcoded 6-comparison array in main.nf with `Channel.fromList(params.differential_rna.comparisons)`, matching the pattern ATAC differential already uses. Comparisons are now read from dataset config as 2-element lists (e.g., `[['Group4', 'Group1']]`). Updated BD config format accordingly. Removed stale "Test Mode" log message.*
 
 **23. D1: BD MEX directory with missing matrix files** (NEW)
 BD Rhapsody MEX output requires matrix.mtx.gz, barcodes.tsv.gz, and features.tsv.gz. A missing file causes a crash, but the error message is cryptic (scanpy read error, not "missing barcodes.tsv.gz").

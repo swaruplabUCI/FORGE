@@ -317,6 +317,13 @@ def validateStartupParams() {
         }
     }
 
+    // P1-20 (R1-23): pycistopic.gtf must be set when pycistopic.run is enabled
+    if (params.pycistopic?.run && !params.pycistopic?.gtf) {
+        errors << "pycistopic.run=true but pycistopic.gtf is null. " +
+                  "Provide a Gencode GTF path in your dataset config (e.g., pycistopic { gtf = '/path/to/gencode.gtf' }). " +
+                  "Without it, pycisTopic falls back to BioMart which fails due to pyarrow incompatibility."
+    }
+
     // P0-9 (B4): SCENIC+ cisTarget species check
     if (params.scenicplus?.cistarget_rankings) {
         def ctStr = params.scenicplus.cistarget_rankings.toString().toLowerCase()
@@ -620,7 +627,7 @@ workflow RNA_DIFFERENTIAL {
     main:
         log.info """
         RNA DIFFERENTIAL EXPRESSION (MAST)
-        Test Mode: Using arbitrary group assignments
+        Comparisons: ${params.differential_rna.comparisons.size()}
         """
 
         // Step 1: Assign test groups
@@ -658,24 +665,20 @@ workflow RNA_DIFFERENTIAL {
 
         def mast_cell_types = cell_types_list_ch.flatten()
 
-        // Step 3: Set up comparisons
-        log.info "Step 3: Setting up comparisons..."
+        // Step 3: Set up comparisons from config
+        log.info "Step 3: Setting up comparisons from params.differential_rna.comparisons..."
 
-        def comparisons = [
-            [ group1: 'Group1', group2: 'Group2' ],
-            [ group1: 'Group1', group2: 'Group3' ],
-            [ group1: 'Group1', group2: 'Group4' ],
-            [ group1: 'Group2', group2: 'Group3' ],
-            [ group1: 'Group2', group2: 'Group4' ],
-            [ group1: 'Group3', group2: 'Group4' ],
-        ]
+        if (!params.differential_rna.comparisons || params.differential_rna.comparisons.size() == 0) {
+            log.warn "No comparisons defined in params.differential_rna.comparisons — RNA DE will be skipped."
+        }
 
-        def comparisons_ch = Channel.from(comparisons)
+        def comparisons_ch = Channel.fromList(params.differential_rna.comparisons)
+            .map { it -> tuple(it[0], it[1]) }
 
-        def mast_de_params = mast_cell_types
-            .cross(comparisons_ch)
-            .map { String cell_type, cmp ->
-                tuple(cell_type, cmp.group1, cmp.group2)
+        def mast_de_params = comparisons_ch
+            .combine(mast_cell_types)
+            .map { group1, group2, cell_type ->
+                tuple(cell_type, group1, group2)
             }
 
         // Step 4: Run MAST differential expression
