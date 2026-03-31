@@ -177,6 +177,297 @@ def detect_barcode_strategy(peak_barcodes, printer_barcodes, n_probe=200):
     return best_strategy
 
 
+# =============================================================================
+# PHASE 2 VISUALIZATION FUNCTIONS (Shi et al. upgrade)
+# =============================================================================
+
+def compute_binding_threshold(scores, method='otsu'):
+    """Compute bound/unbound threshold from binding score distribution.
+
+    Args:
+        scores: 1D array of max binding scores per region
+        method: 'otsu', 'percentile_75', or a float string
+    Returns:
+        threshold (float)
+    """
+    scores = scores[~np.isnan(scores)]
+    if len(scores) == 0:
+        return 0.5
+
+    # Try parsing as explicit float
+    try:
+        return float(method)
+    except (ValueError, TypeError):
+        pass
+
+    if method == 'otsu':
+        try:
+            from skimage.filters import threshold_otsu
+            return float(threshold_otsu(scores))
+        except (ImportError, ValueError):
+            # Fallback: use percentile_75
+            return float(np.percentile(scores, 75))
+    elif method == 'percentile_75':
+        return float(np.percentile(scores, 75))
+    else:
+        return float(np.percentile(scores, 75))
+
+
+def extract_aggregate_msfp(printer, save_key_fp, ct, regions_df, modes=None):
+    """Extract and average multiscale footprint matrices across all regions.
+
+    Returns:
+        mean_matrix: 2D array (n_modes x n_positions), or None on failure
+    """
+    if modes is None:
+        modes = np.arange(2, 101)
+
+    try:
+        fp_data = printer.footprintsadata[save_key_fp]
+        obs_names = list(fp_data.obs_names.astype(str))
+        ct_idx = obs_names.index(ct) if ct in obs_names else 0
+
+        matrices = []
+        for key in fp_data.obsm_keys():
+            M = np.array(fp_data.obsm[key])
+            if M.ndim == 3:
+                mat = M[ct_idx, :, :]
+            elif M.ndim == 2:
+                n_modes = len(modes)
+                n_pos = M.shape[1] // n_modes
+                if n_pos > 0:
+                    mat = M[ct_idx].reshape(n_modes, n_pos)
+                else:
+                    continue
+            else:
+                continue
+            matrices.append(mat)
+
+        if not matrices:
+            return None
+
+        # Ensure all matrices have the same shape (pad/trim to min width)
+        min_cols = min(m.shape[1] for m in matrices)
+        aligned = [m[:, :min_cols] for m in matrices]
+        mean_matrix = np.mean(aligned, axis=0)
+        return mean_matrix
+
+    except Exception as e:
+        print(f"  [WARN] extract_aggregate_msfp failed: {e}")
+        return None
+
+
+def extract_aggregate_binding(printer, save_key_bs, ct, regions_df):
+    """Extract and average binding scores across all regions.
+
+    Returns:
+        mean_profile: 1D array (n_positions), or None
+        sem_profile: 1D array (n_positions), or None
+        max_scores: 1D array of max score per region (for threshold computation)
+    """
+    try:
+        bs_data = printer.bindingscoreadata[save_key_bs]
+        obs_names = list(bs_data.obs_names.astype(str))
+        ct_idx = obs_names.index(ct) if ct in obs_names else 0
+
+        profiles = []
+        max_scores = []
+        for key in bs_data.obsm_keys():
+            M = np.array(bs_data.obsm[key])
+            if M.ndim >= 2:
+                profile = M[ct_idx].flatten()
+            elif M.ndim == 1:
+                profile = M.flatten()
+            else:
+                continue
+            profiles.append(profile)
+            max_scores.append(np.nanmax(profile) if len(profile) > 0 else 0.0)
+
+        if not profiles:
+            return None, None, np.array([])
+
+        min_len = min(len(p) for p in profiles)
+        aligned = np.array([p[:min_len] for p in profiles])
+        mean_profile = np.nanmean(aligned, axis=0)
+        sem_profile = np.nanstd(aligned, axis=0) / np.sqrt(len(aligned))
+        return mean_profile, sem_profile, np.array(max_scores)
+
+    except Exception as e:
+        print(f"  [WARN] extract_aggregate_binding failed: {e}")
+        return None, None, np.array([])
+
+
+def plot_aggregate_msfp(mean_matrix, tf, ct, ax, modes=None):
+    """Plot aggregate multiscale footprint heatmap (Panel H).
+
+    This is scPrinter's 2D answer to TOBIAS PlotAggregate.
+    """
+    if modes is None:
+        modes = np.arange(2, 101)
+
+    im = ax.imshow(
+        mean_matrix, aspect='auto', cmap='Blues',
+        vmin=0.5, vmax=2.0, origin='lower')
+    plt.colorbar(im, ax=ax, label='Mean Footprint Score', shrink=0.7)
+
+    # Y-axis: scale labels
+    scale_ticks = [2, 10, 20, 50, 100]
+    n_modes = mean_matrix.shape[0]
+    for s in scale_ticks:
+        if s - 2 < n_modes:
+            idx = s - 2
+            ax.axhline(idx, color='gray', linewidth=0.3, alpha=0.3)
+
+    # X-axis: center line
+    center_x = mean_matrix.shape[1] // 2
+    ax.axvline(center_x, color='black', linestyle='--', linewidth=0.8, alpha=0.7)
+
+    ax.set_ylabel('Footprint Scale (bp)', fontsize=9)
+    ax.set_xlabel('Position relative to region center', fontsize=9)
+
+
+def plot_aggregate_binding(mean_profile, sem_profile, tf, ct, ax):
+    """Plot aggregate TFBS binding probability profile (Panel I)."""
+    x = np.arange(len(mean_profile))
+    ax.fill_between(x, mean_profile - sem_profile, mean_profile + sem_profile,
+                    alpha=0.3, color='green', label='SEM')
+    ax.plot(x, mean_profile, color='darkgreen', linewidth=1.5, label='Mean')
+    ax.set_ylabel('Binding Probability', fontsize=9)
+    ax.set_xlabel('Position (bins)', fontsize=9)
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8, loc='upper right')
+
+
+def plot_bound_unbound_split(printer, save_key_fp, ct, max_scores, threshold,
+                             modes, ax_bound, ax_unbound):
+    """Plot aggregate MSFP separately for bound vs unbound regions (Panel J).
+
+    Mirrors TOBIAS PlotAggregate --TFBS bound.bed unbound.bed but in 2D multiscale.
+    """
+    try:
+        fp_data = printer.footprintsadata[save_key_fp]
+        obs_names = list(fp_data.obs_names.astype(str))
+        ct_idx = obs_names.index(ct) if ct in obs_names else 0
+
+        bound_matrices = []
+        unbound_matrices = []
+
+        region_keys = list(fp_data.obsm_keys())
+        for i, key in enumerate(region_keys):
+            if i >= len(max_scores):
+                break
+            M = np.array(fp_data.obsm[key])
+            if M.ndim == 3:
+                mat = M[ct_idx, :, :]
+            elif M.ndim == 2:
+                n_modes = len(modes)
+                n_pos = M.shape[1] // n_modes
+                if n_pos > 0:
+                    mat = M[ct_idx].reshape(n_modes, n_pos)
+                else:
+                    continue
+            else:
+                continue
+
+            if max_scores[i] >= threshold:
+                bound_matrices.append(mat)
+            else:
+                unbound_matrices.append(mat)
+
+        def _plot_mean(matrices, ax, cmap, label):
+            if not matrices:
+                ax.text(0.5, 0.5, f'No {label} regions', ha='center', va='center',
+                        transform=ax.transAxes)
+                return
+            min_cols = min(m.shape[1] for m in matrices)
+            aligned = [m[:, :min_cols] for m in matrices]
+            mean_mat = np.mean(aligned, axis=0)
+            im = ax.imshow(mean_mat, aspect='auto', cmap=cmap,
+                           vmin=0.5, vmax=2.0, origin='lower')
+            plt.colorbar(im, ax=ax, shrink=0.7)
+            center_x = mean_mat.shape[1] // 2
+            ax.axvline(center_x, color='black', linestyle='--', linewidth=0.8, alpha=0.7)
+
+        _plot_mean(bound_matrices, ax_bound, 'Blues', 'bound')
+        ax_bound.set_title(f'Bound (n={len(bound_matrices)}, score >= {threshold:.2f})',
+                           fontsize=9)
+        ax_bound.set_ylabel('Scale (bp)', fontsize=8)
+
+        _plot_mean(unbound_matrices, ax_unbound, 'Greys', 'unbound')
+        ax_unbound.set_title(f'Unbound (n={len(unbound_matrices)}, score < {threshold:.2f})',
+                             fontsize=9)
+        ax_unbound.set_ylabel('Scale (bp)', fontsize=8)
+
+    except Exception as e:
+        print(f"  [WARN] plot_bound_unbound_split failed: {e}")
+        ax_bound.text(0.5, 0.5, f'Failed: {e}', ha='center', va='center',
+                      transform=ax_bound.transAxes)
+
+
+def plot_binding_distribution(max_scores, threshold, tf, ct, ax):
+    """Plot binding score distribution with threshold line (Panel K)."""
+    ax.hist(max_scores[~np.isnan(max_scores)], bins=50, color='steelblue',
+            edgecolor='white', alpha=0.8)
+    ax.axvline(threshold, color='red', linestyle='--', linewidth=2,
+               label=f'Threshold: {threshold:.3f}')
+
+    n_bound = int((max_scores >= threshold).sum())
+    n_unbound = int((max_scores < threshold).sum())
+    ax.text(0.95, 0.95,
+            f'Bound: {n_bound}\nUnbound: {n_unbound}',
+            transform=ax.transAxes, ha='right', va='top',
+            fontsize=9, bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    ax.set_xlabel('Max Binding Score per Region', fontsize=9)
+    ax.set_ylabel('Count', fontsize=9)
+    ax.legend(fontsize=8, loc='upper left')
+
+
+def compute_differential_msfp(printer, save_key_fp_ctrl, save_key_fp_trt,
+                               ct_ctrl, ct_trt, modes=None):
+    """Compute differential multiscale footprint: treatment - control.
+
+    Returns:
+        diff_matrix: 2D array (n_modes x n_positions), or None
+    """
+    if modes is None:
+        modes = np.arange(2, 101)
+
+    ctrl_agg = extract_aggregate_msfp(printer, save_key_fp_ctrl, ct_ctrl, None, modes)
+    trt_agg = extract_aggregate_msfp(printer, save_key_fp_trt, ct_trt, None, modes)
+
+    if ctrl_agg is None or trt_agg is None:
+        return None
+
+    # Align shapes
+    min_rows = min(ctrl_agg.shape[0], trt_agg.shape[0])
+    min_cols = min(ctrl_agg.shape[1], trt_agg.shape[1])
+    return trt_agg[:min_rows, :min_cols] - ctrl_agg[:min_rows, :min_cols]
+
+
+def plot_differential_msfp(diff_matrix, tf, ct, ctrl_label, trt_label, ax):
+    """Plot differential MSFP heatmap (Panel L).
+
+    RdBu_r diverging colormap centered at 0.
+    Blue = stronger in control, Red = stronger in treatment.
+    """
+    vmax = np.nanpercentile(np.abs(diff_matrix), 95)
+    if vmax == 0:
+        vmax = 1.0
+
+    im = ax.imshow(
+        diff_matrix, aspect='auto', cmap='RdBu_r',
+        vmin=-vmax, vmax=vmax, origin='lower')
+    plt.colorbar(im, ax=ax, label=f'Δ Footprint ({trt_label} − {ctrl_label})',
+                 shrink=0.7)
+
+    center_x = diff_matrix.shape[1] // 2
+    ax.axvline(center_x, color='black', linestyle='--', linewidth=0.8, alpha=0.7)
+
+    ax.set_ylabel('Footprint Scale (bp)', fontsize=9)
+    ax.set_xlabel('Position relative to region center', fontsize=9)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Enhancer footprinting for a single (cell_type, TF) pair")
     p.add_argument("--region-set", required=True, help="BED file with enhancer regions")
@@ -190,11 +481,20 @@ def parse_args():
     p.add_argument("--gtf", default="", help="GTF annotation file for TSS lookup")
     p.add_argument("--cicero-connections", default="", help="Cicero connections TSV (gzipped)")
     p.add_argument("--cpus", type=int, default=4)
+    # Phase 2E: Differential MSFP between conditions (Shi et al.)
+    p.add_argument("--control-condition", default="",
+                   help="Control condition label for differential MSFP (empty=skip)")
+    p.add_argument("--treatment-condition", default="",
+                   help="Treatment condition label for differential MSFP")
+    # Phase 2C-D: Bound/unbound classification
+    p.add_argument("--binding-threshold", default="otsu",
+                   help="Binding score threshold: 'otsu', 'percentile_75', or float")
     return p.parse_args()
 
 
 def select_best_region(printer, save_key_bs, regions_df, regions_full,
-                       uniq_groups, ct, has_tfbs, target_chrom=None):
+                       uniq_groups, ct, has_tfbs, target_chrom=None,
+                       exclude_indices=None):
     """Select the best region for the insertion plot.
 
     Strategy: use TF binding scores to find the region with the strongest
@@ -203,6 +503,8 @@ def select_best_region(printer, save_key_bs, regions_df, regions_full,
 
     If target_chrom is provided, restrict selection to regions on that
     chromosome (cis-regulation filter, FIX-82).
+    If exclude_indices is provided, those indices are excluded from selection
+    (FIX-96: prevents selecting the appended promoter region as "best enhancer").
     """
     # FIX-82: Filter to same chromosome as target gene for cis-regulation
     if target_chrom:
@@ -216,6 +518,12 @@ def select_best_region(printer, save_key_bs, regions_df, regions_full,
             cis_indices = np.arange(len(regions_df))
     else:
         cis_indices = np.arange(len(regions_df))
+
+    # FIX-96: Exclude promoter (or other specified) indices from enhancer selection
+    if exclude_indices:
+        cis_indices = np.array([i for i in cis_indices if i not in exclude_indices])
+        if len(cis_indices) == 0:
+            cis_indices = np.arange(len(regions_df))
 
     # Default: middle of eligible region list
     best_idx = cis_indices[len(cis_indices) // 2]
@@ -491,10 +799,14 @@ def parse_tss_from_gtf(gtf_path, tf_name):
     return best
 
 
-def load_cicero_connections(conns_path, regions_df):
+def load_cicero_connections(conns_path, regions_df, region_strs_override=None):
     """Load Cicero connections and filter to those involving our enhancer regions.
 
     Returns a DataFrame with columns: Peak1, Peak2, coaccess, plus parsed coordinates.
+
+    If region_strs_override is provided, use those region strings for lookup
+    instead of building from regions_df. This is needed when regions_df has been
+    padded (FIX-96) — Cicero connections use original peak coordinates.
     """
     import gzip
 
@@ -506,9 +818,12 @@ def load_cicero_connections(conns_path, regions_df):
         conns = pd.read_csv(conns_path, sep='\t')
 
         # Build a set of region strings for fast lookup
-        region_strs = set()
-        for _, row in regions_df.iterrows():
-            region_strs.add(f"{row['Chromosome']}:{row['Start']}-{row['End']}")
+        if region_strs_override is not None:
+            region_strs = region_strs_override
+        else:
+            region_strs = set()
+            for _, row in regions_df.iterrows():
+                region_strs.add(f"{row['Chromosome']}:{row['Start']}-{row['End']}")
 
         # Filter to connections where at least one peak is in our enhancer set
         mask = conns['Peak1'].isin(region_strs) | conns['Peak2'].isin(region_strs)
@@ -739,6 +1054,13 @@ def main():
     # scPRINTER only needs 3-column regions
     regions_df = regions_raw[['Chromosome', 'Start', 'End']].copy()
 
+    # FIX-96: Save original (unpadded) region strings for Cicero lookup.
+    # Cicero connections use original peak coordinates — padded coords won't match.
+    regions_original_strs = set(
+        f"{row['Chromosome']}:{row['Start']}-{row['End']}"
+        for _, row in regions_df.iterrows()
+    )
+
     # FIX-86: Pad regions by 250bp on each side for ±500bp viewer window
     REGION_PAD = 250
     regions_df['Start'] = (regions_df['Start'] - REGION_PAD).clip(lower=0)
@@ -757,6 +1079,66 @@ def main():
         pd.DataFrame(columns=['cell_type', 'tf', 'n_regions']).to_csv(
             'enhancer_fp_summary.csv', index=False)
         return
+
+    # FIX-96: Resolve target gene and TSS BEFORE footprint computation so the
+    # promoter region can be included in get_footprint_score/get_binding_score.
+    # Previously this was done at plot time, causing promoter MSFP/TFBS to fail
+    # with KeyErrors because the promoter region was never computed.
+    pc_genes = load_protein_coding_genes(args.gtf) if args.gtf else set()
+    if pc_genes:
+        print(f"  FIX-85: Loaded {len(pc_genes)} protein-coding genes from GTF")
+
+    target_gene = None
+    target_chrom = None
+    tss_info = None
+    if n_linked_genes > 0 and 'linked_genes' in regions_full.columns:
+        from collections import Counter
+        gene_counts = Counter()
+        for g in regions_full['linked_genes'].dropna().astype(str):
+            if g and g != 'nan':
+                for gene in g.split(','):
+                    gene = gene.strip()
+                    if gene and gene.upper() != tf.upper():
+                        gene_counts[gene] += 1
+        # FIX-85: Filter to protein-coding genes only
+        if pc_genes:
+            pc_counts = {g: c for g, c in gene_counts.items()
+                         if g.upper() in pc_genes}
+            if pc_counts:
+                print(f"  FIX-85: {len(pc_counts)}/{len(gene_counts)} linked genes "
+                      f"are protein-coding")
+                gene_counts = Counter(pc_counts)
+            else:
+                print(f"  FIX-85: No protein-coding linked genes found, "
+                      f"using all {len(gene_counts)} genes")
+        if gene_counts:
+            target_gene = gene_counts.most_common(1)[0][0]
+            tss_info = parse_tss_from_gtf(args.gtf, target_gene) if args.gtf else None
+            if tss_info:
+                target_chrom = tss_info[0]
+                print(f"  Target gene: {target_gene} on {target_chrom} "
+                      f"(linked to {gene_counts[target_gene]} enhancer regions)")
+
+    # FIX-96: Build a separate promoter region DataFrame for independent
+    # footprint/binding score computation. scPRINTER requires all regions in a
+    # single call to have compatible shapes — the 4kb promoter window is much
+    # wider than enhancer regions, causing "all input arrays must have the same
+    # shape" when mixed. Compute separately with dedicated save_keys.
+    n_enhancer_regions = len(regions_df)
+    promoter_df = None
+    if tss_info:
+        tss_chrom, tss_pos, tss_strand = tss_info
+        promoter_start = max(0, tss_pos - 2000)
+        promoter_end = tss_pos + 2000
+        promoter_df = pd.DataFrame([{
+            'Chromosome': tss_chrom,
+            'Start': promoter_start,
+            'End': promoter_end,
+        }])
+        print(f"  FIX-96: Promoter region {tss_chrom}:{promoter_start}-{promoter_end} "
+              f"will be computed separately for target gene {target_gene}")
+    else:
+        print(f"  FIX-96: No target gene TSS found, computing enhancer regions only")
 
     # Load printer
     print(f"  Loading printer from {args.printer_path}")
@@ -843,17 +1225,20 @@ def main():
     # Compute multiscale footprints
     save_key_fp = f"enhancer_fp_{ct}_{tf}"
     print(f"  Computing multiscale footprints (key={save_key_fp})...")
-    scp.tl.get_footprint_score(
-        printer,
-        grouping,
-        uniq_groups,
-        regions_df,
-        modes=np.arange(2, 101),
-        n_jobs=args.cpus,
-        save_key=save_key_fp,
-        backed=False,
-        overwrite=True,
-    )
+    try:
+        scp.tl.get_footprint_score(
+            printer,
+            grouping,
+            uniq_groups,
+            regions_df,
+            modes=np.arange(2, 101),
+            n_jobs=args.cpus,
+            save_key=save_key_fp,
+            backed=False,
+            overwrite=True,
+        )
+    except Exception as e:
+        print(f"  WARNING: Footprint score computation failed: {e}")
 
     fp_saved = False
     if hasattr(printer, 'footprintsadata') and save_key_fp in printer.footprintsadata:
@@ -867,42 +1252,36 @@ def main():
         fp_saved = True
         print(f"  Saved footprints to {fp_h5ad}")
 
-        # ---- Plot 1: Full multiscale footprint heatmap (FIX-68a, FIX-72, FIX-82, FIX-85) ----
-        # FIX-85: Load protein-coding gene set for target gene filtering
-        pc_genes = load_protein_coding_genes(args.gtf) if args.gtf else set()
-        if pc_genes:
-            print(f"  FIX-85: Loaded {len(pc_genes)} protein-coding genes from GTF")
+    # FIX-96: Compute promoter footprints/binding scores SEPARATELY
+    # (different region width than enhancers — scPRINTER requires uniform shapes)
+    save_key_fp_promo = f"promoter_fp_{ct}_{tf}"
+    save_key_bs_promo = f"promoter_bs_{ct}_{tf}"
+    if promoter_df is not None:
+        print(f"  Computing promoter binding scores (key={save_key_bs_promo})...")
+        try:
+            scp.tl.get_binding_score(
+                printer, grouping, uniq_groups, promoter_df,
+                model_key="TF", n_jobs=args.cpus, contextRadius=100,
+                save_key=save_key_bs_promo, backed=False, overwrite=True,
+            )
+            print(f"  [OK] Promoter binding scores computed")
+        except Exception as e:
+            print(f"  WARNING: Promoter binding score failed: {e}")
 
-        # FIX-82/85: Identify target gene chromosome for cis-regulation filter
-        target_gene = None
-        target_chrom = None
-        if n_linked_genes > 0 and 'linked_genes' in regions_full.columns:
-            from collections import Counter
-            gene_counts = Counter()
-            for g in regions_full['linked_genes'].dropna().astype(str):
-                if g and g != 'nan':
-                    for gene in g.split(','):
-                        gene = gene.strip()
-                        if gene and gene.upper() != tf.upper():
-                            gene_counts[gene] += 1
-            # FIX-85: Filter to protein-coding genes only
-            if pc_genes:
-                pc_counts = {g: c for g, c in gene_counts.items()
-                             if g.upper() in pc_genes}
-                if pc_counts:
-                    print(f"  FIX-85: {len(pc_counts)}/{len(gene_counts)} linked genes "
-                          f"are protein-coding")
-                    gene_counts = Counter(pc_counts)
-                else:
-                    print(f"  FIX-85: No protein-coding linked genes found, "
-                          f"using all {len(gene_counts)} genes")
-            if gene_counts:
-                target_gene = gene_counts.most_common(1)[0][0]
-                tss_info = parse_tss_from_gtf(args.gtf, target_gene) if args.gtf else None
-                if tss_info:
-                    target_chrom = tss_info[0]
-                    print(f"  Target gene: {target_gene} on {target_chrom} "
-                          f"(linked to {gene_counts[target_gene]} enhancer regions)")
+        print(f"  Computing promoter multiscale footprints (key={save_key_fp_promo})...")
+        try:
+            scp.tl.get_footprint_score(
+                printer, grouping, uniq_groups, promoter_df,
+                modes=np.arange(2, 101), n_jobs=args.cpus,
+                save_key=save_key_fp_promo, backed=False, overwrite=True,
+            )
+            print(f"  [OK] Promoter footprints computed")
+        except Exception as e:
+            print(f"  WARNING: Promoter footprint score failed: {e}")
+
+    if fp_saved:
+        # ---- Plot 1: Full multiscale footprint heatmap (FIX-68a, FIX-72, FIX-82, FIX-85, FIX-96) ----
+        # FIX-96: target_gene, target_chrom, pc_genes already resolved before computation
 
         fig1_path = None
         try:
@@ -947,7 +1326,7 @@ def main():
             _format_msfp_axes(ax_msfp, region_dict, tf, is_enhancer=True)
 
             title = (f"{ct} — TF {tf} multiscale footprint at {ref_region}"
-                     f" ({len(regions_df)} total enhancer regions)")
+                     f" ({n_enhancer_regions} total enhancer regions)")
             if ref_genes_str:
                 title += f"\nLinked genes: {format_gene_label(ref_genes_str)}"
             plt.suptitle(title, fontsize=10)
@@ -1018,10 +1397,10 @@ def main():
                 if len(regions_df) > max_sample:
                     sample_idx = np.random.choice(len(regions_df), max_sample, replace=False)
                     regions_sample = regions_df.iloc[sample_idx]
-                    print(f"  Computing aggregate Tn5 insertion (sampled {max_sample}/{len(regions_df)} regions)...")
+                    print(f"  Computing aggregate Tn5 insertion (sampled {max_sample}/{n_enhancer_regions} regions)...")
                 else:
                     regions_sample = regions_df
-                    print(f"  Computing aggregate Tn5 insertion across {len(regions_df)} enhancer regions...")
+                    print(f"  Computing aggregate Tn5 insertion across {n_enhancer_regions} enhancer regions...")
                 agg_profiles = []
                 for i, (_, reg) in enumerate(regions_sample.iterrows()):
                     try:
@@ -1052,9 +1431,8 @@ def main():
                     axes[row_idx].fill_between(x, mean_smooth - sem_smooth,
                                                 mean_smooth + sem_smooth,
                                                 color='red', alpha=0.2)
-                    n_total_enh = len(regions_df)
                     n_used = len(agg_profiles)
-                    sampled_note = f" (sampled from {n_total_enh})" if n_used < n_total_enh else ""
+                    sampled_note = f" (sampled from {n_enhancer_regions})" if n_used < n_enhancer_regions else ""
                     axes[row_idx].set_title(
                         f"{ct} — Mean Tn5 insertion across {n_used} "
                         f"{tf} enhancer regions{sampled_note}", fontsize=9)
@@ -1089,26 +1467,100 @@ def main():
         cicero_conns = None
         if args.cicero_connections:
             print(f"  Loading Cicero connections from {args.cicero_connections}")
-            cicero_conns = load_cicero_connections(args.cicero_connections, regions_df)
+            # FIX-96: Use unpadded region strings for Cicero lookup — padded
+            # coordinates don't match Cicero's original peak naming convention
+            cicero_conns = load_cicero_connections(
+                args.cicero_connections, regions_df,
+                region_strs_override=regions_original_strs)
             if cicero_conns is not None:
                 print(f"  Found {len(cicero_conns)} Cicero connections involving enhancer regions")
             else:
                 print(f"  No Cicero connections overlap enhancer regions")
 
-        # ---- Plot 3: Composite figure (FIX-82 rework) ----
-        # Layout: A. TF-Enhancer MSFP (cis-filtered best cCRE)
-        #         B. TF-Target Gene MSFP (promoter ±2kb TSS)
-        #         C. TF-Enhancer TFBS (binding score at best cCRE)
-        #         D. TF-Target Gene TFBS (binding score at promoter)
-        #         E. Aggregate enhancer Tn5 insertion profile
-        #         F. CCAN arcs (with colorbar)
-        #         G. TF motif logo
-        #
-        # FUTURE DIRECTIONS: Consider plotting the top 5 same-chromosome
-        # cis-enhancer regions alongside the single 'best' currently shown
-        # in panels A/C. This would provide a more comprehensive view of
-        # the TF's cis-regulatory landscape at multiple enhancer loci,
-        # potentially as a multi-row grid or overlaid traces.
+        # ---- Phase 2: Compute aggregate data for new panels ----
+        agg_msfp = None
+        agg_bs_mean = None
+        agg_bs_sem = None
+        max_scores = np.array([])
+        binding_threshold = 0.5
+        diff_msfp = None
+
+        if fp_saved and has_tfbs:
+            print("  Computing aggregate MSFP across all regions (Phase 2A)...")
+            agg_msfp = extract_aggregate_msfp(printer, save_key_fp, ct, regions_df)
+
+            print("  Computing aggregate binding scores (Phase 2B)...")
+            agg_bs_mean, agg_bs_sem, max_scores = extract_aggregate_binding(
+                printer, save_key_bs, ct, regions_df)
+
+            if len(max_scores) > 0:
+                binding_threshold = compute_binding_threshold(
+                    max_scores, args.binding_threshold)
+                n_bound = int((max_scores >= binding_threshold).sum())
+                n_unbound = int((max_scores < binding_threshold).sum())
+                print(f"  Binding threshold ({args.binding_threshold}): {binding_threshold:.4f}")
+                print(f"  Bound: {n_bound}, Unbound: {n_unbound}")
+
+        # Phase 2E: Differential MSFP (condition-specific footprinting)
+        has_differential = False
+        save_key_fp_ctrl = save_key_fp_trt = None
+        if args.control_condition and args.treatment_condition and fp_saved:
+            print(f"  Computing differential MSFP: {args.treatment_condition} - {args.control_condition}")
+            try:
+                # Create condition-specific groupings
+                adata_ct = ad.read_h5ad(args.peak_matrix)
+                if 'condition' in adata_ct.obs.columns:
+                    ctrl_mask = (adata_ct.obs['cell_type'] == ct) & (
+                        adata_ct.obs['condition'].astype(str) == args.control_condition)
+                    trt_mask = (adata_ct.obs['cell_type'] == ct) & (
+                        adata_ct.obs['condition'].astype(str) == args.treatment_condition)
+
+                    bc_strategy = detect_barcode_strategy(
+                        adata_ct.obs_names.astype(str), set(map(str, printer.obs_names)))
+
+                    ctrl_bcs = [normalize_peak_barcode(b, bc_strategy)
+                                for b in adata_ct.obs_names[ctrl_mask].astype(str)]
+                    trt_bcs = [normalize_peak_barcode(b, bc_strategy)
+                               for b in adata_ct.obs_names[trt_mask].astype(str)]
+
+                    printer_set = set(map(str, printer.obs_names))
+                    ctrl_bcs = [b for b in ctrl_bcs if b in printer_set]
+                    trt_bcs = [b for b in trt_bcs if b in printer_set]
+
+                    print(f"    {args.control_condition}: {len(ctrl_bcs)} cells in printer")
+                    print(f"    {args.treatment_condition}: {len(trt_bcs)} cells in printer")
+
+                    if len(ctrl_bcs) > 10 and len(trt_bcs) > 10:
+                        cond_grouping = [ctrl_bcs, trt_bcs]
+                        cond_groups = np.array([args.control_condition, args.treatment_condition])
+
+                        save_key_fp_ctrl = f"enh_fp_{ct}_{tf}_ctrl"
+                        save_key_fp_trt = f"enh_fp_{ct}_{tf}_trt"
+
+                        # Compute footprints for both conditions
+                        scp.tl.get_footprint_score(
+                            printer, cond_grouping, cond_groups, regions_df,
+                            modes=np.arange(2, 101), n_jobs=args.cpus,
+                            save_key=f"enh_fp_diff_{ct}_{tf}",
+                            backed=False, overwrite=True)
+
+                        diff_msfp = compute_differential_msfp(
+                            printer, f"enh_fp_diff_{ct}_{tf}",
+                            f"enh_fp_diff_{ct}_{tf}",
+                            args.control_condition, args.treatment_condition)
+
+                        if diff_msfp is not None:
+                            has_differential = True
+                            print(f"    Differential MSFP computed successfully")
+                    else:
+                        print(f"    Insufficient cells for differential analysis")
+                del adata_ct
+            except Exception as e:
+                print(f"  [WARN] Differential MSFP failed: {e}")
+                import traceback; traceback.print_exc()
+
+        # ---- Plot 3: Composite figure (Shi et al. upgraded) ----
+        # Original panels A-G plus new panels H-L from Phase 2
         try:
             pwm_df = load_jaspar_pwm(args.pfm_path, tf) if args.pfm_path else None
 
@@ -1117,11 +1569,14 @@ def main():
 
             # Determine which panels are available
             has_enhancer_msfp = fig1_path and fig1_path.exists()
-            has_target_msfp = (target_gene is not None and args.gtf and
-                               parse_tss_from_gtf(args.gtf, target_gene) is not None)
+            # FIX-96: Promoter MSFP/TFBS use separate save keys (computed independently)
+            has_target_msfp = (target_gene is not None and
+                               hasattr(printer, 'footprintsadata') and
+                               save_key_fp_promo in printer.footprintsadata)
             has_tfbs_enhancer = (has_tfbs and hasattr(printer, 'bindingscoreadata') and
                                  save_key_bs in printer.bindingscoreadata)
-            has_tfbs_target = has_tfbs_enhancer and has_target_msfp
+            has_tfbs_target = (has_tfbs and hasattr(printer, 'bindingscoreadata') and
+                               save_key_bs_promo in printer.bindingscoreadata)
             has_insertion = fig2_path and fig2_path.exists()
             has_cicero_arcs = cicero_conns is not None and len(cicero_conns) > 0
             has_logo = pwm_df is not None
@@ -1155,6 +1610,24 @@ def main():
             if has_logo:
                 panels.append(('logo', 1, 'live'))
 
+            # Phase 2 new panels (Shi et al. upgrade)
+            has_agg_msfp = agg_msfp is not None
+            has_agg_binding = agg_bs_mean is not None
+            has_bound_unbound = len(max_scores) > 5 and has_agg_msfp
+            has_binding_dist = len(max_scores) > 5
+            has_diff_msfp = has_differential and diff_msfp is not None
+
+            if has_agg_msfp:
+                panels.append(('aggregate_msfp', 2, 'live'))
+            if has_agg_binding:
+                panels.append(('aggregate_binding', 1.5, 'live'))
+            if has_bound_unbound:
+                panels.append(('bound_unbound', 2.5, 'live'))
+            if has_binding_dist:
+                panels.append(('binding_distribution', 1.5, 'live'))
+            if has_diff_msfp:
+                panels.append(('differential_msfp', 2, 'live'))
+
             if not panels:
                 raise ValueError("No panels to assemble")
 
@@ -1179,7 +1652,7 @@ def main():
                     try:
                         scp.pl.plot_footprints(
                             printer,
-                            save_key=save_key_fp,
+                            save_key=save_key_fp_promo,
                             group_names=[ct],
                             region=tgt_region,
                             ax=ax,
@@ -1239,7 +1712,7 @@ def main():
                     try:
                         scp.pl.plot_binding_score(
                             printer,
-                            save_key=save_key_bs,
+                            save_key=save_key_bs_promo,
                             group_names=[ct],
                             region=tgt_region,
                             ax=ax,
@@ -1279,14 +1752,95 @@ def main():
                     ax.set_title(f'{label}. TF Motif: {tf}',
                                  fontsize=12, fontweight='bold', loc='left', pad=15)
 
+                # ---- Phase 2 panels (Shi et al. upgrade) ----
+
+                elif panel_type_name == 'aggregate_msfp':
+                    try:
+                        plot_aggregate_msfp(agg_msfp, tf, ct, ax)
+                        ax.set_title(
+                            f'{label}. Aggregate MSFP — {tf} across {n_enhancer_regions} motif sites',
+                            fontsize=12, fontweight='bold', loc='left', pad=15)
+                    except Exception as e:
+                        print(f"  [WARN] Aggregate MSFP panel failed: {e}")
+                        ax.text(0.5, 0.5, f'Aggregate MSFP failed: {e}',
+                                ha='center', va='center', transform=ax.transAxes)
+                        ax.set_title(f'{label}. Aggregate MSFP',
+                                     fontsize=12, fontweight='bold', loc='left', pad=15)
+
+                elif panel_type_name == 'aggregate_binding':
+                    try:
+                        plot_aggregate_binding(agg_bs_mean, agg_bs_sem, tf, ct, ax)
+                        ax.set_title(
+                            f'{label}. Aggregate TFBS Binding — {tf} mean probability across {n_enhancer_regions} sites',
+                            fontsize=12, fontweight='bold', loc='left', pad=15)
+                    except Exception as e:
+                        print(f"  [WARN] Aggregate binding panel failed: {e}")
+                        ax.text(0.5, 0.5, f'Aggregate binding failed: {e}',
+                                ha='center', va='center', transform=ax.transAxes)
+                        ax.set_title(f'{label}. Aggregate Binding',
+                                     fontsize=12, fontweight='bold', loc='left', pad=15)
+
+                elif panel_type_name == 'bound_unbound':
+                    try:
+                        # Split into two sub-axes for bound vs unbound
+                        ax.set_visible(False)
+                        gs_inner = ax.get_subplotspec().subgridspec(1, 2, wspace=0.3)
+                        ax_bound = fig_comp.add_subplot(gs_inner[0])
+                        ax_unbound = fig_comp.add_subplot(gs_inner[1])
+                        plot_bound_unbound_split(
+                            printer, save_key_fp, ct, max_scores,
+                            binding_threshold, np.arange(2, 101),
+                            ax_bound, ax_unbound)
+                        ax_bound.set_title(
+                            f'{label}. Bound MSFP (n={int((max_scores >= binding_threshold).sum())})',
+                            fontsize=10, fontweight='bold', loc='left')
+                        ax_unbound.set_title(
+                            f'Unbound MSFP (n={int((max_scores < binding_threshold).sum())})',
+                            fontsize=10, fontweight='bold', loc='left')
+                    except Exception as e:
+                        print(f"  [WARN] Bound/unbound panel failed: {e}")
+                        ax.set_visible(True)
+                        ax.text(0.5, 0.5, f'Bound/unbound split failed: {e}',
+                                ha='center', va='center', transform=ax.transAxes)
+                        ax.set_title(f'{label}. Bound vs Unbound',
+                                     fontsize=12, fontweight='bold', loc='left', pad=15)
+
+                elif panel_type_name == 'binding_distribution':
+                    try:
+                        plot_binding_distribution(max_scores, binding_threshold, tf, ct, ax)
+                        ax.set_title(
+                            f'{label}. Binding Score Distribution — {tf} ({args.binding_threshold} threshold)',
+                            fontsize=12, fontweight='bold', loc='left', pad=15)
+                    except Exception as e:
+                        print(f"  [WARN] Binding distribution panel failed: {e}")
+                        ax.text(0.5, 0.5, f'Distribution failed: {e}',
+                                ha='center', va='center', transform=ax.transAxes)
+                        ax.set_title(f'{label}. Binding Distribution',
+                                     fontsize=12, fontweight='bold', loc='left', pad=15)
+
+                elif panel_type_name == 'differential_msfp':
+                    try:
+                        plot_differential_msfp(
+                            diff_msfp, tf, ct,
+                            args.control_condition, args.treatment_condition, ax)
+                        ax.set_title(
+                            f'{label}. Differential MSFP — {args.treatment_condition} vs {args.control_condition}',
+                            fontsize=12, fontweight='bold', loc='left', pad=15)
+                    except Exception as e:
+                        print(f"  [WARN] Differential MSFP panel failed: {e}")
+                        ax.text(0.5, 0.5, f'Differential MSFP failed: {e}',
+                                ha='center', va='center', transform=ax.transAxes)
+                        ax.set_title(f'{label}. Differential MSFP',
+                                     fontsize=12, fontweight='bold', loc='left', pad=15)
+
             # Suptitle
             suptitle = f"{ct} — TF {tf} Enhancer Footprinting"
             if target_chrom:
                 cis_count = (regions_df['Chromosome'] == target_chrom).sum()
                 suptitle += f" | {cis_count} cis-regulatory regions on {target_chrom}"
-                suptitle += f" (of {len(regions_df)} total)"
+                suptitle += f" (of {n_enhancer_regions} total)"
             else:
-                suptitle += f" | {len(regions_df)} enhancer regions"
+                suptitle += f" | {n_enhancer_regions} enhancer regions"
             if target_gene:
                 suptitle += f"\nTarget gene: {target_gene}"
                 if n_linked_genes > 1:
@@ -1320,7 +1874,7 @@ def main():
     summary = pd.DataFrame([{
         'cell_type': ct,
         'tf': tf,
-        'n_regions': len(regions_df),
+        'n_regions': n_enhancer_regions,
         'n_linked_genes': n_linked_genes,
         'n_cell_types': len(uniq_groups),
         'total_cells': sum(len(g) for g in grouping),

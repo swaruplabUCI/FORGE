@@ -119,6 +119,7 @@ include { MULTIVI_VISUALIZE } from './modules/multiome/multivi_visualize'
 include { PYCISTOPIC_PREPARE } from './modules/multiome/pycistopic_prepare'
 include { SCENICPLUS_RUN       } from './modules/multiome/scenicplus_run'
 include { SCENICPLUS_VISUALIZE } from './modules/multiome/scenicplus_visualize'
+include { SCENICPLUS_GRN_VIZ  } from './modules/multiome/scenicplus_grn_viz'
 include { EXPORT_MUDATA_RNA } from './modules/multiome/export_mudata_rna'
 include { SCPRINTER_DORC       } from './modules/multiome/scprinter_dorc'
 
@@ -1693,6 +1694,15 @@ workflow MULTIOME_GRN {
             SCENICPLUS_RUN.out.ereg_direct,
             cell_type_key
         )
+
+        // SCENIC+ GRN network visualization (graph-tool)
+        SCENICPLUS_GRN_VIZ(
+            SCENICPLUS_RUN.out.ereg_direct,
+            SCENICPLUS_RUN.out.aucell_direct,
+            SCENICPLUS_VISUALIZE.out.rss_csv,
+            SCENICPLUS_RUN.out.tf2g,
+            cell_type_key
+        )
     }
 
     // DORC analysis with scPrinter
@@ -1757,7 +1767,8 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     EXTRACT_CCAN_ENHANCERS(
         cicero_conns_ch,
         cicero_ccan_ch,
-        params.scprinter.gtf_human
+        params.scprinter.gtf_human,
+        ''  // condition_label: empty for default run
     )
 
     MOTIF_SCAN_ENHANCERS(

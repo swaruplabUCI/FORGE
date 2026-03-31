@@ -279,19 +279,38 @@ write.table(ccans, gz_ccan, sep = "\t", row.names = FALSE, quote = FALSE)
 close(gz_ccan)
 cat("  ✓ Saved CCAN assignments -> CCAN_assignments.tsv.gz\n")
 
-# Simple CCAN size plot (robust to list/tibble, etc.)
+# CCAN size plots (top bar chart + distribution histogram)
 if (!is.null(ccans) && NROW(ccans) > 0 && "CCAN" %in% colnames(ccans)) {
   ccan_df <- as.data.frame(ccans)
-  ccan_sizes <- ccan_df %>% dplyr::count(CCAN)
+  ccan_sizes <- ccan_df %>% dplyr::count(CCAN) %>% dplyr::arrange(dplyr::desc(n))
+  n_ccans <- nrow(ccan_sizes)
+  top_n <- min(50, n_ccans)
+  ccan_top <- ccan_sizes[1:top_n, ]
+  ccan_top$CCAN <- factor(ccan_top$CCAN, levels = ccan_top$CCAN)
 
-  pdf("ccan_top_graph.pdf", width = 6, height = 4)
-  ggplot(ccan_sizes, aes(x = CCAN, y = n)) +
-    geom_bar(stat = "identity") +
-    theme_minimal() +
-    xlab("CCAN ID") + ylab("Number of peaks") +
-    ggtitle("CCAN Sizes")
+  pdf("ccan_top_graph.pdf", width = max(6, top_n * 0.15), height = 4)
+  print(
+    ggplot(ccan_top, aes(x = CCAN, y = n)) +
+      geom_bar(stat = "identity", fill = "steelblue") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 6)) +
+      xlab(sprintf("CCAN ID (top %d of %d)", top_n, n_ccans)) +
+      ylab("Number of peaks") +
+      ggtitle(sprintf("CCAN Sizes (top %d of %d)", top_n, n_ccans))
+  )
   dev.off()
-  cat("  ✓ Saved CCAN size plot -> ccan_top_graph.pdf\n")
+  cat("  ✓ Saved CCAN top bar chart -> ccan_top_graph.pdf\n")
+
+  pdf("ccan_size_distribution.pdf", width = 6, height = 4)
+  print(
+    ggplot(ccan_sizes, aes(x = n)) +
+      geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+      theme_minimal() +
+      xlab("Number of peaks per CCAN") + ylab("Count") +
+      ggtitle(sprintf("CCAN Size Distribution (n = %d CCANs)", n_ccans))
+  )
+  dev.off()
+  cat("  ✓ Saved CCAN size distribution -> ccan_size_distribution.pdf\n")
 } else {
   cat("  ! CCAN object has no rows or no 'CCAN' column; skipping CCAN size plot\n")
 }
@@ -334,6 +353,32 @@ if (!is.null(pd$pseudotime)) {
   dev.off()
   cat("  ✓ Saved accessibility-pseudotime plot -> accessibility_pseudotime.pdf\n")
 }
+
+# Accessibility changes across pseudotime (Cicero plot_accessibility_in_pseudotime)
+tryCatch({
+  if (!is.null(pd$pseudotime) && sum(is.finite(pd$pseudotime)) > 50) {
+    cat("Running graph_test for pseudotime-variable peaks...\n")
+    pr_test_res <- graph_test(cds, neighbor_graph = "principal_graph", cores = 1)
+    sig_peaks <- pr_test_res[!is.na(pr_test_res$q_value) & pr_test_res$q_value < 0.05, ]
+    sig_peaks <- sig_peaks[order(sig_peaks$q_value), ]
+
+    if (nrow(sig_peaks) >= 3) {
+      top_n <- min(10, nrow(sig_peaks))
+      top_peak_ids <- rownames(sig_peaks)[1:top_n]
+      cds_finite <- cds[, is.finite(pseudotime(cds))]
+      cds_subset <- cds_finite[top_peak_ids, ]
+
+      pdf("accessibility_in_pseudotime.pdf", width = 10, height = 2 * top_n)
+      plot_accessibility_in_pseudotime(cds_subset, breaks = 10)
+      dev.off()
+      cat(sprintf("  ✓ Saved accessibility across pseudotime (top %d peaks) -> accessibility_in_pseudotime.pdf\n", top_n))
+    } else {
+      cat("  ! Fewer than 3 significant peaks; skipping accessibility-in-pseudotime plot\n")
+    }
+  }
+}, error = function(e) {
+  cat(sprintf("  ! Accessibility-in-pseudotime plot failed: %s\n", e$message))
+})
 
 ## ---------------------------------------------------------------------------
 ## 8. Simple regional connections plot (using colon-dash peaks)

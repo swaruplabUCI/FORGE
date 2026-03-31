@@ -24,6 +24,10 @@ process ATAC_FINAL_PIPELINE {
         (params.gtf_human_full ?: '') :
         (params.gtf_mouse_full ?: '')
     def gtf_arg = gtf_path ? "--gtf ${gtf_path}" : ""
+    def cisbp_path = params.species == 'human' ?
+        (params.atac.cisbp_human ?: '') :
+        (params.atac.cisbp_mouse ?: '')
+    def cisbp_arg = cisbp_path ? "--cisbp_meme ${cisbp_path}" : ""
 
     """
     python \${PROJECTDIR:-${projectDir}}/bin/atac_consolidated_pipeline.py \\
@@ -40,6 +44,7 @@ process ATAC_FINAL_PIPELINE {
         --peak_fdr ${params.atac.peak_fdr} \\
         --tempdir ${params.tempdir} \\
         --n_jobs ${task.cpus} \\
-        ${gtf_arg}
+        ${gtf_arg} \\
+        ${cisbp_arg}
     """
 }

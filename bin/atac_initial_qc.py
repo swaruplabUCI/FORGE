@@ -220,7 +220,116 @@ def main():
     fig = ridge_plot(qc_df, "log10_nFrags")
     fig.savefig(plot_dir / "prefilter_fragments_ridges.pdf", dpi=300)
     plt.close()
-    
+
+    # ---- Upper bound QC threshold plots ----
+    print("Generating upper/lower bound QC threshold plots...")
+
+    # Compute nucleosome signal per sample (mono-nucleosome / nucleosome-free ratio)
+    nuc_signal_rows = []
+    for name, ad in zip(sample_names, GMWM_all):
+        if 'preQCfrag_size_distr' in ad.uns:
+            fsd = ad.uns['preQCfrag_size_distr']
+            # fsd is typically a 2D array: rows=cells, cols=fragment sizes (1bp bins)
+            if hasattr(fsd, 'shape') and len(fsd.shape) == 2:
+                nf_band = fsd[:, :147].sum(axis=1)      # nucleosome-free (<147bp)
+                mono_band = fsd[:, 147:294].sum(axis=1)  # mono-nucleosome (147-294bp)
+                nf_band = np.where(nf_band == 0, 1, nf_band)
+                nuc_sig = mono_band / nf_band
+            else:
+                nuc_sig = np.full(ad.n_obs, np.nan)
+        else:
+            nuc_sig = np.full(ad.n_obs, np.nan)
+        nuc_signal_rows.append(pd.DataFrame({
+            'Sample': name,
+            'nucleosome_signal': nuc_sig,
+            'tsse': ad.obs['tsse'].to_numpy(),
+            'n_fragment': ad.obs['n_fragment'].to_numpy(),
+        }))
+    nuc_df = pd.concat(nuc_signal_rows, ignore_index=True)
+    nuc_df = nuc_df[np.isfinite(nuc_df['tsse']) & np.isfinite(nuc_df['n_fragment']) & (nuc_df['n_fragment'] > 0)]
+    nuc_df['log10_nFrags'] = np.log10(nuc_df['n_fragment'])
+
+    # Upper bound: Scatter (fragments vs TSS enrichment, colored by TSS)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    sc_ax = axes[0]
+    scatter = sc_ax.scatter(nuc_df['log10_nFrags'], nuc_df['tsse'],
+                            c=nuc_df['tsse'], cmap='RdYlGn', s=1, alpha=0.3, rasterized=True)
+    sc_ax.axhline(y=args.min_tsse, color='red', linestyle='--', label=f'min TSS={args.min_tsse}')
+    sc_ax.axvline(x=np.log10(args.min_counts), color='blue', linestyle='--', label=f'min frags={args.min_counts}')
+    sc_ax.axvline(x=np.log10(args.max_counts), color='blue', linestyle=':', label=f'max frags={args.max_counts}')
+    sc_ax.set_xlabel('log10(Fragment Count)')
+    sc_ax.set_ylabel('TSS Enrichment')
+    sc_ax.set_title('Upper Bound QC: Fragments vs TSS')
+    sc_ax.legend(fontsize=7)
+    plt.colorbar(scatter, ax=sc_ax, label='TSS Enrichment')
+
+    # Upper bound: Violin of TSS enrichment
+    sns.violinplot(data=nuc_df, x='Sample', y='tsse', ax=axes[1], inner='quartile', cut=0)
+    axes[1].axhline(y=args.min_tsse, color='red', linestyle='--')
+    axes[1].set_title('TSS Enrichment Distribution')
+    axes[1].tick_params(axis='x', rotation=45)
+
+    # Upper bound: Violin of nucleosome signal
+    if nuc_df['nucleosome_signal'].notna().sum() > 0:
+        sns.violinplot(data=nuc_df, x='Sample', y='nucleosome_signal', ax=axes[2], inner='quartile', cut=0)
+        axes[2].axhline(y=2.0, color='red', linestyle='--', label='threshold=2')
+        axes[2].set_title('Nucleosome Signal Distribution')
+        axes[2].tick_params(axis='x', rotation=45)
+        axes[2].legend(fontsize=7)
+    else:
+        axes[2].text(0.5, 0.5, 'Nucleosome signal\nnot available', ha='center', va='center', transform=axes[2].transAxes)
+        axes[2].set_title('Nucleosome Signal (N/A)')
+
+    plt.tight_layout()
+    fig.savefig(plot_dir / "qc_upper_bound_thresholds.pdf", dpi=300, bbox_inches='tight')
+    plt.close()
+    print("  Saved: qc_upper_bound_thresholds.pdf")
+
+    # ---- Lower bound QC threshold plots ----
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    # Joint density: TSS vs log-fragments
+    axes[0].scatter(nuc_df['log10_nFrags'], nuc_df['tsse'], s=1, alpha=0.1, c='steelblue', rasterized=True)
+    try:
+        sns.kdeplot(data=nuc_df, x='log10_nFrags', y='tsse', ax=axes[0],
+                    levels=5, color='darkblue', linewidths=0.8)
+    except Exception:
+        pass
+    axes[0].axhline(y=args.min_tsse, color='red', linestyle='--', linewidth=0.8)
+    axes[0].axvline(x=np.log10(args.min_counts), color='red', linestyle='--', linewidth=0.8)
+    axes[0].set_xlabel('log10(Fragment Count)')
+    axes[0].set_ylabel('TSS Enrichment')
+    axes[0].set_title('Lower Bound QC: Density')
+
+    # Histogram of low-fragment tail
+    low_frags = nuc_df[nuc_df['n_fragment'] < np.percentile(nuc_df['n_fragment'], 25)]
+    axes[1].hist(low_frags['n_fragment'], bins=50, color='steelblue', alpha=0.7, edgecolor='white')
+    axes[1].axvline(x=args.min_counts, color='red', linestyle='--', label=f'min_counts={args.min_counts}')
+    axes[1].set_xlabel('Fragment Count')
+    axes[1].set_ylabel('Number of Cells')
+    axes[1].set_title('Low-Fragment Tail Distribution')
+    axes[1].legend(fontsize=7)
+
+    # Scatter of cells below threshold, colored by TSS
+    below = nuc_df[nuc_df['n_fragment'] < args.min_counts * 2]
+    if len(below) > 0:
+        scatter = axes[2].scatter(below['n_fragment'], below['tsse'],
+                                  c=below['tsse'], cmap='RdYlGn', s=3, alpha=0.5, rasterized=True)
+        axes[2].axvline(x=args.min_counts, color='red', linestyle='--')
+        axes[2].axhline(y=args.min_tsse, color='red', linestyle='--')
+        axes[2].set_xlabel('Fragment Count')
+        axes[2].set_ylabel('TSS Enrichment')
+        axes[2].set_title('Cells Near Lower Threshold')
+        plt.colorbar(scatter, ax=axes[2], label='TSS Enrichment')
+    else:
+        axes[2].text(0.5, 0.5, 'No cells near\nlower threshold', ha='center', va='center', transform=axes[2].transAxes)
+
+    plt.tight_layout()
+    fig.savefig(plot_dir / "qc_lower_bound_thresholds.pdf", dpi=300, bbox_inches='tight')
+    plt.close()
+    print("  Saved: qc_lower_bound_thresholds.pdf")
+
     # ========================================================================
     # STEP 4: APPLY UNIFORM FILTERING TO LIST
     # ========================================================================

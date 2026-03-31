@@ -20,7 +20,102 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cell_type_key='scanvi_prediction'):
+# Broad cell type mapping for CellTypist Immune_All_Low predictions.
+# Used adaptively: only when <50% of fine-grained types pass min_cells threshold.
+CELLTYPIST_BROAD_MAP = {
+    # CD4+ T cells
+    "Tcm/Naive helper T cells": "CD4+ T cells",
+    "Tem/Effector helper T cells": "CD4+ T cells",
+    "Tem/Effector helper T cells PD1+": "CD4+ T cells",
+    "Follicular helper T cells": "CD4+ T cells",
+    "Type 17 helper T cells": "CD4+ T cells",
+    "Type 1 helper T cells": "CD4+ T cells",
+    "Memory CD4+ cytotoxic T cells": "CD4+ T cells",
+    "Cycling T cells": "CD4+ T cells",
+    # Regulatory T cells
+    "Regulatory T cells": "Regulatory T cells",
+    "Treg(diff)": "Regulatory T cells",
+    # CD8+ T cells
+    "Tcm/Naive cytotoxic T cells": "CD8+ T cells",
+    "Tem/Trm cytotoxic T cells": "CD8+ T cells",
+    "Tem/Temra cytotoxic T cells": "CD8+ T cells",
+    "Trm cytotoxic T cells": "CD8+ T cells",
+    "CD8a/a": "CD8+ T cells",
+    # Unconventional T cells
+    "MAIT cells": "Unconventional T cells",
+    "gamma-delta T cells": "Unconventional T cells",
+    "CRTAM+ gamma-delta T cells": "Unconventional T cells",
+    "NKT cells": "Unconventional T cells",
+    "Double-negative thymocytes": "Unconventional T cells",
+    "T(agonist)": "Unconventional T cells",
+    # B cells
+    "Naive B cells": "B cells",
+    "Memory B cells": "B cells",
+    "Age-associated B cells": "B cells",
+    "Plasma cells": "B cells",
+    "Plasmablasts": "B cells",
+    "Germinal center B cells": "B cells",
+    "Proliferative germinal center B cells": "B cells",
+    "B cells": "B cells",
+    # Monocytes & Macrophages
+    "Classical monocytes": "Monocytes",
+    "Non-classical monocytes": "Monocytes",
+    "Macrophages": "Monocytes",
+    "Alveolar macrophages": "Monocytes",
+    "Intermediate macrophages": "Monocytes",
+    "Mono-mac": "Monocytes",
+    "Monocyte precursor": "Monocytes",
+    "Monocytes": "Monocytes",
+    # Dendritic Cells
+    "DC1": "Dendritic Cells",
+    "DC2": "Dendritic Cells",
+    "DC3": "Dendritic Cells",
+    "pDC": "Dendritic Cells",
+    "Migratory DCs": "Dendritic Cells",
+    # NK cells
+    "CD16+ NK cells": "NK cells",
+    "CD16- NK cells": "NK cells",
+    "NK cells": "NK cells",
+    "Cycling NK cells": "NK cells",
+    # Progenitors/Other
+    "ILC3": "Progenitors/Other",
+    "ILC precursor": "Progenitors/Other",
+    "HSC/MPP": "Progenitors/Other",
+    "Megakaryocyte precursor": "Progenitors/Other",
+    "Megakaryocytes/platelets": "Progenitors/Other",
+    "Late erythroid": "Progenitors/Other",
+    "Endothelial cells": "Progenitors/Other",
+    "Epithelial cells": "Progenitors/Other",
+    "Fibroblasts": "Progenitors/Other",
+    "ELP": "Progenitors/Other",
+}
+
+TISSUE_MARKERS = {
+    'pbmc': {
+        "T cell (CD4+)": ["CD3D", "CD3E", "CD4", "IL7R"],
+        "T cell (CD8+)": ["CD3D", "CD3E", "CD8A", "CD8B"],
+        "B cell": ["MS4A1", "CD79A", "CD79B", "CD19"],
+        "NK cell": ["GNLY", "NKG7", "KLRD1", "NCAM1"],
+        "Monocyte (CD14+)": ["CD14", "LYZ", "S100A9", "S100A8"],
+        "Monocyte (CD16+)": ["FCGR3A", "MS4A7", "LILRA5"],
+        "Dendritic cell": ["FCER1A", "CST3", "CLEC10A"],
+        "Platelet": ["PPBP", "PF4"],
+    },
+    'brain': {
+        "Oligodendrocyte": ["MBP", "PLP1", "MAG", "MOG"],
+        "Astrocyte": ["GFAP", "S100B", "ALDH1L1", "SLC1A3"],
+        "Microglia": ["P2RY12", "CX3CR1", "TMEM119"],
+        "Endothelial": ["PECAM1", "VWF", "CLDN5", "KDR"],
+        "Pericyte/VLMC": ["PDGFRB", "PDGFRA", "COL1A1", "COL1A2"],
+        "Pan-neuronal": ["SYT1", "SNAP25"],
+        "Excitatory (IT/ET)": ["SLC17A7", "SATB2", "RORB", "FEZF2", "BCL11B"],
+        "Inhibitory (Pvalb/Sst/Vip)": ["GAD1", "GAD2", "PVALB", "SST", "VIP", "LAMP5"],
+        "OPC": ["PDGFRA", "CSPG4", "OLIG2"],
+    },
+}
+
+
+def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cell_type_key='scanvi_prediction', tissue_type='pbmc'):
     """
     Generate post-integration visualizations with SCANVI embeddings
     """
@@ -223,18 +318,8 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
     if cell_type_key in adata.obs.columns:
         print(f"\nGenerating marker dotplot by {cell_type_key}...")
 
-        # Human markers with case-insensitive matching
-        key_markers = {
-            "Oligodendrocyte": ["MBP", "PLP1", "MAG", "MOG"],
-            "Astrocyte": ["GFAP", "S100B", "ALDH1L1", "SLC1A3"],
-            "Microglia": ["P2RY12", "CX3CR1", "TMEM119"],
-            "Endothelial": ["PECAM1", "VWF", "CLDN5", "KDR"],
-            "Pericyte/VLMC": ["PDGFRB", "PDGFRA", "COL1A1", "COL1A2"],
-            "Pan-neuronal": ["SYT1", "SNAP25"],
-            "Excitatory (IT/ET)": ["SLC17A7", "SATB2", "RORB", "FEZF2", "BCL11B"],
-            "Inhibitory (Pvalb/Sst/Vip)": ["GAD1", "GAD2", "PVALB", "SST", "VIP", "LAMP5"],
-            "OPC": ["PDGFRA", "CSPG4", "OLIG2"],
-        }
+        # Tissue-aware markers with case-insensitive matching
+        key_markers = TISSUE_MARKERS.get(tissue_type, TISSUE_MARKERS.get('pbmc', {}))
 
         # Case-insensitive map: lower -> true name
         var_lower_to_true = {v.lower(): v for v in adata.var_names}
@@ -461,28 +546,50 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
 
 def extract_cell_types_for_hdwgcna(adata, output_dir, cell_type_key='scanvi_prediction', min_cells=100):
     """
-    Extract cell types with sufficient cells for hdWGCNA
+    Extract cell types with sufficient cells for hdWGCNA.
+    Adaptively compresses to broad categories when <50% of fine-grained
+    types pass the min_cells threshold (e.g. small datasets).
     """
     print(f"\n{'='*70}")
     print("EXTRACTING CELL TYPES FOR hdWGCNA")
     print(f"{'='*70}")
-    
-    # Count cells per type
+
+    # Count fine-grained types
     cell_type_counts = adata.obs[cell_type_key].value_counts()
-    
+    n_total = len(cell_type_counts)
+    n_passing = (cell_type_counts >= min_cells).sum()
+    viable_ratio = n_passing / n_total if n_total > 0 else 1.0
+
+    print(f"Fine-grained types: {n_total}, passing min_cells={min_cells}: {n_passing} ({viable_ratio:.0%})")
+
+    # Adaptive compression: if <50% of types are viable, switch to broad categories
+    use_broad = viable_ratio < 0.5 and len(CELLTYPIST_BROAD_MAP) > 0
+    if use_broad:
+        print(f"Adaptive compression: {n_passing}/{n_total} types viable ({viable_ratio:.0%}) — switching to broad categories")
+        adata.obs['cell_type_broad'] = (
+            adata.obs[cell_type_key]
+            .map(CELLTYPIST_BROAD_MAP)
+            .fillna('Progenitors/Other')
+        )
+        active_key = 'cell_type_broad'
+        cell_type_counts = adata.obs[active_key].value_counts()
+    else:
+        print(f"Using fine-grained types: {n_passing}/{n_total} viable ({viable_ratio:.0%})")
+        active_key = cell_type_key
+
     # Filter by minimum cells
     valid_types = cell_type_counts[cell_type_counts >= min_cells].index.tolist()
-    
-    print(f"Found {len(valid_types)} cell types with >= {min_cells} cells:")
+
+    print(f"\nUsing key '{active_key}': {len(valid_types)} types with >= {min_cells} cells:")
     for ct in valid_types:
         print(f"  - {ct}: {cell_type_counts[ct]} cells")
-    
+
     # Write valid cell types (one per line)
     cell_types_file = os.path.join(output_dir, 'hdwgcna_cell_types.txt')
     with open(cell_types_file, 'w') as f:
         for ct in valid_types:
             f.write(f"{ct}\n")
-    
+
     # Write counts summary
     counts_df = pd.DataFrame({
         'cell_type': cell_type_counts.index,
@@ -491,11 +598,17 @@ def extract_cell_types_for_hdwgcna(adata, output_dir, cell_type_key='scanvi_pred
     })
     counts_file = os.path.join(output_dir, 'hdwgcna_cell_type_counts.csv')
     counts_df.to_csv(counts_file, index=False)
-    
+
+    # Write which key hdWGCNA should use
+    key_file = os.path.join(output_dir, 'hdwgcna_cell_type_key.txt')
+    with open(key_file, 'w') as f:
+        f.write(active_key)
+
     print(f"\n✓ Cell types written to: {cell_types_file}")
     print(f"✓ Counts summary written to: {counts_file}")
+    print(f"✓ Active key: {active_key} (written to {key_file})")
     print(f"{'='*70}\n")
-    
+
     return cell_types_file, counts_file
 
 def main():
@@ -508,6 +621,9 @@ def main():
                         help='Minimum cells per type for hdWGCNA')
     parser.add_argument('--cell_type_key', type=str, default=None,
                         help='Column name for cell type predictions (auto-detected if not provided)')
+    parser.add_argument('--tissue_type', type=str, default='pbmc',
+                        choices=['pbmc', 'brain'],
+                        help='Tissue type for marker dotplot (default: pbmc)')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -532,7 +648,8 @@ def main():
             cell_type_key = 'scanvi_prediction'  # fallback for downstream guards
     print(f"Using cell type key: {cell_type_key}")
 
-    create_post_integration_plots(adata, args.output_dir, args.resolutions, cell_type_key=cell_type_key)
+    create_post_integration_plots(adata, args.output_dir, args.resolutions,
+                                   cell_type_key=cell_type_key, tissue_type=args.tissue_type)
 
     # Extract cell types for hdWGCNA
     extract_cell_types_for_hdwgcna(
@@ -541,6 +658,12 @@ def main():
         cell_type_key=cell_type_key,
         min_cells=args.hdwgcna_min_cells
     )
+
+    # Re-save h5ad if cell_type_broad was added (needed by downstream CONVERT_H5AD_TO_SEURAT)
+    if 'cell_type_broad' in adata.obs.columns:
+        output_h5ad = os.path.join(args.output_dir, 'annotated_with_scanvi_clustering.h5ad')
+        adata.write(output_h5ad, compression='gzip')
+        print(f"Re-saved h5ad with cell_type_broad column: {output_h5ad}")
 
 if __name__ == "__main__":
     main()

@@ -271,16 +271,20 @@ Model dimensions:
     print("EXTRACTING METADATA FROM MODALITIES")
     print("="*80)
     
-    # Cell type from RNA scanvi predictions
-    if 'rna:scanvi_prediction' in mdata.obs.columns:
-        mdata.obs['cell_type'] = mdata.obs['rna:scanvi_prediction']
-        print(f"✓ Extracted cell types from rna:scanvi_prediction")
-        print(f"  Unique cell types: {mdata.obs['cell_type'].nunique()}")
-    elif 'atac:scanvi_prediction' in mdata.obs.columns:
-        mdata.obs['cell_type'] = mdata.obs['atac:scanvi_prediction']
-        print(f"✓ Extracted cell types from atac:scanvi_prediction")
-    else:
-        print("⚠️  WARNING: No scanvi_prediction found in any modality")
+    # Cell type from RNA predictions (CellTypist or scANVI)
+    cell_type_source = None
+    for key in ['rna:celltypist_prediction', 'rna:cell_type_prediction',
+                'rna:scanvi_prediction', 'celltypist_prediction',
+                'cell_type_prediction', 'scanvi_prediction',
+                'atac:scanvi_prediction']:
+        if key in mdata.obs.columns:
+            mdata.obs['cell_type'] = mdata.obs[key]
+            cell_type_source = key
+            print(f"Extracted cell types from {key}")
+            print(f"  Unique cell types: {mdata.obs['cell_type'].nunique()}")
+            break
+    if cell_type_source is None:
+        print("WARNING: No cell type prediction found in any modality")
     
     # Extract lane from sample_id
     if 'sample_id' in mdata.obs.columns:
@@ -327,33 +331,50 @@ Model dimensions:
     # Get UMAP coordinates
     umap_coords = mdata.obsm['X_umap']
     
-    # 7.1 UMAP by cell type
+    # 7.1 UMAP by cell type (RNA-based annotations)
     if 'cell_type' in mdata.obs.columns:
         print(f"\nPlotting UMAP by cell type...")
-        
-        fig, ax = plt.subplots(figsize=(10, 8))
-        
+
         cell_types = mdata.obs['cell_type'].astype(str)
-        unique_types = cell_types.unique()
-        colors = plt.cm.tab20(np.linspace(0, 1, len(unique_types)))
+        unique_types = sorted(cell_types.unique())
+        n_types = len(unique_types)
+
+        # Use tab20 for <=20 types, turbo colormap for more
+        if n_types <= 20:
+            colors = plt.cm.tab20(np.linspace(0, 1, n_types))
+        else:
+            colors = plt.cm.turbo(np.linspace(0.05, 0.95, n_types))
         color_map = dict(zip(unique_types, colors))
-        
+
+        # Dynamic layout: legend below for many types, right for few
+        if n_types <= 20:
+            fig, ax = plt.subplots(figsize=(12, 8))
+        else:
+            fig, ax = plt.subplots(figsize=(12, 10))
+
         for ct in unique_types:
             mask = cell_types == ct
             ax.scatter(umap_coords[mask, 0], umap_coords[mask, 1],
                       c=[color_map[ct]], label=ct, s=5, alpha=0.7)
-        
+
         ax.set_xlabel('UMAP 1')
         ax.set_ylabel('UMAP 2')
-        ax.set_title('UMAP colored by Cell Type')
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
-        
+        source_desc = cell_type_source if cell_type_source else 'unknown'
+        ax.set_title(f'MOFA UMAP — Cell types from RNA ({source_desc})')
+
+        if n_types <= 20:
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+        else:
+            ncol = max(3, n_types // 10)
+            ax.legend(bbox_to_anchor=(0.5, -0.12), loc='upper center',
+                     fontsize=6, ncol=ncol, frameon=False)
+
         plt.tight_layout()
-        plt.savefig(FIGURES_DIR / 'umap_mofa_celltype.png', dpi=300, bbox_inches='tight')
+        plt.savefig(FIGURES_DIR / 'umap_mofa_rna_celltype.png', dpi=300, bbox_inches='tight')
         plt.close()
-        print("✓ Saved: umap_mofa_celltype.png")
+        print("Saved: umap_mofa_rna_celltype.png")
     else:
-        print("\n⚠️  Cell type not available - skipping cell type UMAP")
+        print("\nCell type not available - skipping cell type UMAP")
 
     # 7.1b UMAP by ATAC cell type (FIX-67)
     atac_ct_key = None
@@ -491,20 +512,25 @@ Model dimensions:
         factor_means.to_csv(factor_celltype_csv)
         print(f"\n✓ Saved: {factor_celltype_csv}")
         
-        # 8.1 Heatmap
+        # 8.1 Heatmap (dynamic sizing, annotations only when legible)
         print("\nGenerating factor-celltype heatmap...")
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(factor_means.T, cmap='RdBu_r', center=0, 
+        n_types = len(factor_means.index)
+        show_annot = n_types <= 15
+        fig_w = max(10, n_types * 0.6)
+        fig_h = max(8, n_factors * 0.5)
+        plt.figure(figsize=(fig_w, fig_h))
+        sns.heatmap(factor_means.T, cmap='RdBu_r', center=0,
                     cbar_kws={'label': 'Mean Factor Value'},
-                    annot=True, fmt='.2f')
+                    annot=show_annot, fmt='.2f' if show_annot else '')
         plt.xlabel('Cell Type')
         plt.ylabel('MOFA Factor')
         plt.title('Mean MOFA Factor Values by Cell Type')
+        plt.xticks(rotation=45, ha='right', fontsize=max(6, 10 - n_types // 10))
         plt.tight_layout()
         plt.savefig(FIGURES_DIR / 'mofa_factors_celltype_heatmap.png',
                     dpi=300, bbox_inches='tight')
         plt.close()
-        print("✓ Saved: mofa_factors_celltype_heatmap.png")
+        print("Saved: mofa_factors_celltype_heatmap.png")
         
         # 8.2 Boxplots
         print("\nGenerating factor-celltype boxplots...")

@@ -111,6 +111,8 @@ def main():
     # FIX-29b: Local GTF annotation to avoid internet download on HPC compute nodes
     parser.add_argument('--gtf', type=str, default=None,
                     help='Local GTF/GFF3 annotation file (avoids internet download)')
+    parser.add_argument('--cisbp_meme', type=str, default=None,
+                    help='Local CIS-BP MEME motif file for motif enrichment (avoids internet download)')
     args = parser.parse_args()
 
     # CRITICAL FIX: Disable HDF5 file locking for DFS/NFS
@@ -936,6 +938,50 @@ def main():
     )
     with quiet_plotly_export():
         fig.write_image(str(plot_dir / "umap_by_batch.pdf"))
+
+    # UMAP by cell type (ATAC-based annotation)
+    try:
+        fig = snap.pl.umap(data, color='cell_type', show=False, out_file=None,
+                          interactive=False, height=500)
+        with quiet_plotly_export():
+            fig.write_image(str(plot_dir / "umap_by_cell_type.pdf"))
+        print("Saved: umap_by_cell_type.pdf")
+    except Exception as e:
+        print(f"WARNING: Cell type UMAP failed: {e}")
+
+    # Marker regions heatmap by cell type
+    if 'cell_type' in peak_matrix.obs.columns:
+        print("Identifying marker regions by cell type...")
+        try:
+            marker_peaks = snap.tl.marker_regions(peak_matrix, groupby='cell_type')
+            fig = snap.pl.regions(peak_matrix, groupby='cell_type', peaks=marker_peaks,
+                                 interactive=False, show=False)
+            with quiet_plotly_export():
+                fig.write_image(str(plot_dir / "marker_regions_heatmap.pdf"))
+            print("Saved: marker_regions_heatmap.pdf")
+
+            # Motif enrichment on marker peaks
+            print("Running motif enrichment on marker peaks...")
+            genome_fasta = snap.genome.hg38 if args.species == 'human' else snap.genome.mm10
+            if args.cisbp_meme and Path(args.cisbp_meme).exists():
+                from snapatac2.datasets import read_motifs
+                print(f"  Loading local CIS-BP motifs: {args.cisbp_meme}")
+                motif_list = read_motifs(args.cisbp_meme)
+            else:
+                print("  Downloading CIS-BP motifs via snapatac2...")
+                motif_list = snap.datasets.cis_bp(unique=True)
+            motifs = snap.tl.motif_enrichment(
+                motifs=motif_list,
+                regions=marker_peaks,
+                genome_fasta=genome_fasta
+            )
+            fig = snap.pl.motif_enrichment(motifs, max_fdr=0.0001, height=1600,
+                                           interactive=False, show=False)
+            with quiet_plotly_export():
+                fig.write_image(str(plot_dir / "motif_enrichment.pdf"))
+            print("Saved: motif_enrichment.pdf")
+        except Exception as e:
+            print(f"WARNING: Marker regions / motif enrichment failed: {e}")
 
     # ========================================================================
     # STEP 18: SAVE SUMMARY AND CLOSE

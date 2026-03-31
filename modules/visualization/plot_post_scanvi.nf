@@ -15,6 +15,7 @@ process PLOT_POST_SCANVI {
     plot_postscanvi.py \\
         --input ${h5ad} \\
         --output_dir . \\
-        --hdwgcna_min_cells ${params.hdwgcna.min_cells}
+        --hdwgcna_min_cells ${params.hdwgcna.min_cells} \\
+        --tissue_type ${params.celltypist.tissue_type ?: 'pbmc'}
     """
 }
