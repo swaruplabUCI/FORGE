@@ -28,7 +28,14 @@ process SCENICPLUS_GRN_VIZ {
     """
     export HDF5_USE_FILE_LOCKING=FALSE
 
-    /opt/miniforge3/envs/gt/bin/python ${projectDir}/bin/plot_eregulon_networks.py \\
+    # graph-tool requires the gt conda env; fall back to system python if missing
+    GT_PYTHON="/opt/miniforge3/envs/gt/bin/python"
+    if [ ! -x "\${GT_PYTHON}" ]; then
+        echo "WARNING: graph-tool conda env not found at \${GT_PYTHON}, falling back to system python"
+        GT_PYTHON="python"
+    fi
+
+    \${GT_PYTHON} ${projectDir}/bin/plot_eregulon_networks.py \\
         --eregulon-tsv '${eregulon_tsv}' \\
         --aucell-direct '${aucell_direct}' \\
         --rss-csv '${rss_csv}' \\

@@ -1756,6 +1756,8 @@ def main():
 
                 elif panel_type_name == 'aggregate_msfp':
                     try:
+                        if agg_msfp is None:
+                            raise ValueError("Phase 2 not computed (no footprints/TFBS)")
                         plot_aggregate_msfp(agg_msfp, tf, ct, ax)
                         ax.set_title(
                             f'{label}. Aggregate MSFP — {tf} across {n_enhancer_regions} motif sites',
@@ -1769,6 +1771,8 @@ def main():
 
                 elif panel_type_name == 'aggregate_binding':
                     try:
+                        if agg_bs_mean is None:
+                            raise ValueError("Phase 2 not computed (no footprints/TFBS)")
                         plot_aggregate_binding(agg_bs_mean, agg_bs_sem, tf, ct, ax)
                         ax.set_title(
                             f'{label}. Aggregate TFBS Binding — {tf} mean probability across {n_enhancer_regions} sites',
@@ -1782,6 +1786,8 @@ def main():
 
                 elif panel_type_name == 'bound_unbound':
                     try:
+                        if len(max_scores) == 0:
+                            raise ValueError("Phase 2 not computed (no binding scores)")
                         # Split into two sub-axes for bound vs unbound
                         ax.set_visible(False)
                         gs_inner = ax.get_subplotspec().subgridspec(1, 2, wspace=0.3)
@@ -1807,6 +1813,8 @@ def main():
 
                 elif panel_type_name == 'binding_distribution':
                     try:
+                        if len(max_scores) == 0:
+                            raise ValueError("Phase 2 not computed (no binding scores)")
                         plot_binding_distribution(max_scores, binding_threshold, tf, ct, ax)
                         ax.set_title(
                             f'{label}. Binding Score Distribution — {tf} ({args.binding_threshold} threshold)',
@@ -1820,6 +1828,8 @@ def main():
 
                 elif panel_type_name == 'differential_msfp':
                     try:
+                        if diff_msfp is None:
+                            raise ValueError("Differential MSFP not computed (no conditions)")
                         plot_differential_msfp(
                             diff_msfp, tf, ct,
                             args.control_condition, args.treatment_condition, ax)

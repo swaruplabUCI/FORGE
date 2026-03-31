@@ -1322,11 +1322,13 @@ workflow REGULATORY_ANALYSIS {
         if (is_discovery_mode && params.chromvar.run) {
             log.info "DISCOVERY MODE -- mapping ChromVAR TFs to target genes via motif-peak-CCAN linkage"
 
+            // FIX-R3-3: Use species-appropriate GTF
+            def tf_map_gtf = params.species == 'human' ? params.scprinter.gtf_human : params.scprinter.gtf_mouse
             MAP_TF_TO_TARGET_GENES(
                 GPU_CHROMVAR.out.chromvar_raw,
                 EXTRACT_CHROMVAR_MOTIFS.out.motif_list,
                 CICERO_FULL.out.ccan,
-                params.scprinter.gtf_human
+                tf_map_gtf
             )
 
             MAP_TF_TO_TARGET_GENES.out.report.view {
@@ -1764,10 +1766,13 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     // ================================================================
     log.info "ENHANCER FOOTPRINTING RECIPES: Phase 1 (ATAC-only)"
 
+    // FIX-R3-3: Use species-appropriate GTF for enhancer extraction
+    def enhancer_gtf = params.species == 'human' ? params.scprinter.gtf_human : params.scprinter.gtf_mouse
+
     EXTRACT_CCAN_ENHANCERS(
         cicero_conns_ch,
         cicero_ccan_ch,
-        params.scprinter.gtf_human,
+        enhancer_gtf,
         ''  // condition_label: empty for default run
     )
 
@@ -1895,7 +1900,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             cicero_conns_ch,
             EXTRACT_CCAN_ENHANCERS.out.enhancer_peaks,
             bigwig_dir_ch,
-            file(params.scprinter.gtf_human),
+            file(params.species == 'human' ? params.scprinter.gtf_human : params.scprinter.gtf_mouse),
             params.enhancer_viz.target_genes,
             MOTIF_SCAN_ENHANCERS.out.manifest
         )
