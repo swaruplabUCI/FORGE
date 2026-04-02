@@ -20,6 +20,7 @@ process ASSIGN_TEST_GROUPS {
 }
 
 process CONVERT_H5AD_FOR_MAST {
+    label 'process_low'
     tag 'convert_for_mast'
 
     input:

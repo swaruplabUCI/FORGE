@@ -1,4 +1,5 @@
 process CONVERT_CELLISMO {
+    label 'process_medium'
     tag "$cellismo_file.baseName"
     publishDir "${params.outdir}/cellismo_converted", mode: 'copy', enabled: params.save_intermediate
     

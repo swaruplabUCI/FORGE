@@ -1,6 +1,7 @@
 // modules/chromvar/vischromvar.nf
 
 process VIS_CHROMVAR {
+    label 'process_high'
 
     tag "vis_chromvar"
 

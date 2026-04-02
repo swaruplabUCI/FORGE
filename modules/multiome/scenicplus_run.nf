@@ -3,6 +3,7 @@
 nextflow.enable.dsl=2
 
 process SCENICPLUS_RUN {
+    label 'process_high'
 
     tag { "scenicplus_snakemake" }
 

@@ -1,4 +1,5 @@
 process EXPORT_MUDATA_RNA {
+    label 'process_low'
     tag "export_mudata_rna"
 
     input:

@@ -26,6 +26,7 @@
 //           but kept in the repo for reference.
 
 process CELLBENDER {
+    label 'process_gpu'
     tag "${sample_id}"
     publishDir "${params.outdir}/cellbender", mode: 'copy'
 

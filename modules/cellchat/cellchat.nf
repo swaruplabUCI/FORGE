@@ -2,6 +2,7 @@
 nextflow.enable.dsl=2
 
 process RUN_CELLCHAT {
+    label 'process_medium'
     publishDir "${params.outdir}/cellchat", mode: 'copy'
     errorStrategy 'ignore'
 
@@ -42,6 +43,7 @@ process RUN_CELLCHAT {
 }
 
 process COMPARE_CELLCHAT {
+    label 'process_medium'
     tag "comparison_${comparison_name}"
     publishDir "${params.outdir}/cellchat/comparison", mode: 'copy'
     

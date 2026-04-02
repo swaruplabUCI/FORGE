@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import argparse
 import os
+import sys
 import gc
 from pathlib import Path
 
@@ -115,7 +116,7 @@ TISSUE_MARKERS = {
 }
 
 
-def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cell_type_key='scanvi_prediction', tissue_type='pbmc'):
+def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cell_type_key='scanvi_prediction', tissue_type='pbmc', alt_cell_type_key=None):
     """
     Generate post-integration visualizations with SCANVI embeddings
     """
@@ -273,6 +274,38 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
             )
             plt.close(fig)
         print("  Saved: umap_cell_types.png")
+
+    # Plot 3b: Secondary cell type UMAP (alternate prediction method)
+    if alt_cell_type_key and alt_cell_type_key in adata.obs.columns:
+        n_alt = len(adata.obs[alt_cell_type_key].unique())
+        fig_width = max(12, 10 + (n_alt * 0.3)) if n_alt <= 20 else 12
+        fig, ax = plt.subplots(figsize=(fig_width, 8))
+        sc.pl.umap(
+            adata,
+            color=alt_cell_type_key,
+            ax=ax,
+            show=False,
+            title=f'Cell Type Predictions ({alt_cell_type_key})',
+            legend_loc='right margin' if n_alt <= 20 else 'none',
+            legend_fontsize=7,
+            frameon=False
+        )
+        if n_alt > 20:
+            handles, labels = ax.get_legend_handles_labels()
+            if not handles:
+                categories = adata.obs[alt_cell_type_key].cat.categories
+                palette = dict(zip(categories, adata.uns.get(f'{alt_cell_type_key}_colors',
+                               sc.pl.palettes.default_102[:len(categories)])))
+                handles = [plt.Line2D([0], [0], marker='o', color='w',
+                           markerfacecolor=palette[c], markersize=6, label=c) for c in categories]
+                labels = list(categories)
+            ax.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, -0.05),
+                      ncol=max(3, len(labels) // 15 + 1), fontsize=6, frameon=False)
+        plt.tight_layout()
+        alt_fname = f'umap_cell_types_{alt_cell_type_key}.png'
+        fig.savefig(os.path.join(output_dir, alt_fname), dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"  Saved: {alt_fname}")
 
     # Plot 4: Batch distribution (post-integration)
     if 'batch' in adata.obs.columns:
@@ -635,21 +668,34 @@ def main():
     print(f"Observations: {list(adata.obs.columns)}")
     print(f"Embeddings: {list(adata.obsm.keys())}")
 
-    # Auto-detect cell type key
+    # Auto-detect cell type key — prefer explicit arg from pipeline, fallback to auto-detect
     if args.cell_type_key and args.cell_type_key in adata.obs.columns:
         cell_type_key = args.cell_type_key
     else:
+        if args.cell_type_key:
+            print(f"WARNING: Requested cell_type_key '{args.cell_type_key}' not found in adata.obs — auto-detecting")
         cell_type_key = None
-        for candidate in ['celltypist_prediction', 'scanvi_prediction', 'cell_type_prediction']:
+        for candidate in ['scanvi_prediction', 'celltypist_prediction', 'cell_type_prediction']:
             if candidate in adata.obs.columns:
                 cell_type_key = candidate
                 break
         if cell_type_key is None:
-            cell_type_key = 'scanvi_prediction'  # fallback for downstream guards
+            print("ERROR: No cell type prediction column found in adata.obs. "
+                  "Expected one of: scanvi_prediction, celltypist_prediction, cell_type_prediction. "
+                  f"Available columns: {list(adata.obs.columns)}")
+            sys.exit(1)
     print(f"Using cell type key: {cell_type_key}")
 
+    # Identify alternate prediction key (for secondary UMAP when both methods ran)
+    alt_cell_type_key = None
+    all_ct_keys = [k for k in ['scanvi_prediction', 'celltypist_prediction'] if k in adata.obs.columns and k != cell_type_key]
+    if all_ct_keys:
+        alt_cell_type_key = all_ct_keys[0]
+        print(f"Alternate cell type key available: {alt_cell_type_key}")
+
     create_post_integration_plots(adata, args.output_dir, args.resolutions,
-                                   cell_type_key=cell_type_key, tissue_type=args.tissue_type)
+                                   cell_type_key=cell_type_key, tissue_type=args.tissue_type,
+                                   alt_cell_type_key=alt_cell_type_key)
 
     # Extract cell types for hdWGCNA
     extract_cell_types_for_hdwgcna(

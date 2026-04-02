@@ -3,6 +3,7 @@
 nextflow.enable.dsl=2
 
 process SCPRINTER_DORC {
+    label 'process_medium'
 
     tag { "scprinter_dorc" }
 

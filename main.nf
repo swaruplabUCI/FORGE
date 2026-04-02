@@ -561,6 +561,54 @@ def validateStartupParams() {
     }
     checks_passed << "Species/genome consistency"
 
+    // R3-4: GTF file validation for all GTF-consuming workflows
+    // Checks: (1) not the literal string "null", (2) file exists on disk
+    def gtfChecks = [:]  // label → path
+    def speciesGtf = params.species == 'human' ? params.gtf_human_full : params.gtf_mouse_full
+
+    // scPRINTER / enhancer / chromvar workflows all use scprinter.gtf_human/mouse
+    def scprinterGtf = params.species == 'human' ? params.scprinter?.gtf_human : params.scprinter?.gtf_mouse
+    if (params.scprinter?.run || params.enhancer_footprinting?.run || params.enhancer_viz?.run || params.chromvar?.run) {
+        gtfChecks["scprinter.gtf_${params.species} (scPRINTER/enhancer/chromVAR)"] = scprinterGtf
+    }
+
+    // Cicero
+    if (params.cicero?.run) {
+        gtfChecks["cicero.gtf_full"] = params.cicero?.gtf_full
+        if (params.cicero?.target_genes) {
+            gtfChecks["cicero.gtf_plot"] = params.cicero?.gtf_plot
+        }
+    }
+
+    // pycisTopic (already has null check at line 520, add file-existence here)
+    if (params.pycistopic?.run && params.pycistopic?.gtf) {
+        gtfChecks["pycistopic.gtf"] = params.pycistopic.gtf
+    }
+
+    // SCENIC+
+    if (params.scenicplus?.run && params.scenicplus?.gtf) {
+        gtfChecks["scenicplus.gtf"] = params.scenicplus.gtf
+    }
+
+    // Validate each GTF
+    gtfChecks.each { label, gtfVal ->
+        def gtfString = gtfVal?.toString()
+        if (!gtfString || gtfString == 'null') {
+            errors << "${label} resolves to '${gtfString}'. " +
+                      "Set the species-appropriate GTF path in your dataset config " +
+                      "(e.g., gtf_human_full = '/path/to/gencode.v44.annotation.gtf')."
+        } else if (!file(gtfString).exists()) {
+            errors << "${label} file does not exist: ${gtfString}. " +
+                      "Verify the path and ensure the GTF is accessible from the execution host."
+        }
+    }
+    def gtfErrors = gtfChecks.count { label, gtfVal ->
+        def s = gtfVal?.toString(); !s || s == 'null' || !file(s).exists()
+    }
+    if (gtfChecks && gtfErrors == 0) {
+        checks_passed << "GTF files (${gtfChecks.size()} paths validated)"
+    }
+
     // FIX-B3: Reference atlas directory must contain h5ad files if reference path is set
     def refDir = params.species == 'human' ? params.ref_dir_human_integrated : params.ref_dir_mouse_integrated
     if (refDir) {
@@ -740,7 +788,7 @@ workflow RNA {
         RUN_CELLTYPIST(TRAIN_SCANVI.out.annotated)
 
         log.info "Step 7: Generating post-integration visualizations..."
-        PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad)
+        PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad, cell_type_key)
 
     } else {
         // ============================================================
@@ -752,7 +800,7 @@ workflow RNA {
         RUN_CELLTYPIST(CONCAT_BATCHES.out.concatenated)
 
         log.info "Step 7: Generating post-integration visualizations..."
-        PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad)
+        PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad, cell_type_key)
     }
 
     // Debug: View what was emitted

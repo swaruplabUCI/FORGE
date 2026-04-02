@@ -1,4 +1,5 @@
 process RNA_QC {
+    label 'process_medium'
     tag "$sample"
     publishDir "${params.outdir}/rna/qc", mode: 'copy'
     

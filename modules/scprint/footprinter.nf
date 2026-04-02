@@ -19,6 +19,7 @@
 // ============================================================================
 
 process SCPRINTER_FOOTPRINTING {
+    label 'process_high'
 
     // FIX-36: Each task loads the printer h5ad (read-only) + model files +
     // peak matrix independently.  Each is a separate SLURM job on a separate

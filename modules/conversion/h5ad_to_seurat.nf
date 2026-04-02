@@ -2,6 +2,7 @@
 nextflow.enable.dsl=2
 
 process CONVERT_H5AD_TO_SEURAT {
+    label 'process_medium'
     tag "h5ad_conversion"
     
     publishDir "${params.outdir}/converted", mode: 'copy', enabled: params.save_converted

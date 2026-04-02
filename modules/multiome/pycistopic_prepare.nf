@@ -2,6 +2,7 @@
 nextflow.enable.dsl=2
 
 process PYCISTOPIC_PREPARE {
+    label 'process_high'
     tag "pycistopic_prepare"
 
     publishDir "${params.outdir}/pycistopic", mode: 'copy', overwrite: true, pattern: "cistopic_obj.pkl"

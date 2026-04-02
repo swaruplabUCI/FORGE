@@ -6,6 +6,7 @@
 nextflow.enable.dsl=2
 
 process SCENICPLUS_VISUALIZE {
+    label 'process_high'
 
     tag "scenicplus_viz"
     errorStrategy 'ignore'

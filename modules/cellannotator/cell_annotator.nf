@@ -1,4 +1,5 @@
 process RUN_CELL_ANNOTATOR {
+    label 'process_medium'
     tag "cell_annotator"
     publishDir "${params.outdir}/cell_annotation", mode: 'copy'
 

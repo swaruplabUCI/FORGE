@@ -7,6 +7,7 @@
 nextflow.enable.dsl=2
 
 process SCENICPLUS_GRN_VIZ {
+    label 'process_medium'
 
     tag "scenicplus_grn"
     publishDir "${params.outdir}/scenicplus/grn_networks", mode: 'copy', overwrite: true

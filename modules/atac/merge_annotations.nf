@@ -1,4 +1,5 @@
 process MERGE_ANNOTATIONS {
+    label 'process_medium'
     publishDir "${params.outdir}/consolidated_qc", mode: 'copy'
     
     input:

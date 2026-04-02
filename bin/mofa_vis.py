@@ -284,7 +284,14 @@ Model dimensions:
             print(f"  Unique cell types: {mdata.obs['cell_type'].nunique()}")
             break
     if cell_type_source is None:
-        print("WARNING: No cell type prediction found in any modality")
+        print("\n" + "!"*80)
+        print("WARNING: No cell type prediction column found in any modality.")
+        print("  Searched: rna:celltypist_prediction, rna:cell_type_prediction,")
+        print("            rna:scanvi_prediction, celltypist_prediction,")
+        print("            cell_type_prediction, scanvi_prediction, atac:scanvi_prediction")
+        print(f"  Available obs columns: {[c for c in mdata.obs.columns if 'type' in c.lower() or 'predict' in c.lower() or 'label' in c.lower()]}")
+        print("  Cell type UMAP will be SKIPPED.")
+        print("!"*80)
     
     # Extract lane from sample_id
     if 'sample_id' in mdata.obs.columns:
@@ -374,7 +381,8 @@ Model dimensions:
         plt.close()
         print("Saved: umap_mofa_rna_celltype.png")
     else:
-        print("\nCell type not available - skipping cell type UMAP")
+        print("\nSKIPPED: Cell type UMAP — no cell_type column in mdata.obs "
+              "(cell_type_source was not resolved during metadata extraction)")
 
     # 7.1b UMAP by ATAC cell type (FIX-67)
     atac_ct_key = None
