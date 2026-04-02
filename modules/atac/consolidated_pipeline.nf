@@ -11,6 +11,7 @@ process ATAC_FINAL_PIPELINE {
     output:
     path "atac_complete.h5ads", emit: anndataset
     path "peak_matrix.h5ad", emit: peak_matrix
+    path "gene_matrix.h5ad", emit: gene_matrix
     path "qc_plots/*", emit: qc_plots
     path "atac_pipeline_summary.json", emit: summary
     path "*.h5ad", emit: individual_samples

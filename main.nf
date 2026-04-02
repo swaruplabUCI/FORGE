@@ -63,6 +63,7 @@ include { ATAC_FINAL_PIPELINE } from './modules/atac/consolidated_pipeline'
 
 // Cell-type annotation for ATAC
 include { ATAC_CELLTYPE_ANNOTATION } from './modules/atac/celltype_annotation'
+include { ATAC_CELLTYPIST } from './modules/atac/atac_celltypist'
 include { MERGE_ANNOTATIONS } from './modules/atac/merge_annotations'
 
 // Differential ATAC analysis
@@ -183,6 +184,17 @@ def resolveAtacCoordDir(row) {
     def dir = params.atac_coord_batch_dirs?.get(row.batch, null)
     if (!dir) error "No ATAC coord-sorted directory configured for batch '${row.batch}'. Set atac_coord_batch_dirs.${row.batch} in config."
     return dir
+}
+
+// HELPER: Resolve per-sample demux files from generic config maps
+// Returns file('NO_FILE') when no demux is configured for this sample's batch.
+def resolveDemuxMetadata(String sample) {
+    def match = params.demux_metadata?.find { batch, path -> sample.contains(batch) }
+    return match ? file(match.value) : file('NO_FILE')
+}
+def resolveDemuxSouporcell(String sample) {
+    def match = params.demux_souporcell_dirs?.find { batch, path -> sample.contains(batch) }
+    return match ? file(match.value) : file('NO_FILE')
 }
 
 
@@ -743,13 +755,13 @@ workflow RNA {
     CELLBENDER(ch_all_files)
 
     // Step 2 - Run QC on CellBender-filtered data
+    // Demux files resolved per-sample from generic maps (demux_metadata, demux_souporcell_dirs).
+    // For datasets without demultiplexing (e.g., 10x PBMC), both resolve to NO_FILE.
     log.info "Step 2: Running RNA QC and demultiplexing..."
-    RNA_QC(
-        CELLBENDER.out.filtered_h5,
-        file(params.june_metadata ?: 'NO_FILE'),
-        file(params.july_souporcell_dir ?: 'NO_FILE_JULY'),
-        file(params.nov_souporcell_dir ?: 'NO_FILE_NOV')
-    )
+    ch_qc_input = CELLBENDER.out.filtered_h5.map { sample, h5 ->
+        tuple(sample, h5, resolveDemuxMetadata(sample), resolveDemuxSouporcell(sample))
+    }
+    RNA_QC(ch_qc_input)
 
     // Step 3: Flatten and collect all demultiplexed samples
     log.info "Step 3: Concatenating RNA batches..."
@@ -1133,24 +1145,35 @@ workflow ATAC_FINAL {
         thresholds_file
     )
 
-    // Automated cell-type annotation (always run if ATAC present)
+    // Automated cell-type annotation
     if (params.atac.auto_annotate) {
-        log.info "Running automated ATAC-based cell-type annotation..."
-
-        ch_cluster_scores_ready = ATAC_FINAL_PIPELINE.out.cluster_scores
-            .first()
-
-        ATAC_CELLTYPE_ANNOTATION(
-            ch_cluster_scores_ready
-        )
-
-        MERGE_ANNOTATIONS(
-            ATAC_FINAL_PIPELINE.out.peak_matrix,
-            ATAC_CELLTYPE_ANNOTATION.out.annotations,
-            file(params.atac.sample_metadata)
-        )
-
-        peak_matrix_annotated = MERGE_ANNOTATIONS.out.peak_matrix
+        if (params.atac.marker_file) {
+            // Super-user mode: marker-based annotation → 'cell_type' column
+            log.info "ATAC annotation: marker-based (super-user mode, marker_file provided)"
+            ATAC_CELLTYPE_ANNOTATION(
+                ATAC_FINAL_PIPELINE.out.cluster_scores
+            )
+            MERGE_ANNOTATIONS(
+                ATAC_FINAL_PIPELINE.out.peak_matrix,
+                ATAC_CELLTYPE_ANNOTATION.out.annotations,
+                file(params.atac.sample_metadata),
+                'marker'
+            )
+            peak_matrix_annotated = MERGE_ANNOTATIONS.out.peak_matrix
+        } else {
+            // Default mode: CellTypist on gene activity → 'celltypist_prediction' column
+            log.info "ATAC annotation: CellTypist on gene activity scores (default mode)"
+            ATAC_CELLTYPIST(
+                ATAC_FINAL_PIPELINE.out.gene_matrix
+            )
+            MERGE_ANNOTATIONS(
+                ATAC_FINAL_PIPELINE.out.peak_matrix,
+                ATAC_CELLTYPIST.out.annotated_gene_matrix,
+                file(params.atac.sample_metadata),
+                'celltypist'
+            )
+            peak_matrix_annotated = MERGE_ANNOTATIONS.out.peak_matrix
+        }
     } else {
         peak_matrix_annotated = ATAC_FINAL_PIPELINE.out.peak_matrix
     }
@@ -1159,11 +1182,12 @@ workflow ATAC_FINAL {
     anndataset         = ATAC_FINAL_PIPELINE.out.anndataset
     peak_matrix        = peak_matrix_annotated
     peak_matrix_raw    = ATAC_FINAL_PIPELINE.out.peak_matrix
+    gene_matrix        = ATAC_FINAL_PIPELINE.out.gene_matrix
     qc_plots           = ATAC_FINAL_PIPELINE.out.qc_plots
     summary            = ATAC_FINAL_PIPELINE.out.summary
     individual_samples = ATAC_FINAL_PIPELINE.out.individual_samples
     cluster_scores     = ATAC_FINAL_PIPELINE.out.cluster_scores
-    atac_annotations   = params.atac.auto_annotate ? ATAC_CELLTYPE_ANNOTATION.out.annotations : Channel.empty()
+    atac_annotations   = (params.atac.auto_annotate && params.atac.marker_file) ? ATAC_CELLTYPE_ANNOTATION.out.annotations : Channel.empty()
 }
 
 // ============================================================================
@@ -1412,7 +1436,7 @@ workflow REGULATORY_ANALYSIS {
             log.info "Fan-out footprinting at TF target gene promoters..."
 
             def cicero_conns_for_fp = params.cicero.run ?
-                CICERO_FULL.out.connections.ifEmpty(file('NO_FILE')).first() :
+                CICERO_FULL.out.connections.ifEmpty(file('NO_FILE')) :
                 Channel.value(file('NO_FILE'))
             def pfm_for_fp = params.scprinter.pfms ?
                 Channel.value(file(params.scprinter.pfms)) :
@@ -1849,7 +1873,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         peak_matrix,
         ch_enhancer_fp.map { it[1] },
         ch_enhancer_fp.map { it[2] },
-        cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')).first()
+        cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS'))
     )
 
     // ================================================================

@@ -14,8 +14,8 @@ process EXTRACT_ATAC_CELL_TYPES {
 
     script:
     def ct_key = params.differential.condition_key ?: 'cell_type'
-    // Use the same annotation key the pipeline writes during MERGE_ANNOTATIONS
-    def annotation_key = 'cell_type'
+    // Annotation key depends on mode: marker-based → 'cell_type', CellTypist → 'celltypist_prediction'
+    def annotation_key = params.atac.marker_file ? 'cell_type' : 'celltypist_prediction'
     """
     python ${projectDir}/bin/extract_cell_types.py \\
         --h5ad ${peak_matrix} \\

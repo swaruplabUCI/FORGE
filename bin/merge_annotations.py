@@ -1,24 +1,52 @@
 #!/usr/bin/env python3
 """
-merge_annotations.py 
+merge_annotations.py
 
 Merge cell type annotations into the peak matrix while preserving original barcodes.
+Supports two annotation modes:
+  - Marker mode (--annotations JSON): cluster-level marker-based → 'cell_type' column
+  - CellTypist mode (--celltypist-h5ad): per-cell CellTypist predictions → 'celltypist_prediction' column
+Metadata merge from sample CSV always runs in both modes.
 """
 
 import argparse
+import sys
+from pathlib import Path
 import anndata as ad
 import pandas as pd
 import numpy as np
 import json
 
+# Allow import of celltypist_broad_map.py from the same bin/ directory
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--peak-matrix", required=True, help="Input peak matrix h5ad")
-    p.add_argument("--annotations", required=True, help="Cell type annotations JSON")
     p.add_argument("--metadata", required=True, help="Sample metadata CSV")
-    p.add_argument("--resolution", required=True, help="Leiden resolution to use (e.g., leiden_0_5)")
     p.add_argument("--output", default="peak_matrix_annotated.h5ad", help="Output h5ad")
-    return p.parse_args()
+
+    # Marker mode args (mutually exclusive with celltypist)
+    p.add_argument("--annotations", default=None, help="Cell type annotations JSON (marker mode)")
+    p.add_argument("--resolution", default=None, help="Leiden resolution key (marker mode, e.g. leiden_0_5)")
+
+    # CellTypist mode arg
+    p.add_argument("--celltypist-h5ad", default=None,
+                   help="CellTypist-annotated gene_matrix h5ad (celltypist mode)")
+
+    args = p.parse_args()
+
+    # Validate: exactly one mode must be specified
+    if args.annotations and args.celltypist_h5ad:
+        p.error("Cannot specify both --annotations and --celltypist-h5ad")
+    if not args.annotations and not args.celltypist_h5ad:
+        p.error("Must specify either --annotations (marker mode) or --celltypist-h5ad (celltypist mode)")
+    if args.annotations and not args.resolution:
+        p.error("--resolution is required when using --annotations (marker mode)")
+
+    return args
+
 
 def extract_base_sample(sample_str, metadata_samples=None):
     """
@@ -50,90 +78,150 @@ def extract_base_sample(sample_str, metadata_samples=None):
 
     return parts[0]
 
-def main():
-    args = parse_args()
-    
-    print(f"Loading peak matrix from {args.peak_matrix}")
-    peak_matrix = ad.read_h5ad(args.peak_matrix)
-    
-    print(f"Original peak matrix:")
-    print(f"  Shape: {peak_matrix.shape}")
-    print(f"  First 5 obs_names: {list(peak_matrix.obs_names[:5])}")
-    print(f"  obs columns: {list(peak_matrix.obs.columns)}")
-    
-    # CRITICAL: Store original barcodes BEFORE any manipulation
-    original_barcodes = peak_matrix.obs_names.to_numpy().copy()
-    print(f"\nStored {len(original_barcodes)} original barcodes")
-    
-    # Load annotations JSON
-    print(f"\nLoading cell type annotations from {args.annotations}")
-    with open(args.annotations, 'r') as f:
+
+def apply_marker_annotations(peak_matrix, annotations_path, resolution_key):
+    """Marker mode: map cluster IDs to cell types from JSON → 'cell_type' column."""
+    print(f"\n{'='*70}")
+    print("ANNOTATION MODE: Marker-based (super-user)")
+    print(f"{'='*70}")
+
+    print(f"Loading cell type annotations from {annotations_path}")
+    with open(annotations_path, 'r') as f:
         annotations_dict = json.load(f)
-    
-    # Check if the JSON has the resolution as a key or if it's flat (cluster IDs only)
-    resolution_key = args.resolution
-    
+
     if resolution_key in annotations_dict:
-        # Nested structure: {"leiden_0_5": {"0": "CellType1", ...}}
         cluster_to_celltype = annotations_dict[resolution_key]
         print(f"Using nested structure with resolution key: {resolution_key}")
     else:
-        # Flat structure: {"0": "CellType1", "1": "CellType2", ...}
         print(f"Using flat structure (no resolution key found)")
         cluster_to_celltype = annotations_dict
-    
+
     print(f"Cluster to cell type mapping (first 5):")
     for i, (k, v) in enumerate(list(cluster_to_celltype.items())[:5]):
         print(f"  {k} -> {v}")
-    
-    # Check if the resolution column exists in peak_matrix.obs
+
     if resolution_key not in peak_matrix.obs.columns:
         raise ValueError(
             f"Resolution column '{resolution_key}' not found in peak_matrix.obs. "
             f"Available columns: {list(peak_matrix.obs.columns)}"
         )
-    
-    # Map clusters to cell types
+
     print("\nMapping clusters to cell types...")
-    
-    # Check if values are dictionaries (nested structure) or simple strings
     sample_value = list(cluster_to_celltype.values())[0]
     if isinstance(sample_value, dict):
-        # Extract 'cell_type' field from nested dictionaries
         print("  Detected nested dictionary format with confidence scores")
         cluster_to_celltype_simple = {
-            cluster: info['cell_type'] 
+            cluster: info['cell_type']
             for cluster, info in cluster_to_celltype.items()
         }
     else:
-        # Values are already simple strings
         print("  Detected simple string format")
         cluster_to_celltype_simple = cluster_to_celltype
-    
+
     peak_matrix.obs['cell_type'] = (
         peak_matrix.obs[resolution_key]
         .astype(str)
         .map(cluster_to_celltype_simple)
     )
-    
-    # Check for unmapped clusters
+
     unmapped = peak_matrix.obs['cell_type'].isna().sum()
     if unmapped > 0:
         print(f"  WARNING: {unmapped} cells could not be mapped to cell types")
         unique_clusters = peak_matrix.obs[resolution_key].unique()
         print(f"  Unique clusters in data: {sorted([str(c) for c in unique_clusters])}")
         print(f"  Clusters in mapping: {sorted(cluster_to_celltype_simple.keys())}")
-    
+
     cell_type_counts = peak_matrix.obs['cell_type'].value_counts()
     print(f"  Cell type distribution:")
     print(cell_type_counts)
-    
-    # Load and merge metadata
-    print(f"\nLoading metadata from {args.metadata}")
-    metadata = pd.read_csv(args.metadata)
+
+
+def apply_celltypist_annotations(peak_matrix, celltypist_h5ad_path):
+    """CellTypist mode: transfer per-cell predictions from gene_matrix → peak_matrix."""
+    from celltypist_broad_map import CELLTYPIST_BROAD_MAP
+
+    print(f"\n{'='*70}")
+    print("ANNOTATION MODE: CellTypist (default)")
+    print(f"{'='*70}")
+
+    print(f"Loading CellTypist-annotated gene matrix from {celltypist_h5ad_path}")
+    gene_matrix = ad.read_h5ad(celltypist_h5ad_path)
+    print(f"  Gene matrix: {gene_matrix.n_obs} cells")
+    print(f"  Gene matrix obs columns: {list(gene_matrix.obs.columns)}")
+
+    # Barcode alignment: gene_matrix and peak_matrix share barcodes from the same pipeline run
+    peak_barcodes = set(peak_matrix.obs_names)
+    gene_barcodes = set(gene_matrix.obs_names)
+    common = peak_barcodes & gene_barcodes
+    print(f"\n  Peak matrix barcodes: {len(peak_barcodes)}")
+    print(f"  Gene matrix barcodes: {len(gene_barcodes)}")
+    print(f"  Common barcodes: {len(common)}")
+
+    if len(common) == 0:
+        raise ValueError(
+            "No common barcodes between peak_matrix and CellTypist gene_matrix. "
+            "These should share barcodes from the same ATAC pipeline run."
+        )
+
+    if len(common) < len(peak_barcodes):
+        missing = len(peak_barcodes) - len(common)
+        print(f"  WARNING: {missing} peak_matrix cells not in gene_matrix — will be labeled 'Unknown'")
+
+    # Transfer CellTypist columns by index alignment
+    ct_columns = ['celltypist_prediction', 'cell_type_prediction', 'celltypist_confidence',
+                  'celltypist_majority_voting']
+    transferred = []
+    for col in ct_columns:
+        if col in gene_matrix.obs.columns:
+            # Use .reindex to safely align by barcode, filling missing with appropriate defaults
+            peak_matrix.obs[col] = gene_matrix.obs[col].reindex(peak_matrix.obs_names)
+            transferred.append(col)
+
+    print(f"\n  Transferred columns: {transferred}")
+
+    if 'celltypist_prediction' not in transferred:
+        raise ValueError(
+            "CellTypist gene_matrix missing 'celltypist_prediction' column. "
+            f"Available: {list(gene_matrix.obs.columns)}"
+        )
+
+    # Fill NaN predictions for cells not in gene_matrix
+    peak_matrix.obs['celltypist_prediction'] = (
+        peak_matrix.obs['celltypist_prediction'].fillna('Unknown')
+    )
+
+    # Apply hierarchical condensation: CELLTYPIST_BROAD_MAP → 'cell_type_broad'
+    peak_matrix.obs['cell_type_broad'] = (
+        peak_matrix.obs['celltypist_prediction']
+        .map(CELLTYPIST_BROAD_MAP)
+        .fillna('Other')
+    )
+
+    # Report
+    print(f"\n  Fine-grained predictions (celltypist_prediction):")
+    fine_counts = peak_matrix.obs['celltypist_prediction'].value_counts()
+    for ct in fine_counts.head(15).index:
+        print(f"    {ct}: {fine_counts[ct]}")
+    if len(fine_counts) > 15:
+        print(f"    ... and {len(fine_counts) - 15} more types")
+
+    print(f"\n  Broad categories (cell_type_broad):")
+    broad_counts = peak_matrix.obs['cell_type_broad'].value_counts()
+    for ct in broad_counts.index:
+        print(f"    {ct}: {broad_counts[ct]}")
+
+
+def merge_sample_metadata(peak_matrix, metadata_path, original_barcodes):
+    """Merge sample-level metadata onto peak_matrix. Shared by both modes."""
+    print(f"\n{'='*70}")
+    print("MERGING SAMPLE METADATA")
+    print(f"{'='*70}")
+
+    print(f"Loading metadata from {metadata_path}")
+    metadata = pd.read_csv(metadata_path)
     print(f"Metadata shape: {metadata.shape}")
     print(f"Metadata columns: {list(metadata.columns)}")
-    
+
     # FIX: Filter metadata to only include individual sample entries (not lane entries)
     if 'sample_type' in metadata.columns:
         print(f"\nFiltering metadata to only 'demux' sample types...")
@@ -141,7 +229,7 @@ def main():
         print(f"Filtered metadata shape: {metadata.shape}")
     else:
         print("\nWARNING: 'sample_type' column not found in metadata - using all rows")
-    
+
     # Identify the correct sample column in metadata
     sample_col_metadata = None
     for col_name in ['demux_sample', 'sample', 'sample_id', 'Sample', 'sample_name']:
@@ -150,36 +238,36 @@ def main():
             print(f"Found sample column in metadata: '{sample_col_metadata}'")
             print(f"Sample values: {sorted(metadata[sample_col_metadata].unique())}")
             break
-    
+
     if sample_col_metadata is None:
         raise ValueError(f"Could not find sample column in metadata. Available: {list(metadata.columns)}")
-    
+
     # Check if peak_matrix has 'sample' column
     if 'sample' not in peak_matrix.obs.columns:
         raise ValueError(f"'sample' column not found in peak_matrix.obs. Available: {list(peak_matrix.obs.columns)}")
-    
+
     print(f"\nPeak matrix sample values (raw): {sorted(peak_matrix.obs['sample'].unique())}")
-    
+
     # CRITICAL FIX: Extract base sample name from compound IDs
     print("\nExtracting base sample names from peak matrix...")
     meta_sample_set = set(metadata[sample_col_metadata].unique())
     peak_matrix.obs['base_sample'] = peak_matrix.obs['sample'].apply(
         lambda x: extract_base_sample(x, metadata_samples=meta_sample_set)
     )
-    print(f"Extracted base samples: {sorted(peak_matrix.obs['base_sample'].unique())}")  
-    
+    print(f"Extracted base samples: {sorted(peak_matrix.obs['base_sample'].unique())}")
+
     # Check overlap between peak matrix and metadata
     pm_samples = set(peak_matrix.obs['base_sample'].dropna().unique())
     meta_samples = set(metadata[sample_col_metadata].unique())
     overlap = pm_samples.intersection(meta_samples)
-    
+
     print(f"\n Merge compatibility check:")
     print(f"  Samples in peak matrix: {len(pm_samples)}")
     print(f"  Samples in metadata: {len(meta_samples)}")
     print(f"   Overlapping samples: {len(overlap)}")
     print(f"   Missing in metadata: {sorted(pm_samples - meta_samples)}")
     print(f"   Missing in peak matrix: {sorted(meta_samples - pm_samples)}")
-    
+
     if len(overlap) == 0:
         raise ValueError(
             "\n MERGE FAILURE: No overlapping samples!\n"
@@ -187,14 +275,14 @@ def main():
             f"  Metadata: {sorted(meta_samples)}\n"
             "  Check if sample naming conventions match."
         )
-    
+
     print(f"   Found {len(overlap)} overlapping samples")
-    
+
     # Rename metadata sample column to 'base_sample' for merging
     if sample_col_metadata != 'base_sample':
         print(f"\nRenaming metadata column '{sample_col_metadata}' to 'base_sample' for merge")
         metadata = metadata.rename(columns={sample_col_metadata: 'base_sample'})
-    
+
     # Check for duplicate samples in metadata (should not happen after filtering)
     duplicates = metadata['base_sample'].duplicated()
     if duplicates.any():
@@ -204,15 +292,15 @@ def main():
         # Keep only first occurrence
         metadata = metadata.drop_duplicates(subset=['base_sample'], keep='first')
         print(f"Kept first occurrence of duplicates. New shape: {metadata.shape}")
-    
+
     print("\nMerging metadata on 'base_sample' column...")
-    
+
     # Store original index to restore later
     original_index = peak_matrix.obs.index.copy()
-    
+
     # Reset index to avoid issues during merge
     peak_matrix.obs = peak_matrix.obs.reset_index(drop=True)
-    
+
     # Merge metadata (left join to keep all cells)
     peak_matrix.obs = peak_matrix.obs.merge(
         metadata,
@@ -220,22 +308,22 @@ def main():
         how='left',
         suffixes=('', '_meta')
     )
-    
+
     # Restore original barcodes as index
     peak_matrix.obs.index = original_index
     peak_matrix.obs.index.name = None
-    
+
     # Drop the temporary base_sample column
     if 'base_sample' in peak_matrix.obs.columns:
         peak_matrix.obs.drop(['base_sample'], axis=1, inplace=True)
-    
+
     # Verify the shape is preserved
     if len(peak_matrix.obs) != len(original_barcodes):
         raise RuntimeError(
             f"CRITICAL: Number of cells changed during merge! "
             f"Original: {len(original_barcodes)}, Current: {len(peak_matrix.obs)}"
         )
-    
+
     # Verify condition column was added
     if 'condition' not in peak_matrix.obs.columns:
         print(f"\nWARNING: 'condition' column missing after merge!")
@@ -244,29 +332,59 @@ def main():
         print(f"\n Successfully added 'condition' column")
         print(f"  Condition values: {peak_matrix.obs['condition'].unique()}")
         print(f"  Condition counts: {peak_matrix.obs['condition'].value_counts().to_dict()}")
-    
+
     # Final verification
     print("\nVerification:")
     print(f"  Final shape: {peak_matrix.shape}")
     print(f"  Original shape cells: {len(original_barcodes)}")
     print(f"  First 5 obs_names: {list(peak_matrix.obs_names[:5])}")
     print(f"  Original first 5: {list(original_barcodes[:5])}")
-    
+
     # Check that barcodes are preserved
     if not np.array_equal(peak_matrix.obs_names, original_barcodes):
         raise RuntimeError("CRITICAL: Barcodes were not preserved correctly!")
-    
+
     print(" Barcodes successfully preserved")
-    
-    # Final check
+
+
+def main():
+    args = parse_args()
+
+    print(f"Loading peak matrix from {args.peak_matrix}")
+    peak_matrix = ad.read_h5ad(args.peak_matrix)
+
+    print(f"Original peak matrix:")
+    print(f"  Shape: {peak_matrix.shape}")
+    print(f"  First 5 obs_names: {list(peak_matrix.obs_names[:5])}")
+    print(f"  obs columns: {list(peak_matrix.obs.columns)}")
+
+    # CRITICAL: Store original barcodes BEFORE any manipulation
+    original_barcodes = peak_matrix.obs_names.to_numpy().copy()
+    print(f"\nStored {len(original_barcodes)} original barcodes")
+
+    # --- Apply cell type annotations (mode-dependent) ---
+    if args.celltypist_h5ad:
+        apply_celltypist_annotations(peak_matrix, args.celltypist_h5ad)
+    else:
+        apply_marker_annotations(peak_matrix, args.annotations, args.resolution)
+
+    # --- Merge sample metadata (always) ---
+    merge_sample_metadata(peak_matrix, args.metadata, original_barcodes)
+
+    # Final summary
     print(f"\nFinal peak matrix:")
     print(f"  Shape: {peak_matrix.shape}")
     print(f"  obs columns: {list(peak_matrix.obs.columns)}")
     if 'cell_type' in peak_matrix.obs.columns:
-        print(f"  Cell types: {list(peak_matrix.obs['cell_type'].unique())}")
+        print(f"  Cell types (marker): {list(peak_matrix.obs['cell_type'].unique())}")
+    if 'celltypist_prediction' in peak_matrix.obs.columns:
+        n_types = peak_matrix.obs['celltypist_prediction'].nunique()
+        print(f"  CellTypist predictions: {n_types} types")
+    if 'cell_type_broad' in peak_matrix.obs.columns:
+        print(f"  Broad categories: {list(peak_matrix.obs['cell_type_broad'].unique())}")
     if 'condition' in peak_matrix.obs.columns:
         print(f"  Conditions: {list(peak_matrix.obs['condition'].unique())}")
-    
+
     # FIX-21: Convert NaN in object columns to empty strings for h5ad compat.
     for col in peak_matrix.obs.columns:
         if peak_matrix.obs[col].dtype == object:
@@ -276,6 +394,7 @@ def main():
     print(f"\nSaving annotated peak matrix to {args.output}")
     peak_matrix.write_h5ad(args.output, compression='gzip')
     print("Done!")
+
 
 if __name__ == "__main__":
     main()
