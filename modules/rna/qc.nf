@@ -4,43 +4,29 @@ process RNA_QC {
     publishDir "${params.outdir}/rna/qc", mode: 'copy'
     
     input:
-    tuple val(sample), path(mex_zip)
-    path metadata_file
-    path july_souporcell_dir    
-    path nov_souporcell_dir 
-    
+    tuple val(sample), path(mex_zip), path(demux_metadata_file), path(demux_souporcell_dir)
+
     output:
     tuple val(sample), path("${sample}_filtered_*.h5ad"), emit: filtered_h5ad  // Changed to glob pattern
     path "${sample}_qc_metrics.csv", emit: metrics
     path "*.png", emit: plots, optional: true
-    
-    script:
-    def is_june = sample.contains('june')
-    def is_july = sample.contains('july')
-    def is_nov = sample.contains('nov') 
 
+    script:
+    // Generic demux argument wiring:
+    //   - demux_metadata_file: CSV with barcode + label columns (e.g., June BD batches)
+    //   - demux_souporcell_dir: Souporcell output directory (e.g., July/Nov BD batches)
+    // Both resolve to NO_FILE for datasets without demultiplexing (e.g., 10x PBMC).
     def metadata_arg = ""
     def souporcell_arg = ""
-    
-    if (is_june && metadata_file.name != 'NO_FILE') {
-        metadata_arg = "--metadata_file ${metadata_file}"
-    } else if (is_july && july_souporcell_dir.name != 'NO_FILE') {
-        // Extract lane number from sample name
-        def lane_match = sample =~ /L(\d+)_july/
+
+    if (demux_metadata_file.name != 'NO_FILE') {
+        metadata_arg = "--metadata_file ${demux_metadata_file}"
+    } else if (demux_souporcell_dir.name != 'NO_FILE') {
+        // Extract lane number from sample name (pattern: L<N>_<batch>)
+        def lane_match = sample =~ /L(\d+)_/
         if (lane_match) {
             def lane_num = lane_match[0][1]
-            souporcell_arg = "--souporcell_dir ${july_souporcell_dir}/L${lane_num}_Bioproduct"
-        }
-    } else if (is_nov && nov_souporcell_dir.name != 'NO_FILE') {
-        // Extract lane number from November sample name
-        def lane_match = sample =~ /L(\d+)_nov/
-        if (lane_match) {
-            def lane_num = lane_match[0][1]
-            // Check if it's ATAC or Bioproduct directory
-            def bioproduct_dir = "${nov_souporcell_dir}/L${lane_num}_Bioproduct"
-            def atac_dir = "${nov_souporcell_dir}/L${lane_num}_ATAC"
-            // Use Bioproduct if it exists, otherwise ATAC
-            souporcell_arg = "--souporcell_dir ${bioproduct_dir}"
+            souporcell_arg = "--souporcell_dir ${demux_souporcell_dir}/L${lane_num}_Bioproduct"
         }
     }
         
