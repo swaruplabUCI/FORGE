@@ -22,6 +22,7 @@ process EXTRACT_CHROMVAR_MOTIFS {
     path chromvar_dev   // chromvar_matrix_deviations.h5ad from GPU_CHROMVAR
     val top_n           // top N TFs per cell type
     val min_zscore      // minimum mean |z-score| threshold
+    val cell_type_col   // obs column for cell type (marker: 'cell_type', celltypist: 'celltypist_prediction')
 
     output:
     path "per_celltype_motifs.json", emit: motif_list
@@ -49,14 +50,15 @@ process EXTRACT_CHROMVAR_MOTIFS {
     adata = ad.read_h5ad('${chromvar_dev}')
     print(f"  Loaded: {adata.shape[0]} cells x {adata.shape[1]} motifs", flush=True)
 
-    # ---- Verify cell_type column ----
-    if 'cell_type' not in adata.obs.columns:
+    # ---- Verify cell type column ----
+    ct_col = '${cell_type_col}'
+    if ct_col not in adata.obs.columns:
         raise ValueError(
-            f"ChromVAR deviation matrix missing 'cell_type' in .obs. "
+            f"ChromVAR deviation matrix missing '{ct_col}' in .obs. "
             f"Available columns: {list(adata.obs.columns)}"
         )
 
-    cell_types = sorted(adata.obs['cell_type'].unique().tolist())
+    cell_types = sorted(adata.obs[ct_col].unique().tolist())
     print(f"  Cell types ({len(cell_types)}): {cell_types}", flush=True)
 
     # ---- Parse TF names from tab-separated var_names ----
@@ -98,7 +100,7 @@ process EXTRACT_CHROMVAR_MOTIFS {
     report_lines.append("")
 
     for ct in cell_types:
-        ct_mask = (adata.obs['cell_type'] == ct).values
+        ct_mask = (adata.obs[ct_col] == ct).values
         n_cells = int(ct_mask.sum())
 
         if n_cells == 0:

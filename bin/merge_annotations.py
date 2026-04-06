@@ -34,6 +34,8 @@ def parse_args():
     # CellTypist mode arg
     p.add_argument("--celltypist-h5ad", default=None,
                    help="CellTypist-annotated gene_matrix h5ad (celltypist mode)")
+    p.add_argument("--plot-dir", default=".",
+                   help="Directory for output plots")
 
     args = p.parse_args()
 
@@ -70,7 +72,7 @@ def extract_base_sample(sample_str, metadata_samples=None):
 
     # Fallback: strip known batch keywords
     parts = s.split('_')
-    batch_keywords = ['batch', 'june', 'july', 'nov', 'november']
+    batch_keywords = ['batch']
     filtered = [p for p in parts if p.lower() not in batch_keywords]
 
     if filtered:
@@ -185,17 +187,17 @@ def apply_celltypist_annotations(peak_matrix, celltypist_h5ad_path):
             f"Available: {list(gene_matrix.obs.columns)}"
         )
 
-    # Fill NaN predictions for cells not in gene_matrix
-    peak_matrix.obs['celltypist_prediction'] = (
-        peak_matrix.obs['celltypist_prediction'].fillna('Unknown')
-    )
+    # Fill NaN predictions for cells not in gene_matrix (categorical-safe)
+    col = peak_matrix.obs['celltypist_prediction']
+    if hasattr(col, 'cat'):
+        col = col.cat.add_categories('Unknown')
+    peak_matrix.obs['celltypist_prediction'] = col.fillna('Unknown')
 
     # Apply hierarchical condensation: CELLTYPIST_BROAD_MAP → 'cell_type_broad'
-    peak_matrix.obs['cell_type_broad'] = (
-        peak_matrix.obs['celltypist_prediction']
-        .map(CELLTYPIST_BROAD_MAP)
-        .fillna('Other')
-    )
+    broad = peak_matrix.obs['celltypist_prediction'].map(CELLTYPIST_BROAD_MAP)
+    if hasattr(broad, 'cat') and 'Other' not in broad.cat.categories:
+        broad = broad.cat.add_categories('Other')
+    peak_matrix.obs['cell_type_broad'] = broad.fillna('Other')
 
     # Report
     print(f"\n  Fine-grained predictions (celltypist_prediction):")
@@ -209,6 +211,112 @@ def apply_celltypist_annotations(peak_matrix, celltypist_h5ad_path):
     broad_counts = peak_matrix.obs['cell_type_broad'].value_counts()
     for ct in broad_counts.index:
         print(f"    {ct}: {broad_counts[ct]}")
+
+
+def generate_celltype_plots(celltypist_h5ad_path, peak_matrix, plot_dir):
+    """Generate UMAPs and dotplots using data-derived markers after CellTypist annotation."""
+    import scanpy as sc
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from celltypist_broad_map import CELLTYPIST_BROAD_MAP
+
+    print(f"\n{'='*70}")
+    print("GENERATING CELL-TYPE VISUALIZATIONS (data-derived markers)")
+    print(f"{'='*70}")
+
+    plot_dir = Path(plot_dir)
+    gene_matrix = ad.read_h5ad(celltypist_h5ad_path)
+
+    # Transfer cell type labels from peak_matrix to gene_matrix by barcode
+    common = set(gene_matrix.obs_names) & set(peak_matrix.obs_names)
+    if len(common) == 0:
+        print("  WARNING: No common barcodes — skipping plots")
+        return
+
+    for col in ['celltypist_prediction', 'cell_type_broad']:
+        if col in peak_matrix.obs.columns:
+            gene_matrix.obs[col] = peak_matrix.obs[col].reindex(gene_matrix.obs_names)
+            if hasattr(gene_matrix.obs[col], 'cat') and 'Unknown' not in gene_matrix.obs[col].cat.categories:
+                gene_matrix.obs[col] = gene_matrix.obs[col].cat.add_categories('Unknown')
+            gene_matrix.obs[col] = gene_matrix.obs[col].fillna('Unknown')
+
+    # Filter to cells with valid labels and sufficient group size
+    groupby_col = 'cell_type_broad'
+    if groupby_col not in gene_matrix.obs.columns:
+        print(f"  WARNING: '{groupby_col}' not found — skipping plots")
+        return
+
+    valid_mask = ~gene_matrix.obs[groupby_col].isin(['Unknown', 'Other', ''])
+    group_counts = gene_matrix.obs.loc[valid_mask, groupby_col].value_counts()
+    valid_groups = group_counts[group_counts >= 10].index.tolist()
+
+    if len(valid_groups) < 2:
+        print(f"  WARNING: Only {len(valid_groups)} cell type groups with >= 10 cells — skipping DE")
+        return
+
+    gm_filtered = gene_matrix[valid_mask & gene_matrix.obs[groupby_col].isin(valid_groups)].copy()
+    print(f"  Using {gm_filtered.n_obs} cells across {len(valid_groups)} broad cell types for DE")
+
+    # Derive markers via rank_genes_groups
+    try:
+        sc.tl.rank_genes_groups(gm_filtered, groupby_col, method='wilcoxon')
+
+        top_genes = []
+        for group in valid_groups:
+            genes = gm_filtered.uns['rank_genes_groups']['names'][str(group)][:5]
+            top_genes.extend(genes)
+        top_genes = list(dict.fromkeys(top_genes))
+
+        print(f"  Derived {len(top_genes)} DE marker genes across {len(valid_groups)} cell types")
+    except Exception as e:
+        print(f"  WARNING: rank_genes_groups failed: {e}")
+        return
+
+    # Dotplot: DE markers grouped by broad cell type
+    if top_genes:
+        try:
+            sc.pl.dotplot(
+                gm_filtered,
+                top_genes,
+                groupby=groupby_col,
+                standard_scale='var',
+                swap_axes=True,
+                show=False,
+            )
+            fig = plt.gcf()
+            fig.savefig(plot_dir / "atac_dotplot_markers_by_cell_type.pdf",
+                        dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            print("  Saved: atac_dotplot_markers_by_cell_type.pdf")
+        except Exception as e:
+            print(f"  WARNING: Could not generate dotplot: {e}")
+
+    # UMAPs colored by cell type (if UMAP coords exist)
+    if 'X_umap' in gene_matrix.obsm:
+        for color_col, filename in [
+            ('celltypist_prediction', 'atac_umap_celltypist_prediction.pdf'),
+            ('cell_type_broad', 'atac_umap_cell_type_broad.pdf'),
+        ]:
+            if color_col in gene_matrix.obs.columns:
+                try:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    sc.pl.umap(
+                        gene_matrix,
+                        color=color_col,
+                        ax=ax,
+                        show=False,
+                        frameon=False,
+                        title=color_col.replace('_', ' ').title(),
+                    )
+                    plt.tight_layout()
+                    fig.savefig(plot_dir / filename, dpi=300, bbox_inches='tight')
+                    plt.close(fig)
+                    print(f"  Saved: {filename}")
+                except Exception as e:
+                    print(f"  WARNING: Could not generate UMAP for {color_col}: {e}")
+    else:
+        print("  No X_umap in gene_matrix — skipping UMAP plots")
 
 
 def merge_sample_metadata(peak_matrix, metadata_path, original_barcodes):
@@ -367,6 +475,10 @@ def main():
         apply_celltypist_annotations(peak_matrix, args.celltypist_h5ad)
     else:
         apply_marker_annotations(peak_matrix, args.annotations, args.resolution)
+
+    # --- Generate cell-type plots (CellTypist mode only) ---
+    if args.celltypist_h5ad:
+        generate_celltype_plots(args.celltypist_h5ad, peak_matrix, args.plot_dir)
 
     # --- Merge sample metadata (always) ---
     merge_sample_metadata(peak_matrix, args.metadata, original_barcodes)

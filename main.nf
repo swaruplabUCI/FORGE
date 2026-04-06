@@ -190,11 +190,11 @@ def resolveAtacCoordDir(row) {
 // Returns file('NO_FILE') when no demux is configured for this sample's batch.
 def resolveDemuxMetadata(String sample) {
     def match = params.demux_metadata?.find { batch, path -> sample.contains(batch) }
-    return match ? file(match.value) : file('NO_FILE')
+    return match ? file(match.value) : file('NO_FILE_METADATA')
 }
 def resolveDemuxSouporcell(String sample) {
     def match = params.demux_souporcell_dirs?.find { batch, path -> sample.contains(batch) }
-    return match ? file(match.value) : file('NO_FILE')
+    return match ? file(match.value) : file('NO_FILE_SOUPORCELL')
 }
 
 
@@ -1327,10 +1327,13 @@ workflow REGULATORY_ANALYSIS {
         }
 
         if (is_discovery_mode && params.scprinter.run) {
+            def atac_celltype_col = params.atac.marker_file ? 'cell_type' : 'celltypist_prediction'
+
             EXTRACT_CHROMVAR_MOTIFS(
                 GPU_CHROMVAR.out.chromvar_dev,
                 params.chromvar.top_n_per_celltype,
-                params.chromvar.min_motif_zscore
+                params.chromvar.min_motif_zscore,
+                atac_celltype_col
             )
 
             EXTRACT_CHROMVAR_MOTIFS.out.report.view {
@@ -1585,6 +1588,7 @@ workflow MULTIOME_INTEGRATION {
     atac_h5ad_files
     scanvi_predictions
     metadata_csv
+    sample_map
 
     main:
     log.info """
@@ -1598,7 +1602,8 @@ workflow MULTIOME_INTEGRATION {
         rna_h5ad_files.flatten().collect(),
         atac_h5ad_files.flatten().collect(),
         scanvi_predictions,
-        metadata_csv
+        metadata_csv,
+        sample_map
     )
 
     // Export RNA modality from MuData for DORC / downstream use
@@ -1723,6 +1728,7 @@ workflow MULTIOME_GRN {
     rna_for_dorc
     mudata_stats
     blacklist_bed
+    cell_type_key
 
     main:
     log.info """
@@ -1738,12 +1744,13 @@ workflow MULTIOME_GRN {
 
         PYCISTOPIC_PREPARE(
             metadata_csv,
-            rna_for_dorc,
+            rna_h5ad,       // Use CellTypist-annotated RNA (not un-annotated MuData export)
             // FIX-P0-8: Auto-derive pycistopic species from params.species
             params.pycistopic.species ?: [human: 'hsapiens', mouse: 'mmusculus'].get(params.species, params.species),
             mudata_stats,
             blacklist_bed,
-            file(params.pycistopic.gtf)
+            file(params.pycistopic.gtf),
+            cell_type_key
         )
     }
 
@@ -2292,11 +2299,17 @@ workflow {
         ch_synced_rna = ch_paired_multiome.map { meta, rna, atac -> rna }.collect()
         ch_synced_atac = ch_paired_multiome.map { meta, rna, atac -> atac }.collect()
 
+        // Generate sample pairing map so BUILD_MUDATA knows which files go together
+        ch_sample_map_file = ch_paired_multiome
+            .map { meta, rna, atac -> "${meta.id},${rna.name},${atac.name}" }
+            .collectFile(name: 'sample_map.csv', seed: 'sample_id,rna_file,atac_file', newLine: true)
+
         MULTIOME_INTEGRATION(
             ch_synced_rna,
             ch_synced_atac,
             ch_integrated_rna,
-            file(params.metadata_file)
+            file(params.metadata_file),
+            ch_sample_map_file
         )
     } else if (params.run_multiome_integration && (!rna_completed || !atac_completed)) {
         log.warn """
@@ -2323,7 +2336,8 @@ workflow {
             file(params.metadata_file),
             MULTIOME_INTEGRATION.out.rna_for_dorc,
             MULTIOME_INTEGRATION.out.stats,
-            file(params.pycistopic.blacklist_bed)
+            file(params.pycistopic.blacklist_bed),
+            cell_type_key
         )
     }
 

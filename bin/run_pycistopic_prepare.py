@@ -595,8 +595,22 @@ def main():
     logger.info("Inferring consensus peaks...")
     peak_half_width = 250
     path_to_blacklist = args.blacklist_bed or os.path.join(os.path.dirname(pycisTopic.__file__), "blacklist", "hg38-blacklist.v2.bed")
+
+    # Pre-filter: drop cell types whose peaks vanish after extension/blacklist filtering.
+    # pycisTopic's iterative_peak_filtering crashes on empty PyRanges (no .Count column).
+    from pycisTopic.iterative_peak_calling import calculate_peaks_and_extend
+    import pyranges as _pr
+    filtered_dict = {}
+    for ct, peaks in narrow_peak_dict.items():
+        extended = calculate_peaks_and_extend(peaks, peak_half_width, chromsizes, path_to_blacklist)
+        if len(extended) > 0:
+            filtered_dict[ct] = peaks
+        else:
+            logger.warning(f"Dropping '{ct}' — 0 peaks after extension/blacklist filtering")
+    logger.info(f"Kept {len(filtered_dict)}/{len(narrow_peak_dict)} cell types with peaks")
+
     consensus_peaks = get_consensus_peaks(
-        narrow_peak_dict,
+        filtered_dict,
         peak_half_width=peak_half_width,
         chromsizes=chromsizes,
         path_to_blacklist=path_to_blacklist,

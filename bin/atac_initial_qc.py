@@ -87,6 +87,7 @@ def main():
     parser.add_argument('--fragment_files', nargs='+', required=True)
     parser.add_argument('--metadata', required=True)
     parser.add_argument('--species', default='human', choices=['human', 'mouse'])
+    parser.add_argument('--genome_build', default=None, help='Genome build (e.g. hg38, mm10, mm39). Auto-detected from species if not set.')
     parser.add_argument('--output_dir', default='.')
     parser.add_argument('--min_fragments', type=int, default=1000)
     parser.add_argument('--min_counts', type=int, default=5000)
@@ -123,8 +124,14 @@ def main():
 
     sample_names = metadata['qc_sample'].tolist()
     
-    # Define genome
-    genome = snap.genome.hg38 if args.species == 'human' else snap.genome.mm10
+    # Define genome — use explicit build if provided, else default per species
+    genome_map = {'hg38': snap.genome.hg38, 'hg19': snap.genome.hg19,
+                  'mm10': snap.genome.mm10, 'mm39': snap.genome.mm39,
+                  'GRCm39': snap.genome.mm39, 'GRCh38': snap.genome.hg38}
+    if args.genome_build and args.genome_build in genome_map:
+        genome = genome_map[args.genome_build]
+    else:
+        genome = snap.genome.hg38 if args.species == 'human' else snap.genome.mm10
     
     # Match fragment files to metadata order
     frag_bases = metadata['fragment_file'].tolist()

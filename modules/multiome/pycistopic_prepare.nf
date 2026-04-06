@@ -22,6 +22,8 @@ process PYCISTOPIC_PREPARE {
     path blacklist_bed
     // Gencode GTF for local TSS generation (avoids BioMart)
     path gtf_file
+    // Resolved cell type column (e.g., 'celltypist_prediction' or 'scanvi_prediction')
+    val cell_type_key
 
     output:
     path "cistopic_obj.pkl", emit: cistopic_obj
@@ -45,6 +47,7 @@ process PYCISTOPIC_PREPARE {
     python ${projectDir}/bin/build_cell_metadata_for_pycistopic.py \\
         --rna-h5ad ${rna_h5ad} \\
         --sample-metadata ${sample_metadata} \\
+        --cell-type-key ${cell_type_key} \\
         --out-tsv cell_metadata_for_pycistopic.tsv
 
     echo "Cell metadata (head):"
@@ -92,54 +95,23 @@ if missing:
         f"Found columns: {list(df.columns)}"
     )
 
-batch_to_dir = {
-    "june": "${params.atac.demux_coord_dir_june}",
-    "july": "${params.atac.demux_coord_dir_july}",
-    "nov":  "${params.atac.demux_coord_dir_nov}",
-}
-
-def is_lane_donor_id(x: str) -> bool:
-    parts = x.split("_")
-    if len(parts) != 3:
-        return False
-    lane, donor_word, donor_num = parts
-    return (lane.startswith("L") and lane[1:].isdigit()
-            and donor_word == "Donor" and donor_num.isdigit())
-
 paths = []
 for _, row in df.iterrows():
     sample_id = str(row["sample_id"])
     frag_root = str(row["fragment_file"])
-    batch = str(row["batch"])
 
     sample_id_unique = sample_id
 
-    if batch in batch_to_dir:
-        # BD Rhapsody multi-batch: use batch-specific coord-sorted dir
-        if batch == "june" and sample_id.startswith("S") and sample_id[1:].isdigit():
-            sample_id_unique = f"{sample_id}_june"
-        if batch in ("july", "nov") and is_lane_donor_id(sample_id):
-            sample_id_unique = f"{sample_id}_{batch}"
-
-        base_dir = batch_to_dir[batch]
-        filename = f"{frag_root}_coord_sorted.bed.gz"
-        full_path = os.path.join(base_dir, filename)
-        if not os.path.exists(full_path):
-            raise FileNotFoundError(
-                f"Coord-sorted fragments file not found for sample_id '{sample_id_unique}': {full_path}"
-            )
+    # Resolve fragment path from data_dir + fragment_file
+    data_dir = str(row.get("data_dir", "."))
+    if os.path.isabs(frag_root) and os.path.exists(frag_root):
+        full_path = frag_root
     else:
-        # Generic (e.g. 10x): fragment_file is the filename, data_dir has the path
-        data_dir = str(row.get("data_dir", "."))
-        # Try the fragment file directly (may already be a full path)
-        if os.path.isabs(frag_root) and os.path.exists(frag_root):
-            full_path = frag_root
-        else:
-            full_path = os.path.join(data_dir, frag_root)
-        if not os.path.exists(full_path):
-            raise FileNotFoundError(
-                f"Fragments file not found for sample_id '{sample_id}': {full_path}"
-            )
+        full_path = os.path.join(data_dir, frag_root)
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(
+            f"Fragments file not found for sample_id '{sample_id}': {full_path}"
+        )
 
     paths.append((sample_id_unique, full_path))
 
@@ -179,7 +151,7 @@ PY
     python ${projectDir}/bin/run_pycistopic_prepare.py \
       --fragments-map fragments_map.tsv \
       --cell-metadata cell_metadata_for_pycistopic.safe.tsv \
-      --species hsapiens \
+      --species ${species} \
       --sample-id-col sample_id \
       --cell-type-col cell_type_safe \
       --variable cell_type_safe \

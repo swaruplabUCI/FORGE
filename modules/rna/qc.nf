@@ -15,13 +15,13 @@ process RNA_QC {
     // Generic demux argument wiring:
     //   - demux_metadata_file: CSV with barcode + label columns (e.g., June BD batches)
     //   - demux_souporcell_dir: Souporcell output directory (e.g., July/Nov BD batches)
-    // Both resolve to NO_FILE for datasets without demultiplexing (e.g., 10x PBMC).
+    // Both resolve to NO_FILE_METADATA / NO_FILE_SOUPORCELL for datasets without demultiplexing (e.g., 10x PBMC).
     def metadata_arg = ""
     def souporcell_arg = ""
 
-    if (demux_metadata_file.name != 'NO_FILE') {
+    if (demux_metadata_file.name != 'NO_FILE_METADATA') {
         metadata_arg = "--metadata_file ${demux_metadata_file}"
-    } else if (demux_souporcell_dir.name != 'NO_FILE') {
+    } else if (demux_souporcell_dir.name != 'NO_FILE_SOUPORCELL') {
         // Extract lane number from sample name (pattern: L<N>_<batch>)
         def lane_match = sample =~ /L(\d+)_/
         if (lane_match) {

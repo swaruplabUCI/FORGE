@@ -1,0 +1,60 @@
+#!/usr/bin/env cwl-runner
+
+cwl:tool: rhapsody
+
+# =========================================================================
+# BD Rhapsody WTA+ATAC Pipeline Input: Mouse Brain Control (AT229)
+#
+# Dataset:  BD Mouse Brain snMultiome (WTA + ATAC-Seq)
+# Species:  Mus musculus
+# Source:   /dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/
+#
+# EXAMPLE: Adapt paths for your own BD Rhapsody dataset.
+# =========================================================================
+
+Run_Name: Mouse_Brain_BD_Control
+
+## WTA Reads (4 lanes: L001-L004, R1/R2)
+Reads:
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_WTA-20240613_S5_L001_R1_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_WTA-20240613_S5_L001_R2_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_WTA-20240613_S5_L002_R1_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_WTA-20240613_S5_L002_R2_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_WTA_S5_L003_R1_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_WTA_S5_L003_R2_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_WTA_S5_L004_R1_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_WTA_S5_L004_R2_001.fastq.gz"
+
+## ATAC Reads (2 lanes: L001-L002, R1/R2 + I2 UMI)
+Reads_ATAC:
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_ATAC_S5_L001_R1_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_ATAC_S5_L001_R2_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_ATAC_S5_L002_R1_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_ATAC_S5_L002_R2_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_ATAC_UMI_S5_L001_I2_001.fastq.gz"
+ - class: File
+   location: "/dfs7/swaruplab/lesolano/snEpigenome_PublicData/BD_Mouse_Brain/AT229_Ms_Brain_Control_ATAC_UMI_S5_L002_I2_001.fastq.gz"
+
+## WTA+ATAC Reference Archive (mouse, 2025-10)
+Reference_Archive:
+  class: File
+  location: "/dfs7/swaruplab/lesolano/ref/bd_rhapsody/RhapRef_Mouse_WTA-ATAC_2025-10.tar.gz"
+
+## Putative cell calling: use both RNA and ATAC for multiome
+Cell_Calling_Data: mRNA_and_ATAC
+
+## Use 16 threads (match SLURM --cpus-per-task)
+Maximum_Threads: 16

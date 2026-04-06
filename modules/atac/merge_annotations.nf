@@ -17,6 +17,8 @@ process MERGE_ANNOTATIONS {
 
     output:
     path "peak_matrix_annotated.h5ad", emit: peak_matrix
+    path "atac_umap_*.pdf", emit: umap_plots, optional: true
+    path "atac_dotplot_*.pdf", emit: marker_plots, optional: true
 
     script:
     if (annotation_mode == 'celltypist') {
@@ -25,6 +27,7 @@ process MERGE_ANNOTATIONS {
             --peak-matrix ${peak_matrix} \\
             --celltypist-h5ad ${annotations} \\
             --metadata ${metadata} \\
+            --plot-dir . \\
             --output peak_matrix_annotated.h5ad
         """
     } else {

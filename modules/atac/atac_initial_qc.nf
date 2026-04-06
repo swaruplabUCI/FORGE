@@ -31,6 +31,7 @@ process ATAC_INITIAL_QC {
       --fragment_files ${frag_list} \
       --metadata ${metadata} \
       --species ${params.species} \
+      --genome_build ${params.scprinter.genome} \
       --output_dir . \
       --min_fragments ${params.atac.min_fragments} \
       ${min_counts_arg} \

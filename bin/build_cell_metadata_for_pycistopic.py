@@ -8,58 +8,18 @@ import pandas as pd
 import scanpy as sc
 
 def sample_key_from_obs_sample(s: str) -> str:
-    """
-    Derive a sample key from obs['sample'] that includes batch info.
-    Handles:
-      1) June SMK:   '90plus_L1_SMK_june_filtered_S16.h5ad' -> 'S16'
-      2) July multiome: '90plus_WTA_8plex_L1_july_filtered_L1_Donor_0.h5ad' -> 'L1_Donor_0_july'
-      3) Nov multiome:  '90plus_WTA_10plex_L4_nov_filtered_L4_Donor_0.h5ad' -> 'L4_Donor_0_nov'
-      4) Special L10 nov: '...L10_nov_filtered_L1_Donor_0.h5ad' -> 'L10_Donor_0_nov'
-    """
+    """Derive a sample key from obs['sample'] by stripping file extensions."""
     s = os.path.basename(str(s))
-
-    # 1) June SMK: scan entire string for Sxx
-    if "_SMK_june_" in s:
-        m = re.search(r"S(\d+)", s)
-        if m:
-            return f"S{m.group(1)}_june"
-
-    # 2) July multiome
-    if "_july_" in s:
-        m = re.search(r"L\d+_Donor_\d+", s)
-        if m:
-            return f"{m.group(0)}_july"
-
-    # 3) Nov multiome
-    if "_nov_" in s:
-        # special case: L10_nov mislabeled donor prefix
-        if "L10_nov" in s:
-            dm = re.search(r"Donor_(\d+)", s)
-            if dm:
-                return f"L10_Donor_{dm.group(1)}_nov"
-
-        m = re.search(r"L\d+_Donor_\d+", s)
-        if m:
-            return f"{m.group(0)}_nov"
-
+    # Strip common h5ad suffixes
+    for suffix in ['_filtered_All.h5ad', '_filtered.h5ad', '.h5ad']:
+        if s.endswith(suffix):
+            return s[:-len(suffix)]
     return s
 
 def update_metadata_with_batch_suffix(meta_df: pd.DataFrame) -> pd.DataFrame:
+    """Pass through sample_id as sample_id_unique (no batch suffix needed)."""
     meta = meta_df.copy()
     meta["sample_id_unique"] = meta["sample_id"]
-
-    mask_demux = meta["sample_type"] == "demux"
-
-    mask_june = (meta["batch"] == "june") & mask_demux & meta["sample_id"].str.match(r"^S\d+$")
-    meta.loc[mask_june, "sample_id_unique"] = meta.loc[mask_june, "sample_id"] + "_june"
-
-    mask_july = (meta["batch"] == "july") & mask_demux & meta["sample_id"].str.match(r"L\d+_Donor_\d+$")
-    meta.loc[mask_july, "sample_id_unique"] = meta.loc[mask_july, "sample_id"] + "_july"
-
-    mask_nov = (meta["batch"] == "nov") & mask_demux & meta["sample_id"].str.match(r"L\d+_Donor_\d+$")
-    meta.loc[mask_nov, "sample_id_unique"] = meta.loc[mask_nov, "sample_id"] + "_nov"
-
-    # June SMK: 'S16' etc. stay as-is
     return meta
 
 
@@ -67,28 +27,64 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rna-h5ad", required=True)
     ap.add_argument("--sample-metadata", required=True)
+    ap.add_argument("--cell-type-key", default=None,
+                    help="Explicit cell type column from Nextflow (e.g. celltypist_prediction)")
     ap.add_argument("--out-tsv", required=True)
     args = ap.parse_args()
 
     print(f"[fix] Loading RNA h5ad: {args.rna_h5ad}", file=sys.stderr)
-    adata = sc.read_h5ad(args.rna_h5ad)
+    # Fix anndata version compat: newer anndata (>=0.10) writes uns/log1p/base
+    # with null encoding that older anndata (in scenicplus container) can't read.
+    # Copy the file first to avoid modifying the original (may be a Nextflow symlink).
+    import shutil, h5py
+    rna_path = args.rna_h5ad
+    try:
+        with h5py.File(rna_path, 'r') as f:
+            if 'uns/log1p' in f and 'base' in f['uns/log1p']:
+                local_copy = "rna_input_compat.h5ad"
+                shutil.copy2(rna_path, local_copy)
+                with h5py.File(local_copy, 'a') as fc:
+                    del fc['uns/log1p/base']
+                rna_path = local_copy
+                print("[fix] Stripped uns/log1p/base from local copy (anndata compat)", file=sys.stderr)
+    except Exception as e:
+        print(f"[fix] h5py compat check: {e}", file=sys.stderr)
+    adata = sc.read_h5ad(rna_path)
 
     if "sample" not in adata.obs.columns:
         raise ValueError("obs['sample'] not found in h5ad")
 
-    # Auto-detect cell type prediction column
+    # Resolve cell type column: prefer explicit key from Nextflow, then smart fallback
     cell_type_col = None
-    for candidate in ['scanvi_prediction', 'celltypist_prediction', 'cell_type_prediction']:
-        if candidate in adata.obs.columns:
-            cell_type_col = candidate
-            break
+    candidates = ['celltypist_prediction', 'scanvi_prediction', 'cell_type_prediction']
+
+    # 1) If Nextflow passed an explicit key and it exists with real labels, use it
+    if args.cell_type_key and args.cell_type_key in adata.obs.columns:
+        vals = adata.obs[args.cell_type_key].dropna().unique()
+        if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
+            cell_type_col = args.cell_type_key
+            print(f"[fix] Using explicit cell_type_key='{cell_type_col}'", file=sys.stderr)
+
+    # 2) Fallback: pick first candidate with real labels (skip all-Unknown)
     if cell_type_col is None:
-        raise ValueError("No cell type prediction column found in h5ad obs "
-                         "(tried scanvi_prediction, celltypist_prediction, cell_type_prediction)")
+        for candidate in candidates:
+            if candidate in adata.obs.columns:
+                vals = adata.obs[candidate].dropna().unique()
+                if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
+                    cell_type_col = candidate
+                    print(f"[fix] Auto-detected cell type column: '{cell_type_col}'", file=sys.stderr)
+                    break
+                else:
+                    print(f"[fix] Skipping '{candidate}' (all Unknown)", file=sys.stderr)
+
+    if cell_type_col is None:
+        raise ValueError("No cell type column with real labels found in h5ad obs "
+                         f"(tried explicit='{args.cell_type_key}', fallback={candidates})")
+
+    # Alias to 'scanvi_prediction' for downstream consistency
     if cell_type_col != 'scanvi_prediction':
-        # Alias so downstream code can use 'scanvi_prediction' consistently
         adata.obs['scanvi_prediction'] = adata.obs[cell_type_col]
-        print(f"[fix] Using '{cell_type_col}' as cell type column (aliased to scanvi_prediction)", file=sys.stderr)
+        print(f"[fix] Aliased '{cell_type_col}' -> 'scanvi_prediction'", file=sys.stderr)
 
     obs = adata.obs.copy()
     barcodes = adata.obs_names.astype(str)
@@ -122,6 +118,24 @@ def main():
     else:
         print("[fix] Deriving sample_key from obs['sample']", file=sys.stderr)
         obs["sample_key"] = obs["sample"].map(sample_key_from_obs_sample)
+
+    # If derived sample_keys don't match manifest, try stripping h5ad filename suffixes
+    derived_keys = set(obs["sample_key"].unique())
+    if not (derived_keys & manifest_ids):
+        print("[fix] No sample_key matches manifest — trying filename suffix stripping", file=sys.stderr)
+        suffix_patterns = ['_filtered_All.h5ad', '_filtered.h5ad', '.h5ad']
+        def strip_suffixes(s):
+            for suffix in suffix_patterns:
+                if s.endswith(suffix):
+                    return s[:-len(suffix)]
+            return s
+        obs["sample_key"] = obs["sample_key"].map(strip_suffixes)
+        stripped_keys = set(obs["sample_key"].unique())
+        if stripped_keys & manifest_ids:
+            print(f"[fix] Suffix stripping matched: {stripped_keys & manifest_ids}", file=sys.stderr)
+        else:
+            print(f"[fix] Still no match after stripping. Keys: {stripped_keys}, Manifest: {manifest_ids}",
+                  file=sys.stderr)
 
     print("[fix] Example sample_key values:", file=sys.stderr)
     for sk in obs["sample_key"].unique().tolist()[:10]:
