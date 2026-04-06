@@ -40,7 +40,8 @@ def concatenate_and_qc(h5ad_files, output_file, metrics_file, plots_dir):
             adata.layers['counts'] = adata.X.copy()
         
         # Extract sample name
-        base_name = os.path.basename(file).replace('_filtered.h5ad', '').replace('_qc_filtered.h5ad', '')
+        base_name = os.path.basename(file)
+        base_name = re.sub(r'(_qc_filtered|_filtered(_\w+)?)?\.h5ad$', '', base_name)
         base_name = re.sub(r'^_\d+_', '', base_name)
         # Store in dictionary for named concatenation
         adatas[base_name] = adata
@@ -88,14 +89,8 @@ def concatenate_and_qc(h5ad_files, output_file, metrics_file, plots_dir):
     print(sample_counts)
     
     # Add batch information
-    adata.obs['batch'] = adata.obs['sample'].apply(
-        lambda x: (
-            'june' if 'june' in x.lower()
-            else 'july' if 'july' in x.lower()
-            else 'nov'  if 'nov'  in x.lower()
-            else 'unknown'
-        )
-    )
+    # Batch is set from the sample name; actual batch comes from manifest downstream
+    adata.obs['batch'] = adata.obs['sample']
 
     # ============================================
     # EXPERIMENT-LEVEL QC (following template)

@@ -84,41 +84,38 @@ out_map_path = "fragments_map.tsv"
 
 df = pd.read_csv(sample_metadata_path)
 
-# Restrict to demux-level ATAC samples only
-df = df[df["sample_type"] == "demux"].copy()
+# Deduplicate by sample_id (supports both lane and demux sample types)
+df = df.drop_duplicates(subset=["sample_id"]).copy()
 
-required_cols = ["sample_id", "fragment_file", "batch"]
+required_cols = ["sample_id", "fragment_file"]
 missing = [c for c in required_cols if c not in df.columns]
 if missing:
     raise ValueError(
-        f"sample_metadata is missing required columns for pycisTopic coord fragments map: {missing}. "
+        f"sample_metadata is missing required columns for pycisTopic fragments map: {missing}. "
         f"Found columns: {list(df.columns)}"
     )
 
 paths = []
 for _, row in df.iterrows():
     sample_id = str(row["sample_id"])
-    frag_root = str(row["fragment_file"])
-
-    sample_id_unique = sample_id
-
-    # Resolve fragment path from data_dir + fragment_file
+    frag_file = str(row["fragment_file"])
     data_dir = str(row.get("data_dir", "."))
-    if os.path.isabs(frag_root) and os.path.exists(frag_root):
-        full_path = frag_root
+
+    if os.path.isabs(frag_file) and os.path.exists(frag_file):
+        full_path = frag_file
     else:
-        full_path = os.path.join(data_dir, frag_root)
+        full_path = os.path.join(data_dir, frag_file)
     if not os.path.exists(full_path):
         raise FileNotFoundError(
             f"Fragments file not found for sample_id '{sample_id}': {full_path}"
         )
 
-    paths.append((sample_id_unique, full_path))
+    paths.append((sample_id, full_path))
 
 map_df = pd.DataFrame(paths, columns=["sample_id", "fragments_path"])
 map_df.to_csv(out_map_path, sep="\\t", index=False)
 
-print(f"[PYCISTOPIC_PREPARE] Wrote coord-sorted fragments map for {len(map_df)} samples to {out_map_path}")
+print(f"[PYCISTOPIC_PREPARE] Wrote fragments map for {len(map_df)} samples to {out_map_path}")
 print(map_df.head())
 EOF
     echo "fragments_map.tsv (head):"
