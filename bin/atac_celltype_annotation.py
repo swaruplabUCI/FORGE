@@ -28,64 +28,11 @@ def parse_args():
     return ap.parse_args()
 
 
-# ---- Inline fallback markers (used when no JSON config is available) ----
-
-FALLBACK_MARKERS = {
-    "human": {
-        "pbmc": {
-            "CD4_T_cells": ["CD3D", "CD3E", "CD4", "IL7R", "LEF1"],
-            "CD8_T_cells": ["CD3D", "CD3E", "CD8A", "CD8B", "GZMK"],
-            "NK_cells": ["NKG7", "GNLY", "KLRD1", "NCAM1", "KLRF1"],
-            "B_cells": ["CD79A", "MS4A1", "CD19", "PAX5", "BANK1"],
-            "Plasma_cells": ["JCHAIN", "MZB1", "IGHG1", "SDC1", "XBP1"],
-            "CD14_Monocytes": ["CD14", "LYZ", "S100A8", "S100A9", "VCAN"],
-            "CD16_Monocytes": ["FCGR3A", "MS4A7", "ITGAL", "LST1"],
-            "Dendritic_cells": ["FCER1A", "CST3", "CLEC10A", "CD1C"],
-            "Plasmacytoid_DC": ["IL3RA", "CLEC4C", "IRF7", "TCF4"],
-            "Platelets": ["PPBP", "PF4", "GP9", "TUBB1"],
-        },
-        "brain": {
-            "Oligodendrocytes": ["PLP1", "MBP", "MOG", "MOBP"],
-            "OPC": ["PDGFRA", "CSPG4", "SOX10", "OLIG1"],
-            "Astrocytes": ["GFAP", "AQP4", "SLC1A2", "ALDH1L1"],
-            "Microglia": ["CX3CR1", "TMEM119", "P2RY12", "CSF1R"],
-            "Excitatory_neurons": ["SLC17A7", "CAMK2A", "NEUROD6"],
-            "Inhibitory_neurons": ["GAD1", "GAD2", "SLC32A1"],
-            "Endothelial": ["CLDN5", "FLT1", "PECAM1"],
-            "Pericytes": ["PDGFRB", "RGS5", "ABCC9"],
-        },
-    },
-    "mouse": {
-        "pbmc": {
-            "CD4_T_cells": ["Cd3d", "Cd3e", "Cd4", "Il7r", "Lef1"],
-            "CD8_T_cells": ["Cd3d", "Cd3e", "Cd8a", "Cd8b1", "Gzmk"],
-            "NK_cells": ["Nkg7", "Gzma", "Klrb1c", "Ncam1", "Klrd1"],
-            "B_cells": ["Cd79a", "Ms4a1", "Cd19", "Pax5", "Bank1"],
-            "Plasma_cells": ["Jchain", "Mzb1", "Ighg1", "Sdc1", "Xbp1"],
-            "CD14_Monocytes": ["Cd14", "Lyz2", "S100a8", "S100a9", "Vcan"],
-            "CD16_Monocytes": ["Fcgr4", "Ms4a7", "Itgal", "Lst1"],
-            "Dendritic_cells": ["Fcer1a", "Cst3", "Cd209a", "Itgax"],
-            "Plasmacytoid_DC": ["Siglech", "Bst2", "Irf7", "Tcf4"],
-            "Platelets": ["Ppbp", "Pf4", "Gp9", "Tubb1"],
-        },
-        "brain": {
-            "Oligodendrocytes": ["Plp1", "Mbp", "Mog", "Mobp"],
-            "OPC": ["Pdgfra", "Cspg4", "Sox10", "Olig1"],
-            "Astrocytes": ["Gfap", "Aqp4", "Slc1a2", "Aldh1l1"],
-            "Microglia": ["Cx3cr1", "Tmem119", "P2ry12", "Csf1r"],
-            "Excitatory_neurons": ["Slc17a7", "Camk2a", "Neurod6"],
-            "Inhibitory_neurons": ["Gad1", "Gad2", "Slc32a1"],
-            "Endothelial": ["Cldn5", "Flt1", "Pecam1"],
-            "Pericytes": ["Pdgfrb", "Rgs5", "Abcc9"],
-        },
-    },
-}
-
 
 def get_marker_genes(species, tissue_type, marker_file=None):
     """
     Load marker genes for the given species and tissue type.
-    Priority: 1) user-provided marker_file, 2) bundled JSON, 3) inline fallback.
+    Requires either a user-provided marker_file or a bundled JSON in configs/.
     """
     # Option 1: User-provided marker file (full override)
     if marker_file and Path(marker_file).exists():
@@ -121,16 +68,10 @@ def get_marker_genes(species, tissue_type, marker_file=None):
             print(f"  Falling back to '{available[0]}'")
             return all_markers[species][available[0]]
 
-    # Option 3: Inline fallback
-    print(f"Using inline fallback markers for {species}/{tissue_type}")
-    if species in FALLBACK_MARKERS and tissue_type in FALLBACK_MARKERS[species]:
-        return FALLBACK_MARKERS[species][tissue_type]
-    elif species in FALLBACK_MARKERS:
-        first_key = list(FALLBACK_MARKERS[species].keys())[0]
-        print(f"  WARNING: tissue_type '{tissue_type}' not in fallback, using '{first_key}'")
-        return FALLBACK_MARKERS[species][first_key]
-    else:
-        raise ValueError(f"No markers available for species={species}, tissue_type={tissue_type}")
+    raise ValueError(
+        f"No marker genes available for species={species}, tissue_type={tissue_type}. "
+        "Provide a --marker_file JSON or place marker_genes.json in configs/."
+    )
 
 
 def score_cell_type(cluster_expr, markers, genes_available):

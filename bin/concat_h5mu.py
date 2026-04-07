@@ -8,6 +8,7 @@ from pathlib import Path
 import argparse
 import sys
 import json
+from h5ad_compat import sanitize_mudata
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -82,6 +83,7 @@ def main():
     
     # Save
     output_file = OUTPUT_DIR / args.output_file
+    sanitize_mudata(mdata_combined, output_file)
     mdata_combined.write_h5mu(output_file)
     print(f"\n✓ Saved: {output_file}")
     

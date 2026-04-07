@@ -131,6 +131,10 @@ def parse_args():
                    help="Cicero connections TSV.gz for CCAN arc panel")
     p.add_argument("--pfm-path", default="",
                    help="JASPAR PFM file for TF motif logo panel")
+    # FIX-46: Configurable cell type column name (was hardcoded 'cell_type')
+    p.add_argument("--cell-type-col", default="celltypist_prediction",
+                   help="obs column in peak matrix containing cell type labels "
+                        "(default: celltypist_prediction)")
     return p.parse_args()
 
 
@@ -397,6 +401,7 @@ def build_focal_grouping(
     printer,
     cell_type_label: str,
     bc_norm_mode: Optional[str] = None,
+    cell_type_col: str = "celltypist_prediction",
 ) -> Tuple[List, np.ndarray]:
     """Build barcode grouping for a single focal cell type.
 
@@ -406,20 +411,23 @@ def build_focal_grouping(
     FIX-42: Uses choose_normalization() auto-detection when bc_norm_mode is
     None.  Supports 'head_tail' (FIX-37 default) and 'tail_only' (SDas style).
 
+    FIX-46: cell_type_col is configurable (was hardcoded 'cell_type').
+
     Returns:
         grouping: list with one element (list of barcode strings)
         uniq_groups: np.array([cell_type_label])
     """
-    if "cell_type" not in adata.obs.columns:
-        raise ValueError("adata.obs does not contain a 'cell_type' column")
+    if cell_type_col not in adata.obs.columns:
+        raise ValueError(f"adata.obs does not contain a '{cell_type_col}' column. "
+                         f"Available: {list(adata.obs.columns)}")
 
     # Filter to focal cell type
-    cell_mask = adata.obs["cell_type"].astype(str) == cell_type_label
+    cell_mask = adata.obs[cell_type_col].astype(str) == cell_type_label
     n_cells = int(cell_mask.sum())
     print(f"  Focal cell type '{cell_type_label}': {n_cells} cells in peak matrix")
 
     if n_cells == 0:
-        available = sorted(adata.obs["cell_type"].astype(str).unique())
+        available = sorted(adata.obs[cell_type_col].astype(str).unique())
         raise ValueError(
             f"No cells found for cell_type '{cell_type_label}'. "
             f"Available: {available}"
@@ -740,11 +748,15 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
        f. Generates composite 3-panel figure (A + B + C stacked vertically)
     """
     label = args.cell_type_label or "global"
-    print(f"FIX-38: scPRINTER footprinting — focal cell type mode (label={label})", flush=True)
+    # FIX-43: Sanitize label for filesystem — cell types like "Megakaryocytes/platelets"
+    # contain '/' which breaks filenames (interpreted as directory separator)
+    safe_label = label.replace("/", "_")
+    print(f"FIX-43: scPRINTER footprinting — focal cell type mode (label={label}, safe_label={safe_label})", flush=True)
 
     # Load peak matrix and build focal cell type grouping
     adata = ad.read_h5ad(args.peak_matrix)
-    grouping, uniq_groups = build_focal_grouping(adata, printer, label)
+    grouping, uniq_groups = build_focal_grouping(adata, printer, label,
+                                                  cell_type_col=args.cell_type_col)
 
     # FIX-38: Load TFBS binding score model for integrated visualization
     has_tfbs = False
@@ -838,7 +850,7 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
         fp_ok = hasattr(printer, "footprintsadata") and fp_key in printer.footprintsadata
         if fp_ok:
             fp_data = printer.footprintsadata[fp_key]
-            fp_h5ad_name = f"footprints_{label}_{gene}.h5ad"
+            fp_h5ad_name = f"footprints_{safe_label}_{gene}.h5ad"
             print(f"  Saving footprint data to {fp_h5ad_name}")
             try:
                 fp_data = fp_data.copy()
@@ -872,7 +884,7 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
                 )
                 if bs_ok:
                     bs_data = printer.bindingscoreadata[bs_key]
-                    bs_h5ad_name = f"tfbs_{label}_{gene}.h5ad"
+                    bs_h5ad_name = f"tfbs_{safe_label}_{gene}.h5ad"
                     print(f"  Saving TFBS data to {bs_h5ad_name}")
                     try:
                         bs_data = bs_data.copy()
@@ -901,7 +913,7 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
             ax_a.set_ylabel("Tn5 Insertions", fontsize=9)
             _format_tss_xaxis(ax_a, region, gene)
             plt.tight_layout()
-            figpath_a = plots_dir / f"{label}_{gene}_A_insertion_profile.png"
+            figpath_a = plots_dir / f"{safe_label}_{gene}_A_insertion_profile.png"
             plt.savefig(figpath_a, dpi=200, bbox_inches="tight")
             print(f"  [OK] Plot A (insertion profile): {figpath_a}")
         except Exception as e:
@@ -937,7 +949,7 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
                 # FIX-41: TSS-centered x-axis + scale y-axis labels
                 _format_msfp_axes(ax_b, region, gene)
                 plt.tight_layout()
-                figpath_b = plots_dir / f"{label}_{gene}_B_multiscale_footprint.png"
+                figpath_b = plots_dir / f"{safe_label}_{gene}_B_multiscale_footprint.png"
                 plt.savefig(figpath_b, dpi=200, bbox_inches="tight")
                 print(f"  [OK] Plot B (multiscale footprint): {figpath_b}")
             except Exception as e:
@@ -967,7 +979,7 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
                 ax_c.set_ylabel("TF Binding Score", fontsize=9)
 
                 plt.tight_layout()
-                figpath_c = plots_dir / f"{label}_{gene}_C_tfbs_binding.png"
+                figpath_c = plots_dir / f"{safe_label}_{gene}_C_tfbs_binding.png"
                 plt.savefig(figpath_c, dpi=200, bbox_inches="tight")
                 print(f"  [OK] Plot C (TFBS binding score): {figpath_c}")
             except Exception as e:
@@ -1119,7 +1131,7 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
                     axes_comp[i].set_xlabel("")
 
                 plt.tight_layout()
-                figpath_comp = plots_dir / f"{label}_{gene}_composite.png"
+                figpath_comp = plots_dir / f"{safe_label}_{gene}_composite.png"
                 plt.savefig(figpath_comp, dpi=200, bbox_inches="tight")
                 print(f"  [OK] Composite figure: {figpath_comp}")
             except Exception as e:
@@ -1165,6 +1177,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
       3. Differential TFBS (treatment − control, fill_between)
     """
     label = args.cell_type_label or args.cell_type
+    safe_label = label.replace("/", "_")
     print(f"FIX-38/42: scPRINTER footprinting — differential mode", flush=True)
     print(f"  Cell type:  {args.cell_type}")
     print(f"  Control:    {args.control_condition}")
@@ -1172,10 +1185,12 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
 
     adata = ad.read_h5ad(args.peak_matrix)
 
-    if "cell_type" not in adata.obs.columns:
-        raise ValueError("adata.obs does not contain a 'cell_type' column")
+    ct_col = args.cell_type_col
+    if ct_col not in adata.obs.columns:
+        raise ValueError(f"adata.obs does not contain a '{ct_col}' column. "
+                         f"Available: {list(adata.obs.columns)}")
 
-    cell_mask = adata.obs["cell_type"] == args.cell_type
+    cell_mask = adata.obs[ct_col] == args.cell_type
     n_cells = int(cell_mask.sum())
     print(f"  Found {n_cells} cells for cell_type = {args.cell_type}")
     if n_cells == 0:
@@ -1281,7 +1296,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
         fp_ok = hasattr(printer, "footprintsadata") and fp_key in printer.footprintsadata
         if fp_ok:
             fp_data = printer.footprintsadata[fp_key]
-            fp_h5ad_name = f"footprints_{label}_{gene}.h5ad"
+            fp_h5ad_name = f"footprints_{safe_label}_{gene}.h5ad"
             print(f"  Saving promoter footprint data to {fp_h5ad_name}")
             try:
                 fp_data = fp_data.copy()
@@ -1311,7 +1326,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                 )
                 if bs_ok:
                     bs_data = printer.bindingscoreadata[bs_key]
-                    bs_h5ad_name = f"tfbs_{label}_{gene}.h5ad"
+                    bs_h5ad_name = f"tfbs_{safe_label}_{gene}.h5ad"
                     print(f"  Saving TFBS data to {bs_h5ad_name}")
                     try:
                         bs_data = bs_data.copy()
@@ -1393,7 +1408,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                     )
                     _format_msfp_axes(ax_diff, region, gene, modes=modes)
                     plt.tight_layout()
-                    diff_path = plots_dir / f"{label}_{gene}_differential_heatmap.png"
+                    diff_path = plots_dir / f"{safe_label}_{gene}_differential_heatmap.png"
                     plt.savefig(diff_path, dpi=200, bbox_inches="tight")
                     plt.close()
                     print(f"  [OK] Differential heatmap (RdBu_r): {diff_path}")
@@ -1468,7 +1483,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                     )
                     ax_line.set_ylabel("Footprint Score", fontsize=9)
                     plt.tight_layout()
-                    line_path = plots_dir / f"{label}_{gene}_differential_lineplot.png"
+                    line_path = plots_dir / f"{safe_label}_{gene}_differential_lineplot.png"
                     plt.savefig(line_path, dpi=200, bbox_inches="tight")
                     plt.close()
                     print(f"  [OK] Differential line plot (scale={actual_scale}bp): {line_path}")
@@ -1532,7 +1547,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                     )
                     ax_bs.set_ylabel("Δ TF Binding Score", fontsize=9)
                     plt.tight_layout()
-                    plot_bs_path = plots_dir / f"{label}_{gene}_tfbs_differential.png"
+                    plot_bs_path = plots_dir / f"{safe_label}_{gene}_tfbs_differential.png"
                     plt.savefig(plot_bs_path, dpi=200, bbox_inches="tight")
                     plt.close()
                     print(f"  [OK] Differential TFBS plot: {plot_bs_path}")

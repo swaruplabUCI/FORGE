@@ -87,11 +87,13 @@ def main():
         print(f"  [WARN] FIX-90 strip failed, trying original: {e}")
     rna = ad.read_h5ad(args.rna_h5ad)
     if 'cell_type' not in rna.obs.columns:
-        # Try alternative column names
-        for col in ['scanvi_prediction', 'celltypist_prediction', 'cell_type_annotation']:
+        # Try alternative column names — skip all-Unknown columns
+        for col in ['celltypist_prediction', 'scanvi_prediction', 'cell_type_annotation']:
             if col in rna.obs.columns:
-                rna.obs['cell_type'] = rna.obs[col]
-                break
+                vals = rna.obs[col].dropna().unique()
+                if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
+                    rna.obs['cell_type'] = rna.obs[col]
+                    break
     if 'cell_type' not in rna.obs.columns:
         raise ValueError("RNA h5ad missing cell_type column")
 

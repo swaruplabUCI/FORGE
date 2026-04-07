@@ -2,6 +2,7 @@
 
 import argparse
 import muon as mu
+from h5ad_compat import sanitize_adata
 
 def main():
     p = argparse.ArgumentParser(description="Export RNA modality from MuData for DORC")
@@ -20,6 +21,7 @@ def main():
     # library-level names from concatenation, while global obs has donor-level IDs)
     if 'sample_id' in mdata.obs.columns:
         rna.obs['sample_id'] = mdata.obs.loc[rna.obs.index, 'sample_id'].values
+    sanitize_adata(rna, args.out)
     rna.write_h5ad(args.out)
 
 if __name__ == "__main__":

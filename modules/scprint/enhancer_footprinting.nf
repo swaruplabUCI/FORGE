@@ -9,7 +9,8 @@ process ENHANCER_FOOTPRINTING {
     tag "${cell_type}_${tf_name}"
     label 'process_high'
     maxForks 7
-    publishDir "${params.outdir}/enhancer_footprinting/footprints/${cell_type}/${tf_name}", mode: 'copy'
+    // FIX-43: Sanitize cell_type/tf_name — '/' in names creates unintended subdirectories
+    publishDir "${params.outdir}/enhancer_footprinting/footprints/${cell_type.replace('/', '_')}/${tf_name.replace('/', '_')}", mode: 'copy'
 
     input:
     path region_set_bed       // Per-TF BED file from MOTIF_SCAN_ENHANCERS or EXTRACT_EREGULON_REGIONS
@@ -18,10 +19,12 @@ process ENHANCER_FOOTPRINTING {
     val cell_type             // Cell type label
     val tf_name               // TF name label
     path cicero_connections   // Cicero connections TSV (gzipped)
+    val cell_type_col         // FIX-43: obs column name for cell types
 
     output:
-    path "enhancer_footprints_${cell_type}_${tf_name}.h5ad",  emit: footprints, optional: true
-    path "enhancer_tfbs_${cell_type}_${tf_name}.h5ad",        emit: binding_scores, optional: true
+    // FIX-43: Sanitize cell_type/tf_name for filenames — '/' → '_'
+    path "enhancer_footprints_*.h5ad",  emit: footprints, optional: true
+    path "enhancer_tfbs_*.h5ad",        emit: binding_scores, optional: true
     path "enhancer_plots/*.png",                               emit: plots, optional: true
     path "enhancer_fp_summary.csv",                            emit: summary
 
@@ -58,6 +61,7 @@ process ENHANCER_FOOTPRINTING {
         --cpus ${task.cpus} \\
         --pfm-path '${params.scprinter.pfms}' \\
         --gtf '${params.scprinter.gtf_human}' \\
-        --cicero-connections '${cicero_connections}'
+        --cicero-connections '${cicero_connections}' \\
+        --cell-type-col '${cell_type_col}'
     """
 }

@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import scanpy as sc
+from h5ad_compat import sanitize_adata
 import logging
 import sys
 
@@ -150,6 +151,7 @@ def main():
     )
 
     logger.info(f"Saving annotated data to {args.output}")
+    sanitize_adata(adata, args.output)
     adata.write_h5ad(args.output)
 
     # Write report

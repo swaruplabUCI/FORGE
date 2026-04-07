@@ -10,6 +10,7 @@ import mudata as md
 import numpy as np
 from pathlib import Path
 import mofax as mfx
+from h5ad_compat import sanitize_mudata
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -278,6 +279,9 @@ Model dimensions:
                 'cell_type_prediction', 'scanvi_prediction',
                 'atac:scanvi_prediction']:
         if key in mdata.obs.columns:
+            vals = mdata.obs[key].dropna().unique()
+            if len(vals) == 1 and vals[0] == 'Unknown':
+                continue  # skip all-Unknown columns
             mdata.obs['cell_type'] = mdata.obs[key]
             cell_type_source = key
             print(f"Extracted cell types from {key}")
@@ -563,27 +567,32 @@ Model dimensions:
         print("✓ Saved: mofa_factors_celltype_boxplots.png")
         
         # 8.3 ANOVA testing
-        print("\nPerforming ANOVA across cell types...")
-        anova_results = []
-        
-        for i in range(n_factors):
-            factor_name = f'Factor_{i+1}'
-            
-            groups = [factor_celltype_df[factor_celltype_df['Cell_Type'] == ct][factor_name].values 
-                      for ct in factor_celltype_df['Cell_Type'].unique()]
-            
-            f_stat, p_val = f_oneway(*groups)
-            
-            anova_results.append({
-                'Factor': factor_name,
-                'F_statistic': f_stat,
-                'P_value': p_val,
-                'Significant': 'Yes' if p_val < 0.05 else 'No'
-            })
-            
-            sig_marker = '***' if p_val < 0.001 else '**' if p_val < 0.01 else '*' if p_val < 0.05 else ''
-            print(f"  {factor_name}: F={f_stat:.2f}, p={p_val:.2e} {sig_marker}")
-        
+        n_cell_types = factor_celltype_df['Cell_Type'].nunique()
+        if n_cell_types < 2:
+            print(f"\nSkipping ANOVA — only {n_cell_types} cell type group(s) (need >= 2)")
+            anova_results = []
+        else:
+            print(f"\nPerforming ANOVA across {n_cell_types} cell types...")
+            anova_results = []
+
+            for i in range(n_factors):
+                factor_name = f'Factor_{i+1}'
+
+                groups = [factor_celltype_df[factor_celltype_df['Cell_Type'] == ct][factor_name].values
+                          for ct in factor_celltype_df['Cell_Type'].unique()]
+
+                f_stat, p_val = f_oneway(*groups)
+
+                anova_results.append({
+                    'Factor': factor_name,
+                    'F_statistic': f_stat,
+                    'P_value': p_val,
+                    'Significant': 'Yes' if p_val < 0.05 else 'No'
+                })
+
+                sig_marker = '***' if p_val < 0.001 else '**' if p_val < 0.01 else '*' if p_val < 0.05 else ''
+                print(f"  {factor_name}: F={f_stat:.2f}, p={p_val:.2e} {sig_marker}")
+
         anova_df = pd.DataFrame(anova_results)
         anova_csv = OUTPUT_DIR / 'mofa_factors_anova_celltype.csv'
         anova_df.to_csv(anova_csv, index=False)
@@ -637,6 +646,7 @@ Model dimensions:
     
     # Save integrated MuData
     output_file = OUTPUT_DIR / f"integrated_{timestamp}_mofa_complete.h5mu"
+    sanitize_mudata(mdata, output_file)
     mdata.write_h5mu(output_file)
     print(f"\n✓ Saved integrated MuData: {output_file}")
     

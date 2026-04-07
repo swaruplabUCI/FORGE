@@ -489,6 +489,9 @@ def parse_args():
     # Phase 2C-D: Bound/unbound classification
     p.add_argument("--binding-threshold", default="otsu",
                    help="Binding score threshold: 'otsu', 'percentile_75', or float")
+    # FIX-43: Configurable cell type column (was hardcoded 'cell_type')
+    p.add_argument("--cell-type-col", default="celltypist_prediction",
+                   help="obs column name for cell type annotations")
     return p.parse_args()
 
 
@@ -1031,6 +1034,9 @@ def main():
 
     ct = args.cell_type
     tf = args.tf_name
+    # FIX-43: Sanitize for filesystem — cell types like "Megakaryocytes/platelets" contain '/'
+    safe_ct = ct.replace("/", "_")
+    safe_tf = tf.replace("/", "_")
 
     print(f"Enhancer footprinting: cell_type={ct}, TF={tf}")
 
@@ -1147,9 +1153,12 @@ def main():
     printer.load_disp_model()
 
     # Load peak matrix for barcode groupings
+    # FIX-43: Use configurable cell type column (was hardcoded 'cell_type')
+    ct_col = args.cell_type_col
     adata = ad.read_h5ad(args.peak_matrix)
-    if 'cell_type' not in adata.obs.columns:
-        raise ValueError("Peak matrix missing 'cell_type' column")
+    if ct_col not in adata.obs.columns:
+        raise ValueError(f"Peak matrix missing '{ct_col}' column. "
+                         f"Available: {list(adata.obs.columns)}")
 
     # Build barcode -> cell_type table with auto-detected normalization
     printer_bcs = set(map(str, printer.obs_names))
@@ -1159,7 +1168,7 @@ def main():
 
     df = pd.DataFrame({
         'barcode': [normalize_peak_barcode(b, strategy) for b in peak_bcs],
-        'cell_type': adata.obs['cell_type'].astype(str).values,
+        'cell_type': adata.obs[ct_col].astype(str).values,
     })
 
     df = df[df['barcode'].isin(printer_bcs)].copy()
@@ -1212,7 +1221,7 @@ def main():
 
         if hasattr(printer, 'bindingscoreadata') and save_key_bs in printer.bindingscoreadata:
             bs_data = printer.bindingscoreadata[save_key_bs]
-            bs_h5ad = f"enhancer_tfbs_{ct}_{tf}.h5ad"
+            bs_h5ad = f"enhancer_tfbs_{safe_ct}_{safe_tf}.h5ad"
             try:
                 bs_data = bs_data.copy()
             except Exception:
@@ -1243,7 +1252,7 @@ def main():
     fp_saved = False
     if hasattr(printer, 'footprintsadata') and save_key_fp in printer.footprintsadata:
         fp_data = printer.footprintsadata[save_key_fp]
-        fp_h5ad = f"enhancer_footprints_{ct}_{tf}.h5ad"
+        fp_h5ad = f"enhancer_footprints_{safe_ct}_{safe_tf}.h5ad"
         try:
             fp_data = fp_data.copy()
         except Exception:
@@ -1331,7 +1340,7 @@ def main():
                 title += f"\nLinked genes: {format_gene_label(ref_genes_str)}"
             plt.suptitle(title, fontsize=10)
             plt.tight_layout()
-            fig1_path = plots_dir / f"{ct}_{tf}_enhancer_footprints_msfp.png"
+            fig1_path = plots_dir / f"{safe_ct}_{safe_tf}_enhancer_footprints_msfp.png"
             plt.savefig(fig1_path, dpi=200)
             plt.close()
             print(f"  Saved plot: {fig1_path}")
@@ -1454,7 +1463,7 @@ def main():
                         fontsize=9)
 
                 plt.tight_layout()
-                fig2_path = plots_dir / f"{ct}_{tf}_insertion_example.png"
+                fig2_path = plots_dir / f"{safe_ct}_{safe_tf}_insertion_example.png"
                 plt.savefig(fig2_path, dpi=200)
                 plt.close()
                 print(f"  Saved plot: {fig2_path}")
@@ -1510,9 +1519,9 @@ def main():
                 # Create condition-specific groupings
                 adata_ct = ad.read_h5ad(args.peak_matrix)
                 if 'condition' in adata_ct.obs.columns:
-                    ctrl_mask = (adata_ct.obs['cell_type'] == ct) & (
+                    ctrl_mask = (adata_ct.obs[ct_col] == ct) & (
                         adata_ct.obs['condition'].astype(str) == args.control_condition)
-                    trt_mask = (adata_ct.obs['cell_type'] == ct) & (
+                    trt_mask = (adata_ct.obs[ct_col] == ct) & (
                         adata_ct.obs['condition'].astype(str) == args.treatment_condition)
 
                     bc_strategy = detect_barcode_strategy(
@@ -1869,7 +1878,7 @@ def main():
                             suptitle += f" | also: {', '.join(other_targets)}"
             fig_comp.suptitle(suptitle, fontsize=11, fontweight='bold', y=1.02)
 
-            comp_path = plots_dir / f"{ct}_{tf}_composite.png"
+            comp_path = plots_dir / f"{safe_ct}_{safe_tf}_composite.png"
             fig_comp.savefig(comp_path, dpi=200, bbox_inches='tight', facecolor='white')
             plt.close(fig_comp)
             print(f"  Saved composite: {comp_path}")

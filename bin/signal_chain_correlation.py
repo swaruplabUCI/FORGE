@@ -97,12 +97,16 @@ def main():
         print(f"  [WARN] FIX-90 strip failed, trying original: {e}")
     rna = ad.read_h5ad(args.rna_h5ad)
 
-    # Detect cell type column
-    ct_col = 'cell_type'
-    for col in ['cell_type', 'scanvi_prediction', 'celltypist_prediction']:
+    # Detect cell type column — prefer columns with real labels over all-Unknown
+    ct_col = None
+    for col in ['cell_type', 'celltypist_prediction', 'scanvi_prediction']:
         if col in rna.obs.columns:
-            ct_col = col
-            break
+            vals = rna.obs[col].dropna().unique()
+            if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
+                ct_col = col
+                break
+    if ct_col is None:
+        ct_col = 'cell_type'  # fall through to original default
     rna.obs['cell_type'] = rna.obs[ct_col]
 
     cell_types = sorted(rna.obs['cell_type'].unique().tolist())

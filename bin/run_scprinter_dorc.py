@@ -169,6 +169,21 @@ def main():
     shared_ids = atac_ids_unique.intersection(rna_ids_unique)
     logger.info(f"Found {len(shared_ids)} shared sample:barcode IDs.")
 
+    # If no overlap, try stripping GEM well suffix (-1, -2, etc.) from barcodes
+    if len(shared_ids) == 0:
+        import re
+        strip_gem = lambda idx: idx.str.replace(r'-\d+$', '', regex=True)
+        atac_stripped = strip_gem(atac_ids_unique)
+        rna_stripped = strip_gem(rna_ids_unique)
+        overlap_stripped = atac_stripped.intersection(rna_stripped)
+        if len(overlap_stripped) > 0:
+            logger.info(f"Barcode suffix mismatch — stripped GEM well suffix, found {len(overlap_stripped)} shared IDs.")
+            # Remap: rename ATAC obs_names to match stripped version
+            adata_atac.obs_names = strip_gem(pd.Index(adata_atac.obs_names))
+            atac_ids_unique = strip_gem(atac_ids_unique)
+            rna_ids_unique = rna_stripped
+            shared_ids = atac_ids_unique.intersection(rna_ids_unique)
+
     if len(shared_ids) == 0:
         raise ValueError("No shared sample:barcode IDs between ATAC and RNA AnnData.")
 
@@ -212,7 +227,7 @@ def main():
         adata_atac,
         adata_rna,
         genome=getattr(scp.genome, args.genome),
-        tss_df=scp.datasets.FigR_hg38TSSRanges if args.genome == "hg38" else None,
+        tss_df=getattr(scp.datasets, {'hg38': 'FigR_hg38TSSRanges', 'mm10': 'FigR_mm10TSSRanges', 'mm39': 'FigR_mm10TSSRanges'}.get(args.genome, ''), None),
         gene_list=None,
         window_pad_size=args.window_pad_size,
         n_jobs=n_jobs,

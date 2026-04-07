@@ -113,6 +113,9 @@ def main():
                     help='Local GTF/GFF3 annotation file (avoids internet download)')
     parser.add_argument('--cisbp_meme', type=str, default=None,
                     help='Local CIS-BP MEME motif file for motif enrichment (avoids internet download)')
+    # FIX-44: Configurable genome build (was hardcoded mm10 for mouse)
+    parser.add_argument('--genome_build', default=None,
+                    help='Genome build (e.g. hg38, mm10, mm39). Auto-detected from species if not set.')
     args = parser.parse_args()
 
     # CRITICAL FIX: Disable HDF5 file locking for DFS/NFS
@@ -126,7 +129,6 @@ def main():
 
     # Load metadata
     metadata = pd.read_csv(args.metadata)
-    metadata = metadata[metadata['sample_type'] == 'demux'].copy()
 
     # FIX-29b: Handle FIX-28 manifest where sample_id already includes _{batch} suffix.
     # Avoid double-suffix (e.g. L1_Donor_0_july_july) by checking first.
@@ -172,8 +174,14 @@ def main():
     # Final combined AnnDataSet filename
     dataset_path = out_dir / "atac_complete.h5ads"
 
-    # Define genome (used for chrom_sizes — does NOT trigger annotation download)
-    genome = snap.genome.hg38 if args.species == 'human' else snap.genome.mm10
+    # FIX-44: Define genome — use explicit build if provided, else default per species
+    genome_map = {'hg38': snap.genome.hg38, 'hg19': snap.genome.hg19,
+                  'mm10': snap.genome.mm10, 'mm39': snap.genome.mm39,
+                  'GRCm39': snap.genome.mm39, 'GRCh38': snap.genome.hg38}
+    if args.genome_build and args.genome_build in genome_map:
+        genome = genome_map[args.genome_build]
+    else:
+        genome = snap.genome.hg38 if args.species == 'human' else snap.genome.mm10
 
     # ========================================================================
     # STEP 1: IMPORT FRAGMENTS (returns list of AnnData objects)
@@ -411,6 +419,25 @@ def main():
     if not filtered_files:
         raise RuntimeError("No valid h5ad files found after filtering!")
 
+    # FIX-45a: Rename per-sample h5ads from qc_sample → sample_id BEFORE
+    # creating AnnDataSet, so that obs_names, sample columns, peak_matrix,
+    # and gene_matrix all use sample_id consistently (matching RNA barcodes).
+    sid_map = dict(zip(metadata['qc_sample'], metadata['sample_id']))
+    renamed_files = []
+    for f in filtered_files:
+        qc_name = f.stem
+        if qc_name in sid_map and qc_name != sid_map[qc_name]:
+            dst = f.parent / f"{sid_map[qc_name]}.h5ad"
+            if not dst.exists():
+                os.rename(str(f), str(dst))
+                print(f"  Renamed {f.name} -> {dst.name} (qc_sample → sample_id)")
+                renamed_files.append(dst)
+            else:
+                renamed_files.append(f)
+        else:
+            renamed_files.append(f)
+    filtered_files = renamed_files
+
     print(f"\n Proceeding with {len(filtered_files)} valid samples")
     # --------------------------------------------------------------------
     # Export per-sample QC h5ad files for scPrinter / downstream use
@@ -501,7 +528,9 @@ def main():
     print(f"AnnDataSet created: {data.n_obs} cells")
     print(f"Verified unique cell IDs: {np.unique(data.obs_names).size}")
 
-    meta_map = metadata.set_index('qc_sample')
+    # FIX-45a: After early rename, sample names in the AnnDataSet are sample_id,
+    # so index by sample_id for downstream lookups.
+    meta_map = metadata.set_index('sample_id')
 
     if 'batch' not in meta_map.columns:
         raise KeyError("'batch' column not found in metadata; cannot annotate AnnDataSet with batch.")
@@ -644,6 +673,14 @@ def main():
         if col not in peak_matrix.obs.columns:
             peak_matrix.obs[col] = data.obs[col].to_list()
 
+    # Transfer UMAP coordinates from AnnDataSet to peak_matrix
+    try:
+        umap_coords = np.array(data.obsm['X_umap'])
+        peak_matrix.obsm['X_umap'] = umap_coords
+        print(f"  Transferred UMAP coordinates to peak_matrix: {umap_coords.shape}")
+    except (KeyError, Exception) as e:
+        print(f"  Warning: Could not transfer UMAP to peak_matrix: {e}")
+
     peak_matrix.write_h5ad(out_dir / "peak_matrix.h5ad", compression='gzip')
     print(f"Peak matrix saved: {peak_matrix.n_obs} cells x {peak_matrix.n_vars} peaks")
 
@@ -655,13 +692,12 @@ def main():
     print(f"{'='*70}")
 
     # FIX-29b: Use local GTF if provided (avoids internet download on HPC)
+    # FIX-44: Use genome_map for correct build (was hardcoded mm10)
     if args.gtf:
         gene_annot = args.gtf
         print(f"  Using local annotation for gene matrix: {args.gtf}")
-    elif args.species == 'human':
-        gene_annot = snap.genome.hg38
     else:
-        gene_annot = snap.genome.mm10
+        gene_annot = genome  # Uses FIX-44 genome_map result from above
 
     # Compute gene activity matrix from the ORIGINAL data object (has fragments)
     gene_matrix = snap.pp.make_gene_matrix(
@@ -702,6 +738,20 @@ def main():
         print(f"  Warning: Could not transfer from AnnDataSet: {e}")
         print("  Falling back to peak_matrix metadata...")
 
+    # Transfer UMAP coordinates from AnnDataSet to gene_matrix
+    try:
+        umap_coords = np.array(data.obsm['X_umap'])
+        gene_matrix.obsm['X_umap'] = umap_coords
+        print(f"  Transferred UMAP coordinates to gene_matrix: {umap_coords.shape}")
+    except (KeyError, Exception) as e:
+        print(f"  Warning: Could not transfer UMAP from AnnDataSet: {e}")
+        # Fallback: use peak_matrix's UMAP if available (transferred earlier)
+        if 'X_umap' in peak_matrix.obsm:
+            gene_matrix.obsm['X_umap'] = peak_matrix.obsm['X_umap']
+            print(f"  Fallback: transferred UMAP from peak_matrix: {peak_matrix.obsm['X_umap'].shape}")
+        else:
+            print(f"  Warning: No UMAP coordinates available for gene_matrix")
+
     # Normalize gene scores (log1p transform)
     gene_matrix.X = gene_matrix.X.astype(np.float32)
     # Save gene matrix BEFORE normalization
@@ -728,58 +778,39 @@ def main():
     print("STEP 16.6: Generating marker gene dotplot")
     print(f"{'='*70}")
 
-    # Define cell type markers
-    if args.species == 'mouse':
-        marker_genes = {
-            'Oligodendrocytes': ['Plp1', 'Mbp', 'Mog', 'Mobp'],
-            'Oligodendrocyte_progenitor': ['Pdgfra', 'Cspg4', 'Sox10', 'Olig1'],
-            'Astrocytes': ['Gfap', 'Aqp4', 'Slc1a2', 'Aldh1l1'],
-            'Microglia': ['Cx3cr1', 'Tmem119', 'P2ry12', 'Csf1r'],
-            'Excitatory_neurons': ['Slc17a7', 'Camk2a', 'Neurod6'],
-            'Inhibitory_neurons': ['Gad1', 'Gad2', 'Slc32a1'],
-            'Endothelial': ['Cldn5', 'Flt1', 'Pecam1'],
-            'Pericytes': ['Pdgfrb', 'Rgs5', 'Abcc9'],
-        }
-    else:  # human
-        marker_genes = {
-            'Oligodendrocytes': ['PLP1', 'MBP', 'MOG', 'MOBP'],
-            'Oligodendrocyte_progenitor': ['PDGFRA', 'CSPG4', 'SOX10', 'OLIG1'],
-            'Astrocytes': ['GFAP', 'AQP4', 'SLC1A2', 'ALDH1L1'],
-            'Microglia': ['CX3CR1', 'TMEM119', 'P2RY12', 'CSF1R'],
-            'Excitatory_neurons': ['SLC17A7', 'CAMK2A', 'NEUROD6'],
-            'Inhibitory_neurons': ['GAD1', 'GAD2', 'SLC32A1'],
-            'Endothelial': ['CLDN5', 'FLT1', 'PECAM1'],
-            'Pericytes': ['PDGFRB', 'RGS5', 'ABCC9'],
-        }
-
-    # Flatten marker list
-    all_markers = [g for genes in marker_genes.values() for g in genes]
-    available_markers = [g for g in all_markers if g in gene_matrix.var_names]
-
-    print(f"Found {len(available_markers)}/{len(all_markers)} marker genes")
-
-    # Generate dotplot for low resolution clustering (0.5)
+    # Derive marker genes from data via differential expression
     clustering_key = "leiden_0_5"
 
-    if len(available_markers) > 0:
-        try:
+    try:
+        sc.tl.rank_genes_groups(gene_matrix, clustering_key, method='wilcoxon')
+
+        # Extract top 5 genes per cluster, deduplicate
+        top_genes = []
+        for group in gene_matrix.obs[clustering_key].unique():
+            genes = gene_matrix.uns['rank_genes_groups']['names'][str(group)][:5]
+            top_genes.extend(genes)
+        top_genes = list(dict.fromkeys(top_genes))  # deduplicate, preserve order
+
+        print(f"Derived {len(top_genes)} DE marker genes across {gene_matrix.obs[clustering_key].nunique()} clusters")
+
+        if top_genes:
+            import shutil
             sc.pl.dotplot(
                 gene_matrix,
-                available_markers,
+                top_genes,
                 groupby=clustering_key,
-                save=f'_{clustering_key}.pdf',  # Saves to ./figures/
+                standard_scale='var',
+                save=f'_{clustering_key}.pdf',
                 show=False
             )
 
-            # Move the file to your plot directory
-            import shutil
             src = Path('./figures') / f'dotplot_{clustering_key}.pdf'
             if src.exists():
                 shutil.move(src, plot_dir / f"marker_dotplot_{clustering_key}.pdf")
                 print(f"Marker dotplot saved: marker_dotplot_{clustering_key}.pdf")
 
-        except Exception as e:
-            print(f"WARNING: Could not generate dotplot: {e}")
+    except Exception as e:
+        print(f"WARNING: Could not generate dotplot: {e}")
 
     # Export cluster-level aggregated gene scores
     cluster_avg_expr = {}
@@ -799,112 +830,32 @@ def main():
     print(f"Cluster-averaged gene scores saved: {cluster_expr_path}")
 
     # ========================================================================
-    # STEP 16.7: AUTOMATED CELL TYPE ANNOTATION
+    # STEP 16.7: DATA-DRIVEN CLUSTER ANNOTATION
     # ========================================================================
     print(f"\n{'='*70}")
-    print("STEP 16.7: Automated cell type annotation")
+    print("STEP 16.7: Data-driven cluster annotation")
     print(f"{'='*70}")
 
-    # Define annotation functions inline
-    def get_marker_genes_inline(species):
-        """Define marker genes for major brain cell types"""
-        if species == 'mouse':
-            return {
-                'Oligodendrocytes': ['Plp1', 'Mbp', 'Mog', 'Mobp'],
-                'Oligodendrocyte_progenitor': ['Pdgfra', 'Cspg4', 'Sox10', 'Olig1'],
-                'Astrocytes': ['Gfap', 'Aqp4', 'Slc1a2', 'Aldh1l1'],
-                'Microglia': ['Cx3cr1', 'Tmem119', 'P2ry12', 'Csf1r'],
-                'Excitatory_neurons': ['Slc17a7', 'Camk2a', 'Neurod6'],
-                'Inhibitory_neurons': ['Gad1', 'Gad2', 'Slc32a1'],
-                'Endothelial': ['Cldn5', 'Flt1', 'Pecam1'],
-                'Pericytes': ['Pdgfrb', 'Rgs5', 'Abcc9'],
-            }
-        else:  # human
-            return {
-                'Oligodendrocytes': ['PLP1', 'MBP', 'MOG', 'MOBP'],
-                'Oligodendrocyte_progenitor': ['PDGFRA', 'CSPG4', 'SOX10', 'OLIG1'],
-                'Astrocytes': ['GFAP', 'AQP4', 'SLC1A2', 'ALDH1L1'],
-                'Microglia': ['CX3CR1', 'TMEM119', 'P2RY12', 'CSF1R'],
-                'Excitatory_neurons': ['SLC17A7', 'CAMK2A', 'NEUROD6'],
-                'Inhibitory_neurons': ['GAD1', 'GAD2', 'SLC32A1'],
-                'Endothelial': ['CLDN5', 'FLT1', 'PECAM1'],
-                'Pericytes': ['PDGFRB', 'RGS5', 'ABCC9'],
-            }
+    # Use rank_genes_groups results from STEP 16.6 to label clusters by top DE gene
+    clustering_key = "leiden_0_5"
+    try:
+        top_gene_per_cluster = {}
+        for group in gene_matrix.obs[clustering_key].unique():
+            top_gene = gene_matrix.uns['rank_genes_groups']['names'][str(group)][0]
+            top_gene_per_cluster[str(group)] = top_gene
 
-    def score_cell_type_inline(cluster_expr, markers, genes_available):
-        """Score a cluster for a cell type based on mean expression of markers"""
-        available_markers = [g for g in markers if g in genes_available]
+        # Label clusters as "Cluster_N (TOP_GENE)"
+        cluster_labels = {k: f"Cluster_{k} ({v})" for k, v in top_gene_per_cluster.items()}
+        peak_matrix.obs['cluster_label'] = peak_matrix.obs[clustering_key].map(cluster_labels)
+        data.obs['cluster_label'] = [cluster_labels.get(str(c), f'Cluster_{c}') for c in data.obs[clustering_key]]
 
-        if len(available_markers) == 0:
-            return 0.0
+        print("\nCluster labels (top DE gene):")
+        for k, v in sorted(cluster_labels.items(), key=lambda x: int(x[0])):
+            n_cells = (peak_matrix.obs[clustering_key] == k).sum()
+            print(f"  {v}: {n_cells} cells")
 
-        scores = [cluster_expr[g] for g in available_markers if g in cluster_expr.index]
-
-        if len(scores) == 0:
-            return 0.0
-
-        return float(np.mean(scores))
-
-    def annotate_clusters_inline(cluster_scores_df, marker_dict):
-        """Assign cell types to clusters based on marker expression"""
-        annotations = {}
-        genes_available = set(cluster_scores_df.columns)
-
-        for cluster_id in cluster_scores_df.index:
-            cluster_expr = cluster_scores_df.loc[cluster_id]
-
-            # Score all cell types
-            scores = {}
-            for cell_type, markers in marker_dict.items():
-                scores[cell_type] = score_cell_type_inline(cluster_expr, markers, genes_available)
-
-            # Assign cell type with highest score
-            if max(scores.values()) > 0:
-                best_type = max(scores, key=scores.get)
-                confidence = scores[best_type]
-
-                annotations[str(cluster_id)] = {
-                    "cell_type": best_type,
-                    "confidence": confidence,
-                    "scores": {k: round(v, 4) for k, v in scores.items()}
-                }
-            else:
-                annotations[str(cluster_id)] = {
-                    "cell_type": "Unknown",
-                    "confidence": 0.0,
-                    "scores": scores
-                }
-
-        return annotations
-
-    # Load cluster-level gene scores
-    cluster_expr_df = pd.read_csv(out_dir / "cluster_avg_gene_scores.csv", index_col=0)
-
-    # Run automated annotation using inline functions
-    marker_dict = get_marker_genes_inline(args.species)
-    annotations = annotate_clusters_inline(cluster_expr_df, marker_dict)
-
-    # Save annotations to JSON
-    with open(out_dir / 'celltype_annotations.json', 'w') as f:
-        json.dump(annotations, f, indent=2)
-    print("Cell type annotations saved: celltype_annotations.json")
-
-    # Map cell types to peak matrix
-    clustering_key = "leiden_0_5"  # Use low-resolution clustering
-    cell_type_map = {k: v['cell_type'] for k, v in annotations.items()}
-
-    # Add cell_type to peak_matrix.obs
-    peak_matrix.obs['cell_type'] = peak_matrix.obs[clustering_key].map(cell_type_map)
-
-    # Also add to main AnnDataSet (convert to string to avoid type issues)
-    data.obs['cell_type'] = [cell_type_map.get(str(c), 'Unknown') for c in data.obs[clustering_key]]
-
-    print("\nCell type distribution:")
-    print(peak_matrix.obs['cell_type'].value_counts())
-
-    # Save updated peak matrix with cell types
-    peak_matrix.write_h5ad(out_dir / "peak_matrix_annotated.h5ad", compression='gzip')
-    print("Saved annotated peak matrix: peak_matrix_annotated.h5ad")
+    except Exception as e:
+        print(f"Warning: Could not generate cluster labels: {e}")
 
     # ========================================================================
     # STEP 17: GENERATE POST-PROCESSING VISUALIZATIONS
@@ -939,49 +890,9 @@ def main():
     with quiet_plotly_export():
         fig.write_image(str(plot_dir / "umap_by_batch.pdf"))
 
-    # UMAP by cell type (ATAC-based annotation)
-    try:
-        fig = snap.pl.umap(data, color='cell_type', show=False, out_file=None,
-                          interactive=False, height=500)
-        with quiet_plotly_export():
-            fig.write_image(str(plot_dir / "umap_by_cell_type.pdf"))
-        print("Saved: umap_by_cell_type.pdf")
-    except Exception as e:
-        print(f"WARNING: Cell type UMAP failed: {e}")
-
-    # Marker regions heatmap by cell type
-    if 'cell_type' in peak_matrix.obs.columns:
-        print("Identifying marker regions by cell type...")
-        try:
-            marker_peaks = snap.tl.marker_regions(peak_matrix, groupby='cell_type')
-            fig = snap.pl.regions(peak_matrix, groupby='cell_type', peaks=marker_peaks,
-                                 interactive=False, show=False)
-            with quiet_plotly_export():
-                fig.write_image(str(plot_dir / "marker_regions_heatmap.pdf"))
-            print("Saved: marker_regions_heatmap.pdf")
-
-            # Motif enrichment on marker peaks
-            print("Running motif enrichment on marker peaks...")
-            genome_fasta = snap.genome.hg38 if args.species == 'human' else snap.genome.mm10
-            if args.cisbp_meme and Path(args.cisbp_meme).exists():
-                from snapatac2.datasets import read_motifs
-                print(f"  Loading local CIS-BP motifs: {args.cisbp_meme}")
-                motif_list = read_motifs(args.cisbp_meme)
-            else:
-                print("  Downloading CIS-BP motifs via snapatac2...")
-                motif_list = snap.datasets.cis_bp(unique=True)
-            motifs = snap.tl.motif_enrichment(
-                motifs=motif_list,
-                regions=marker_peaks,
-                genome_fasta=genome_fasta
-            )
-            fig = snap.pl.motif_enrichment(motifs, max_fdr=0.0001, height=1600,
-                                           interactive=False, show=False)
-            with quiet_plotly_export():
-                fig.write_image(str(plot_dir / "motif_enrichment.pdf"))
-            print("Saved: motif_enrichment.pdf")
-        except Exception as e:
-            print(f"WARNING: Marker regions / motif enrichment failed: {e}")
+    # NOTE: Cell type UMAP and marker regions are generated downstream by
+    # MERGE_ANNOTATIONS after CellTypist or marker-based annotation is applied.
+    # This script only produces cluster-level and sample/batch UMAPs.
 
     # ========================================================================
     # STEP 18: SAVE SUMMARY AND CLOSE

@@ -8,6 +8,7 @@ import scanpy as sc
 import argparse
 import json
 from pathlib import Path
+from h5ad_compat import sanitize_adata
 
 def assign_groups(h5ad_path, output_path, group_mapping_json):
     """
@@ -46,6 +47,7 @@ def assign_groups(h5ad_path, output_path, group_mapping_json):
     
     # Save
     print(f"\nSaving to {output_path}...")
+    sanitize_adata(adata, output_path)
     adata.write_h5ad(output_path)
     
     # Save summary statistics

@@ -13,6 +13,7 @@ import anndata as ad
 from pathlib import Path
 import warnings
 import json
+from h5ad_compat import sanitize_mudata
 import gc
 import shutil
 from datetime import datetime
@@ -70,15 +71,15 @@ def parse_args():
 
 def main():
     args = parse_args()
-
+    
     # Setup directories
     OUTPUT_DIR = Path(args.output_dir)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     TEMP_DIR = OUTPUT_DIR / "temp_batches"
     TEMP_DIR.mkdir(exist_ok=True)
-
+    
     LOG_FILE = OUTPUT_DIR / f"mudata_construction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
+    
     log_message("="*80, LOG_FILE)
     log_message("MUDATA CONSTRUCTION PIPELINE", LOG_FILE)
     log_message("="*80, LOG_FILE)
@@ -123,7 +124,7 @@ def main():
     if len(matched_pairs) == 0:
         log_message("\nERROR: No sample pairs in sample map!", LOG_FILE, "ERROR")
         sys.exit(1)
-
+    
     # ========================================================================
     # Load SCANVI predictions if provided
     # ========================================================================
@@ -144,30 +145,30 @@ def main():
                 log_message(f"✓ Loaded predictions from '{pred_col}' for {len(scanvi_predictions)} cells", LOG_FILE)
         except Exception as e:
             log_message(f"⚠ Could not load SCANVI file: {e}", LOG_FILE, "WARN")
-
+    
     # ========================================================================
     # NEW: Process MATCHED sample pairs
     # ========================================================================
     log_message("\n" + "="*80, LOG_FILE)
     log_message("PROCESSING MATCHED SAMPLE PAIRS", LOG_FILE)
     log_message("="*80, LOG_FILE)
-
+    
     mudata_list = []
     sample_stats = []
-
+    
     for idx, (sample_id, rna_file, atac_file) in enumerate(matched_pairs, 1):
         log_message(f"\n[{idx}/{len(matched_pairs)}] Processing {sample_id}...", LOG_FILE)
         log_message(f"  RNA:  {rna_file.name}", LOG_FILE)
         log_message(f"  ATAC: {atac_file.name}", LOG_FILE)
-
+        
         try:
             # Load data
             rna_adata = sc.read_h5ad(rna_file)
             atac_adata = sc.read_h5ad(atac_file)
-
+            
             log_message(f"  RNA cells: {rna_adata.n_obs:,}", LOG_FILE)
             log_message(f"  ATAC cells: {atac_adata.n_obs:,}", LOG_FILE)
-
+            
             # ============================================================
             # FIX-P0-5 (C2): Smart barcode matching with normalization
             # ============================================================
@@ -232,29 +233,29 @@ def main():
             if len(common_barcodes) == 0:
                 log_message(f"  ⚠ Still no overlapping cells, skipping", LOG_FILE, "WARN")
                 continue
-
+            
             # Subset to common cells
             rna_sub = rna_adata[common_barcodes, :].copy()
             atac_sub = atac_adata[common_barcodes, :].copy()
-
+            
             # Add SCANVI predictions
             if scanvi_predictions:
                 cell_types = [scanvi_predictions.get(bc, 'Unknown') for bc in common_barcodes]
                 rna_sub.obs['scanvi_prediction'] = cell_types
                 atac_sub.obs['scanvi_prediction'] = cell_types
-
+            
             # Make barcodes globally unique across samples
             new_barcodes = [f"{sample_id}:{bc}" for bc in common_barcodes]
             rna_sub.obs_names = new_barcodes
             atac_sub.obs_names = new_barcodes
-
+            
             # Create MuData
             mdata = md.MuData({'rna': rna_sub, 'atac': atac_sub})
             mdata.obs['sample_id'] = sample_id
             mdata.obs['sample_idx'] = idx
-
+            
             mudata_list.append(mdata)
-
+            
             retention = len(common_barcodes) / min(rna_adata.n_obs, atac_adata.n_obs)
             sample_stats.append({
                 'sample_id': sample_id,
@@ -263,25 +264,25 @@ def main():
                 'n_multiome': len(common_barcodes),
                 'retention_rate': retention
             })
-
+            
             log_message(f"  ✓ {len(common_barcodes):,} cells ({retention*100:.1f}% retention)", LOG_FILE)
-
+            
             if idx % 10 == 0:
                 log_memory(LOG_FILE)
                 gc.collect()
-
+                
         except Exception as e:
             log_message(f"  ✗ Error: {e}", LOG_FILE, "ERROR")
             import traceback
             log_message(traceback.format_exc(), LOG_FILE, "ERROR")
             continue
-
+    
     log_message(f"\n✓ Successfully processed {len(mudata_list)} sample pairs", LOG_FILE)
-
+    
     if len(mudata_list) == 0:
         log_message("\n❌ ERROR: No valid MuData objects created!", LOG_FILE, "ERROR")
         sys.exit(1)
-
+    
     # ========================================================================
     # Concatenate samples
     # ========================================================================
@@ -289,7 +290,7 @@ def main():
     log_message("CONCATENATING SAMPLES", LOG_FILE)
     log_message("="*80, LOG_FILE)
     log_memory(LOG_FILE)
-
+    
     if len(mudata_list) == 1:
         log_message("Single sample — skipping concatenation", LOG_FILE)
         combined_mdata = mudata_list[0]
@@ -306,15 +307,15 @@ def main():
     else:
         # Batched concatenation for large datasets
         log_message(f"Using batched concatenation (batch_size={args.batch_size})", LOG_FILE)
-
+        
         n_batches = (len(mudata_list) + args.batch_size - 1) // args.batch_size
         batch_files = []
-
+        
         for batch_idx in range(n_batches):
             start_idx = batch_idx * args.batch_size
             end_idx = min((batch_idx + 1) * args.batch_size, len(mudata_list))
             batch_mdatas = mudata_list[start_idx:end_idx]
-
+            
             batch_combined = md.concat(
                 batch_mdatas,
                 join='inner',
@@ -323,50 +324,52 @@ def main():
                 keys=None,
                 index_unique=None
             )
-
+            
             batch_file = TEMP_DIR / f"batch_{batch_idx:03d}.h5mu"
+            sanitize_mudata(batch_combined, batch_file)
             batch_combined.write_h5mu(batch_file)
             batch_files.append(batch_file)
-
+            
             log_message(f"  Batch {batch_idx+1}/{n_batches}: {batch_combined.n_obs:,} cells", LOG_FILE)
-
+            
             del batch_combined, batch_mdatas
             gc.collect()
-
+        
         # Hierarchical merge
         current_files = batch_files
         merge_round = 1
-
+        
         while len(current_files) > 1:
             next_files = []
-
+            
             for i in range(0, len(current_files), 2):
                 if i + 1 < len(current_files):
                     mdata1 = md.read_h5mu(current_files[i])
                     mdata2 = md.read_h5mu(current_files[i+1])
-
+                    
                     merged = md.concat([mdata1, mdata2], join='inner', merge='same',
                                       label=None, keys=None, index_unique=None)
-
+                    
                     merged_file = TEMP_DIR / f"merged_round{merge_round}_{i//2:03d}.h5mu"
+                    sanitize_mudata(merged, merged_file)
                     merged.write_h5mu(merged_file)
                     next_files.append(merged_file)
-
+                    
                     current_files[i].unlink()
                     current_files[i+1].unlink()
-
+                    
                     del mdata1, mdata2, merged
                     gc.collect()
                 else:
                     next_files.append(current_files[i])
-
+            
             current_files = next_files
             merge_round += 1
             log_message(f"  Merge round {merge_round-1} complete: {len(next_files)} files", LOG_FILE)
-
+        
         combined_mdata = md.read_h5mu(current_files[0])
         current_files[0].unlink()
-
+    
     log_message(f"\n✓ Final MuData: {combined_mdata.n_obs:,} cells", LOG_FILE)
     log_memory(LOG_FILE)
 
@@ -374,7 +377,7 @@ def main():
     # CRITICAL FIX: Propagate cell type annotations to global obs
     # ========================================================================
     log_message("\nPropagating cell type annotations to global obs...", LOG_FILE)
-
+    
     # Check for cell type prediction column in RNA modality and propagate to global
     pred_col_found = None
     for modality_name in ['rna', 'atac']:
@@ -399,17 +402,17 @@ def main():
         log_message(f"  Unique cell types: {combined_mdata.obs['cell_type'].nunique()}", LOG_FILE)
     else:
         log_message(" No cell type prediction column found in modalities to propagate", LOG_FILE, "WARN")
-
+    
     log_message(f"\n Final MuData: {combined_mdata.n_obs:,} cells", LOG_FILE)
     log_memory(LOG_FILE)
-
+    
     # ========================================================================
     # Save outputs with Nextflow-compatible names
     # ========================================================================
     log_message("\n" + "="*80, LOG_FILE)
     log_message("SAVING OUTPUTS", LOG_FILE)
     log_message("="*80, LOG_FILE)
-
+    
     # Save main MuData file
     output_file = OUTPUT_DIR / args.output_name
 
@@ -421,16 +424,15 @@ def main():
         rna_obs = combined_mdata.mod["rna"].obs
         if "sample_id" not in rna_obs.columns:
             rna_obs["sample_id"] = combined_mdata.obs.loc[rna_obs.index, "sample_id"].values
-
+        
         # Propagate to ATAC modality (not strictly required for batch, but useful)
         atac_obs = combined_mdata.mod["atac"].obs
         if "sample_id" not in atac_obs.columns:
             atac_obs["sample_id"] = combined_mdata.obs.loc[atac_obs.index, "sample_id"].values
     else:
         raise RuntimeError("Expected 'sample_id' in combined_mdata.obs when building MuData")
-
+    
     # Normalize RNA: store raw counts in .layers['counts'], log1p-normalize .X
-    import scanpy as sc
     rna_mod = combined_mdata.mod['rna']
     if 'counts' not in rna_mod.layers:
         rna_mod.layers['counts'] = rna_mod.X.copy()
@@ -448,15 +450,16 @@ def main():
 
     # Save main MuData file
     output_file = OUTPUT_DIR / args.output_name
+    sanitize_mudata(combined_mdata, output_file)
     combined_mdata.write_h5mu(output_file)
     log_message(f"✓ Saved: {output_file}", LOG_FILE)
-
+    
     # Save statistics as CSV
     stats_df = pd.DataFrame(sample_stats)
     stats_csv = OUTPUT_DIR / "sample_statistics.csv"
     stats_df.to_csv(stats_csv, index=False)
     log_message(f"✓ Saved statistics CSV: {stats_csv}", LOG_FILE)
-
+    
     # NEW: Save statistics as JSON (Nextflow expects this)
     stats_json = {
         'n_samples': len(sample_stats),
@@ -467,12 +470,12 @@ def main():
         'mean_retention_rate': float(stats_df['retention_rate'].mean()),
         'samples': sample_stats
     }
-
+    
     stats_json_file = OUTPUT_DIR / "mudata_stats.json"
     with open(stats_json_file, 'w') as f:
         json.dump(stats_json, f, indent=2)
     log_message(f" Saved statistics JSON: {stats_json_file}", LOG_FILE)
-
+    
     # Save integration summary
     summary = {
         'timestamp': datetime.now().isoformat(),
@@ -484,20 +487,20 @@ def main():
         'mean_cells_per_sample': float(stats_df['n_multiome'].mean()),
         'mean_retention_rate': float(stats_df['retention_rate'].mean()),
     }
-
+    
     summary_file = OUTPUT_DIR / "integration_summary.json"
     with open(summary_file, 'w') as f:
         json.dump(summary, f, indent=2)
     log_message(f"✓ Saved summary: {summary_file}", LOG_FILE)
-
+    
     # Cleanup temp directory
     if TEMP_DIR.exists():
         shutil.rmtree(TEMP_DIR)
-
+    
     log_message("\n" + "="*80, LOG_FILE)
     log_message(" MUDATA CONSTRUCTION COMPLETE!", LOG_FILE)
     log_message("="*80, LOG_FILE)
-
+    
     return 0
 
 if __name__ == "__main__":

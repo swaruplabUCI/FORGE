@@ -24,23 +24,7 @@ def main():
     args = ap.parse_args()
 
     print(f"[build_meta] Loading RNA h5ad: {args.rna_h5ad}", file=sys.stderr)
-    # Fix anndata version compat: newer anndata (>=0.10) writes uns/log1p/base
-    # with null encoding that older anndata (in scenicplus container) can't read.
-    # Copy the file first to avoid modifying the original (may be a Nextflow symlink).
-    import shutil, h5py
-    rna_path = args.rna_h5ad
-    try:
-        with h5py.File(rna_path, 'r') as f:
-            if 'uns/log1p' in f and 'base' in f['uns/log1p']:
-                local_copy = "rna_input_compat.h5ad"
-                shutil.copy2(rna_path, local_copy)
-                with h5py.File(local_copy, 'a') as fc:
-                    del fc['uns/log1p/base']
-                rna_path = local_copy
-                print("[build_meta] Stripped uns/log1p/base from local copy (anndata compat)", file=sys.stderr)
-    except Exception as e:
-        print(f"[build_meta] h5py compat check: {e}", file=sys.stderr)
-    adata = sc.read_h5ad(rna_path)
+    adata = sc.read_h5ad(args.rna_h5ad)
 
     if "sample" not in adata.obs.columns:
         raise ValueError("obs['sample'] not found in h5ad")

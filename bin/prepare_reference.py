@@ -12,6 +12,7 @@ import argparse
 import scanpy as sc
 import os
 import numpy as np
+from h5ad_compat import sanitize_adata
 
 def prepare_reference_and_query(ref_path, query_path, species, results_dir, n_top_genes=12000):
     """
@@ -175,7 +176,9 @@ def prepare_reference_and_query(ref_path, query_path, species, results_dir, n_to
     query_out = os.path.join(results_dir, 'Refmapping_query.h5ad')
     label_out = os.path.join(results_dir, 'label_key.txt')
 
+    sanitize_adata(ref, ref_out)
     ref.write(ref_out)
+    sanitize_adata(adata_query, query_out)
     adata_query.write(query_out)
 
     # Save label key for downstream use

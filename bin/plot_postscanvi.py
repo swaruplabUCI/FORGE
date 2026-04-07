@@ -23,30 +23,8 @@ warnings.filterwarnings('ignore')
 # Allow import of celltypist_broad_map.py from the same bin/ directory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from celltypist_broad_map import CELLTYPIST_BROAD_MAP
+from h5ad_compat import sanitize_adata
 
-TISSUE_MARKERS = {
-    'pbmc': {
-        "T cell (CD4+)": ["CD3D", "CD3E", "CD4", "IL7R"],
-        "T cell (CD8+)": ["CD3D", "CD3E", "CD8A", "CD8B"],
-        "B cell": ["MS4A1", "CD79A", "CD79B", "CD19"],
-        "NK cell": ["GNLY", "NKG7", "KLRD1", "NCAM1"],
-        "Monocyte (CD14+)": ["CD14", "LYZ", "S100A9", "S100A8"],
-        "Monocyte (CD16+)": ["FCGR3A", "MS4A7", "LILRA5"],
-        "Dendritic cell": ["FCER1A", "CST3", "CLEC10A"],
-        "Platelet": ["PPBP", "PF4"],
-    },
-    'brain': {
-        "Oligodendrocyte": ["MBP", "PLP1", "MAG", "MOG"],
-        "Astrocyte": ["GFAP", "S100B", "ALDH1L1", "SLC1A3"],
-        "Microglia": ["P2RY12", "CX3CR1", "TMEM119"],
-        "Endothelial": ["PECAM1", "VWF", "CLDN5", "KDR"],
-        "Pericyte/VLMC": ["PDGFRB", "PDGFRA", "COL1A1", "COL1A2"],
-        "Pan-neuronal": ["SYT1", "SNAP25"],
-        "Excitatory (IT/ET)": ["SLC17A7", "SATB2", "RORB", "FEZF2", "BCL11B"],
-        "Inhibitory (Pvalb/Sst/Vip)": ["GAD1", "GAD2", "PVALB", "SST", "VIP", "LAMP5"],
-        "OPC": ["PDGFRA", "CSPG4", "OLIG2"],
-    },
-}
 
 
 def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cell_type_key='scanvi_prediction', tissue_type='pbmc', alt_cell_type_key=None):
@@ -144,18 +122,44 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
     plt.close()
     print("  Saved: umap_leiden_5.0.png")
 
-    # Plot 3: Cell type predictions – syntax aligned with interactive tests
+    # Plot 3: Cell type predictions — adaptive compression mirroring hdWGCNA logic
     if cell_type_key in adata.obs.columns:
-        if n_celltypes <= 20:
-            # Few enough cell types: legend beside the plot
-            fig_width = max(12, 10 + (n_celltypes * 0.3))
+        min_cells_plot = 100
+        cell_type_counts = adata.obs[cell_type_key].value_counts()
+        n_total_types = len(cell_type_counts)
+        n_passing = (cell_type_counts >= min_cells_plot).sum()
+        viable_ratio = n_passing / n_total_types if n_total_types > 0 else 1.0
+
+        # Same adaptive compression as extract_cell_types_for_hdwgcna
+        if viable_ratio < 0.5 and len(CELLTYPIST_BROAD_MAP) > 0:
+            print(f"  UMAP: {n_passing}/{n_total_types} types >= {min_cells_plot} cells ({viable_ratio:.0%}) — compressing to broad categories")
+            plot_key = 'cell_type_broad'
+            if plot_key not in adata.obs.columns:
+                adata.obs[plot_key] = (
+                    adata.obs[cell_type_key]
+                    .map(CELLTYPIST_BROAD_MAP)
+                    .fillna('Progenitors/Other')
+                )
+            plot_counts = adata.obs[plot_key].value_counts()
+        else:
+            plot_key = cell_type_key
+            plot_counts = cell_type_counts
+
+        # Filter to types with >= min_cells
+        valid_types = plot_counts[plot_counts >= min_cells_plot].index.tolist()
+        adata_plot = adata[adata.obs[plot_key].isin(valid_types)].copy()
+        n_plot_types = len(valid_types)
+        print(f"  UMAP: plotting {n_plot_types} cell types (>= {min_cells_plot} cells) using '{plot_key}'")
+
+        if n_plot_types <= 20:
+            fig_width = max(12, 10 + (n_plot_types * 0.3))
             fig, ax = plt.subplots(figsize=(fig_width, 8))
             sc.pl.umap(
-                adata,
-                color=cell_type_key,
+                adata_plot,
+                color=plot_key,
                 ax=ax,
                 show=False,
-                title=f'Cell Type Predictions ({cell_type_key})',
+                title=f'Cell Types ({plot_key}, >= {min_cells_plot} cells)',
                 legend_loc='right margin',
                 legend_fontsize=7,
                 frameon=False
@@ -168,26 +172,23 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
             )
             plt.close(fig)
         else:
-            # Many cell types: plot UMAP on top, legend below
             fig, ax = plt.subplots(figsize=(12, 10))
             sc.pl.umap(
-                adata,
-                color=cell_type_key,
+                adata_plot,
+                color=plot_key,
                 ax=ax,
                 show=False,
-                title=f'Cell Type Predictions ({cell_type_key})',
+                title=f'Cell Types ({plot_key}, >= {min_cells_plot} cells)',
                 legend_loc='none',
                 frameon=False
             )
-            # Build a standalone legend underneath
             handles, labels = ax.get_legend_handles_labels()
             if not handles:
-                # scanpy sometimes puts legend on the figure, not the axes
-                categories = adata.obs[cell_type_key].cat.categories
-                palette = dict(zip(categories, adata.uns.get(f'{cell_type_key}_colors',
+                categories = adata_plot.obs[plot_key].cat.categories if hasattr(adata_plot.obs[plot_key], 'cat') else sorted(adata_plot.obs[plot_key].unique())
+                palette = dict(zip(categories, adata_plot.uns.get(f'{plot_key}_colors',
                                sc.pl.palettes.default_102[:len(categories)])))
                 handles = [plt.Line2D([0], [0], marker='o', color='w',
-                           markerfacecolor=palette[c], markersize=6, label=c) for c in categories]
+                           markerfacecolor=palette.get(c, '#888888'), markersize=6, label=c) for c in categories]
                 labels = list(categories)
             ncol = max(3, len(labels) // 15 + 1)
             ax.legend(
@@ -278,46 +279,49 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
         print("  Saved: umap_sample.png")
 
     # ========================================
-    # CELL-TYPE MARKER DOTPLOT BY SCANVI PREDICTION
+    # CELL-TYPE MARKER DOTPLOT BY SCANVI PREDICTION (data-derived)
     # ========================================
 
     if cell_type_key in adata.obs.columns:
-        print(f"\nGenerating marker dotplot by {cell_type_key}...")
+        print(f"\nDeriving marker genes by {cell_type_key} via rank_genes_groups...")
 
-        # Tissue-aware markers with case-insensitive matching
-        key_markers = TISSUE_MARKERS.get(tissue_type, TISSUE_MARKERS.get('pbmc', {}))
+        try:
+            # Filter to valid groups with >= 10 cells
+            group_counts = adata.obs[cell_type_key].value_counts()
+            valid_groups = group_counts[group_counts >= 10].index.tolist()
+            adata_filtered = adata[adata.obs[cell_type_key].isin(valid_groups)].copy()
 
-        # Case-insensitive map: lower -> true name
-        var_lower_to_true = {v.lower(): v for v in adata.var_names}
-        markers_in_data = {}
-        for cell_type, markers in key_markers.items():
-            present_true = [
-                var_lower_to_true[m.lower()]
-                for m in markers
-                if m.lower() in var_lower_to_true
-            ]
-            if present_true:
-                markers_in_data[cell_type] = present_true
+            sc.tl.rank_genes_groups(adata_filtered, cell_type_key, method='wilcoxon')
 
-        if markers_in_data:
-            sc.pl.dotplot(
-                adata,
-                markers_in_data,
-                groupby=cell_type_key,
-                standard_scale="var",
-                swap_axes=True,
-                show=False,
-            )
-            fig = plt.gcf()
-            fig.savefig(
-                os.path.join(output_dir, "dotplot_markers_by_scanvi_prediction.png"),
-                dpi=300,
-                bbox_inches="tight",
-            )
-            plt.close(fig)
-            print("  Saved: dotplot_markers_by_scanvi_prediction.png")
-        else:
-            print("  No specified markers found in this dataset; skipping dotplot.")
+            top_genes = []
+            for group in valid_groups:
+                genes = adata_filtered.uns['rank_genes_groups']['names'][str(group)][:5]
+                top_genes.extend(genes)
+            top_genes = list(dict.fromkeys(top_genes))
+
+            if top_genes:
+                sc.pl.dotplot(
+                    adata_filtered,
+                    top_genes,
+                    groupby=cell_type_key,
+                    standard_scale="var",
+                    swap_axes=True,
+                    show=False,
+                )
+                fig = plt.gcf()
+                dotplot_fname = f"dotplot_markers_by_{cell_type_key}.png"
+                fig.savefig(
+                    os.path.join(output_dir, dotplot_fname),
+                    dpi=300,
+                    bbox_inches="tight",
+                )
+                plt.close(fig)
+                print(f"  Saved: {dotplot_fname} ({len(top_genes)} DE genes, {len(valid_groups)} types)")
+            else:
+                print("  No DE genes found; skipping dotplot.")
+
+        except Exception as e:
+            print(f"  Warning: Could not generate cell-type marker dotplot: {e}")
 
     # ========================================
     # MARKER GENE DOTPLOTS (CLUSTER-BASED)
@@ -488,6 +492,7 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
     # ========================================
 
     output_h5ad = os.path.join(output_dir, 'annotated_with_scanvi_clustering.h5ad')
+    sanitize_adata(adata, output_h5ad)
     adata.write(output_h5ad, compression='gzip')
     print(f"\n✓ Updated h5ad saved to: {output_h5ad}")
 
@@ -502,7 +507,7 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
     print("    - umap_batch.png")
     print("    - umap_sample.png")
     print("  Marker dotplots:")
-    print("    - dotplot_markers_by_scanvi_prediction.png")
+    print(f"    - dotplot_markers_by_{cell_type_key}.png")
     print("    - dotplot_leiden_scanvi_*.pdf (cluster-based markers)")
     print("  Integration metrics:")
     print("    - integration_batch_mixing.png")
@@ -602,19 +607,24 @@ def main():
     print(f"Embeddings: {list(adata.obsm.keys())}")
 
     # Auto-detect cell type key — prefer explicit arg from pipeline, fallback to auto-detect
-    if args.cell_type_key and args.cell_type_key in adata.obs.columns:
+    # Validation: skip columns where all values are 'Unknown' (no real annotations)
+    def _has_real_labels(col):
+        vals = adata.obs[col].dropna().unique()
+        return len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown')
+
+    cell_type_key = None
+    if args.cell_type_key and args.cell_type_key in adata.obs.columns and _has_real_labels(args.cell_type_key):
         cell_type_key = args.cell_type_key
     else:
         if args.cell_type_key:
-            print(f"WARNING: Requested cell_type_key '{args.cell_type_key}' not found in adata.obs — auto-detecting")
-        cell_type_key = None
-        for candidate in ['scanvi_prediction', 'celltypist_prediction', 'cell_type_prediction']:
-            if candidate in adata.obs.columns:
+            print(f"WARNING: Requested cell_type_key '{args.cell_type_key}' not usable — auto-detecting")
+        for candidate in ['celltypist_prediction', 'scanvi_prediction', 'cell_type_prediction']:
+            if candidate in adata.obs.columns and _has_real_labels(candidate):
                 cell_type_key = candidate
                 break
         if cell_type_key is None:
-            print("ERROR: No cell type prediction column found in adata.obs. "
-                  "Expected one of: scanvi_prediction, celltypist_prediction, cell_type_prediction. "
+            print("ERROR: No cell type prediction column with real labels found in adata.obs. "
+                  "Expected one of: celltypist_prediction, scanvi_prediction, cell_type_prediction. "
                   f"Available columns: {list(adata.obs.columns)}")
             sys.exit(1)
     print(f"Using cell type key: {cell_type_key}")
@@ -641,6 +651,7 @@ def main():
     # Re-save h5ad if cell_type_broad was added (needed by downstream CONVERT_H5AD_TO_SEURAT)
     if 'cell_type_broad' in adata.obs.columns:
         output_h5ad = os.path.join(args.output_dir, 'annotated_with_scanvi_clustering.h5ad')
+        sanitize_adata(adata, output_h5ad)
         adata.write(output_h5ad, compression='gzip')
         print(f"Re-saved h5ad with cell_type_broad column: {output_h5ad}")
 

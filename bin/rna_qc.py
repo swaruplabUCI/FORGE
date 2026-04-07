@@ -16,6 +16,7 @@ import scrublet as scr
 from scipy.stats import median_abs_deviation
 import json
 import shutil
+from h5ad_compat import sanitize_adata
 import glob
 import gzip
 from pandas.api.types import is_bool_dtype
@@ -685,6 +686,7 @@ def main():
             # Fallback: save a single aggregate file with a suffix to satisfy Nextflow pattern
             sample_output = args.output.replace('.h5ad', f'_{fallback_label}.h5ad')
             adata.layers["counts"] = adata.X.copy()
+            sanitize_adata(adata, sample_output)
             adata.write(sample_output)
             print(f"  No valid demux groups; saved aggregate dataset to {sample_output}")
         else:
@@ -693,12 +695,14 @@ def main():
                 sample_adata = adata[adata.obs['demux_sample'] == sample_name].copy()
                 sample_adata.layers["counts"] = sample_adata.X.copy()
                 sample_output = args.output.replace('.h5ad', f'_{sample_name}.h5ad')
+                sanitize_adata(sample_adata, sample_output)
                 sample_adata.write(sample_output)
                 print(f"  Saved {unique_sample_id}: {sample_adata.n_obs} cells")
     else:
         # If no demultiplexing labels, save a single file with a suffix to match Nextflow's expected pattern
         adata.layers["counts"] = adata.X.copy()
         sample_output = args.output.replace('.h5ad', f'_{fallback_label}.h5ad')
+        sanitize_adata(adata, sample_output)
         adata.write(sample_output)
         print(f"No demux_sample column found, saved full dataset to {sample_output}")
 

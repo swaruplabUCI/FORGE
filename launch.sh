@@ -1,56 +1,53 @@
 #!/bin/bash
-#SBATCH --job-name=refactor5
+#SBATCH --job-name=forge_ad_mm_10x_r5
 #SBATCH -A vswarup_lab
 #SBATCH --partition=standard
 #SBATCH --time=72:00:00
 #SBATCH --mem=32GB
 #SBATCH --cpus-per-task=4
-#SBATCH --output=logs/out.refactor5_%j.log
-#SBATCH --error=logs/err.refactor5_%j.log
+#SBATCH --output=/dfs7/swaruplab/lesolano/FORGE/AD_Mm_10X_r5/logs/out.forge_ad_mm_10x_%j.log
+#SBATCH --error=/dfs7/swaruplab/lesolano/FORGE/AD_Mm_10X_r5/logs/err.forge_ad_mm_10x_%j.log
 #SBATCH --mail-user=lesolano@uci.edu
 #SBATCH --mail-type=END,FAIL
 
 set -euo pipefail
 
 # =========================================================================
-# REFACTOR5: Unified Multiomics Pipeline v3.0.0
+# FORGE: 10x Multiome Alzheimer's Mouse Model (CRND8)
+#
+# SELF-CONTAINED INSTANCE: All pipeline code, containers, and data
+# are in this directory.
+#
+# KEY SETTINGS:
+#   - 12 samples (6 TG CRND8 + 6 WT), true multiome (RNA + ATAC)
+#   - RNA Path B (CellTypist direct, no scANVI reference atlas)
+#   - Developing_Mouse_Brain.pkl CellTypist model
+#   - Brain tissue type for ATAC annotation
+#   - Differential enabled: WT vs TG
+#   - Resource tier: medium
 #
 # Usage:
-#   sbatch launch.sh -c configs/datasets/pbmc_10x_10k.config
-#   sbatch launch.sh -c configs/datasets/bd_90plus_brain.config
-#   sbatch launch.sh -c configs/datasets/my_dataset.config --dry-run
-#
-# Arguments:
-#   -c <config>     Dataset config file (REQUIRED)
-#   --dry-run       Preview mode (validates config + channels only)
-#   --resume        Resume from previous run (default: enabled)
-#   --no-resume     Start fresh (no cache)
+#   sbatch launch.sh              # full production run
+#   sbatch launch.sh --dry-run    # dry-run preview only
 # =========================================================================
 
-# Parse arguments
-DATASET_CONFIG=""
 DRY_RUN=""
 RESUME="-resume"
-EXTRA_ARGS=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -c) DATASET_CONFIG="$2"; shift 2 ;;
         --dry-run) DRY_RUN="true"; shift ;;
         --no-resume) RESUME=""; shift ;;
-        *) EXTRA_ARGS="$EXTRA_ARGS $1"; shift ;;
+        *) shift ;;
     esac
 done
-
-if [[ -z "$DATASET_CONFIG" ]]; then
-    echo "ERROR: Dataset config required. Usage: sbatch launch.sh -c configs/datasets/<dataset>.config"
-    exit 1
-fi
 
 # =========================================================================
 # Environment
 # =========================================================================
-PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_DIR="/dfs7/swaruplab/lesolano/FORGE/AD_Mm_10X_r5"
+DATASET_CONFIG="configs/datasets/ad_mm_10x.config"
+
 cd "${PROJECT_DIR}" || exit 1
 mkdir -p logs work results
 
@@ -64,30 +61,12 @@ export HDF5_USE_FILE_LOCKING="FALSE"
 export SINGULARITY_BINDPATH="/dfs7,/tmp"
 
 # =========================================================================
-# Auto-detect resource tier from manifest
+# Resource tier
 # =========================================================================
-MANIFEST=$(grep 'metadata_file' "$DATASET_CONFIG" | grep -oP "'[^']+'" | tr -d "'" | head -1)
-if [[ -n "$MANIFEST" && -f "$MANIFEST" ]]; then
-    # FIX-F10: Exclude blank lines from sample count
-    N_SAMPLES=$(tail -n +2 "$MANIFEST" | grep -c '[^[:space:]]')
-    if [[ $N_SAMPLES -le 5 ]]; then
-        RESOURCE_TIER="small"
-    elif [[ $N_SAMPLES -le 50 ]]; then
-        RESOURCE_TIER="medium"
-    else
-        RESOURCE_TIER="large"
-    fi
-    echo "Auto-detected resource tier: ${RESOURCE_TIER} (${N_SAMPLES} samples)"
-else
-    RESOURCE_TIER="small"
-    echo "Could not read manifest — defaulting to resource_tier=small"
-fi
-
-# Check if dataset config overrides resource_tier
+RESOURCE_TIER="medium"
 CONFIG_TIER=$(grep 'resource_tier' "$DATASET_CONFIG" | grep -oP "'[^']+'" | tr -d "'" | head -1)
 if [[ -n "$CONFIG_TIER" && "$CONFIG_TIER" != "auto" ]]; then
     RESOURCE_TIER="$CONFIG_TIER"
-    echo "Dataset config overrides resource tier: ${RESOURCE_TIER}"
 fi
 
 # =========================================================================
@@ -95,7 +74,7 @@ fi
 # =========================================================================
 echo ""
 echo "========================================="
-echo "REFACTOR5: Unified Multiomics Pipeline v3.0.0"
+echo "FORGE: 10x Multiome AD Mouse (CRND8)"
 echo "  Dataset config: ${DATASET_CONFIG}"
 echo "  Resource tier:  ${RESOURCE_TIER}"
 echo "  Project dir:    ${PROJECT_DIR}"
@@ -107,7 +86,7 @@ echo "========================================="
 echo ""
 
 echo "Project structure check:"
-for item in main.nf nextflow.config "$DATASET_CONFIG"; do
+for item in main.nf nextflow.config "$DATASET_CONFIG" ad_mm_10x_manifest.csv; do
     if [ -f "${item}" ]; then
         echo "  OK: ${item}"
     else
@@ -115,7 +94,7 @@ for item in main.nf nextflow.config "$DATASET_CONFIG"; do
         exit 1
     fi
 done
-for dir in modules bin; do
+for dir in modules bin configs singularity_cache data; do
     if [ -d "${dir}" ]; then
         echo "  OK: ${dir}/"
     else
@@ -125,15 +104,13 @@ for dir in modules bin; do
 done
 echo ""
 
-# FIX-R1-7: Derive container list from nextflow.config params.containers map
-# instead of hardcoding. Nextflow also validates at startup (validateStartupParams).
+# Container check
 echo "Container check:"
 CONTAINER_SIFS=$(grep -A20 'containers = \[' nextflow.config \
     | grep '\.sif"' \
     | grep -oP 'singularity_cache/[^"]+' \
     | sort -u)
 if [[ -z "$CONTAINER_SIFS" ]]; then
-    echo "  WARNING: Could not parse container list from nextflow.config; falling back to known list"
     CONTAINER_SIFS="singularity_cache/scgpu_extended.sif singularity_cache/snapatac_extended.sif singularity_cache/seurat_extended.sif singularity_cache/cicero.sif singularity_cache/scenicplus.sif"
 fi
 CONTAINER_OK=true
@@ -146,9 +123,40 @@ for sif in $CONTAINER_SIFS; do
     fi
 done
 if [[ "$CONTAINER_OK" != "true" ]]; then
-    echo "  ERROR: Missing containers. Pull/build before launching."
+    echo "  ERROR: Missing containers — aborting"
     exit 1
 fi
+echo ""
+
+# Data file check — verify all 12 samples have RNA + ATAC + .tbi
+echo "Data file check:"
+DATA_DIR="${PROJECT_DIR}/data"
+DATA_OK=true
+for sample in AD_17p9_rep4 AD_17p9_rep5 AD_2p5_rep2 AD_2p5_rep3 AD_5p7_rep2 AD_5p7_rep6 \
+              WT_13p4_rep2 WT_13p4_rep5 WT_2p5_rep2 WT_2p5_rep7 WT_5p7_rep2 WT_5p7_rep3; do
+    for f in "${DATA_DIR}/${sample}_raw_feature_bc_matrix.h5" \
+             "${DATA_DIR}/${sample}_atac_fragments.tsv.gz" \
+             "${DATA_DIR}/${sample}_atac_fragments.tsv.gz.tbi"; do
+        if [ -f "$f" ]; then
+            echo "  OK: $(basename $f)"
+        else
+            echo "  MISSING: $f"
+            DATA_OK=false
+        fi
+    done
+done
+if [[ "$DATA_OK" != "true" ]]; then
+    echo "  ERROR: Missing data files — aborting"
+    exit 1
+fi
+echo ""
+
+# Manifest summary
+echo "Manifest summary (ad_mm_10x_manifest.csv):"
+echo "  Total rows:  $(tail -n +2 ad_mm_10x_manifest.csv | wc -l)"
+echo "  Lane rows:   $(grep ',lane,' ad_mm_10x_manifest.csv | wc -l)"
+echo "  WT samples:  $(grep ',WT,' ad_mm_10x_manifest.csv | wc -l)"
+echo "  TG samples:  $(grep ',TG,' ad_mm_10x_manifest.csv | wc -l)"
 echo ""
 
 # =========================================================================
@@ -165,8 +173,7 @@ NF_CMD="nextflow run main.nf \
   -with-report   ${OUTDIR}/pipeline_info/nextflow_report.html \
   -with-timeline ${OUTDIR}/pipeline_info/nextflow_timeline.html \
   -with-trace    ${OUTDIR}/pipeline_info/trace.tsv \
-  -with-dag      ${OUTDIR}/pipeline_info/nextflow_dag.pdf \
-  ${EXTRA_ARGS}"
+  -with-dag      ${OUTDIR}/pipeline_info/nextflow_dag.pdf"
 
 if [[ -n "$DRY_RUN" ]]; then
     echo "========================================="
@@ -183,9 +190,13 @@ if [[ -n "$DRY_RUN" ]]; then
       --outdir "${OUTDIR}" \
       2>&1 | tee logs/dry_run.log
 
+    dry_exit=$?
     echo ""
-    echo "Dry-run complete. Exit code: $?"
-    echo "If passed, launch for real: sbatch launch.sh -c ${DATASET_CONFIG}"
+    echo "Dry-run complete. Exit code: ${dry_exit}"
+    echo "Log: ${PROJECT_DIR}/logs/dry_run.log"
+    echo ""
+    echo "If passed, launch for real: sbatch launch.sh"
+    exit ${dry_exit}
 
 else
     echo "========================================="

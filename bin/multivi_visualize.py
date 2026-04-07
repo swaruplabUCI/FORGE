@@ -94,13 +94,18 @@ def plot_modality_integration(mdata, output_dir, cell_type_key="cell_type"):
     cell_type_found = False
     for possible_key in [
         cell_type_key,
+        "celltypist_prediction",
         "scanvi_prediction",
         "cell_type",
         "celltype",
+        "rna:celltypist_prediction",
         "rna:scanvi_prediction",
         "atac:scanvi_prediction",
     ]:
         if possible_key in mdata.obs.columns:
+            _vals = mdata.obs[possible_key].dropna().unique()
+            if len(_vals) == 1 and _vals[0] == 'Unknown':
+                continue  # skip all-Unknown columns
             print(f"Found cell type annotations in column: {possible_key}")
             fig, ax = plt.subplots(1, 1, figsize=(10, 8))
             sc.pl.umap(

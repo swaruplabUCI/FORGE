@@ -1075,7 +1075,6 @@ workflow ATAC_INITIAL {
         .splitCsv(header: true)
         .filter { isNonEmptyRow(it) }  // FIX-A6: skip phantom rows
         .map { trimRow(it) }           // FIX-A5: trim whitespace from fields
-        .filter { isDemux(it) }        // FIX-P0-7: case-insensitive sample_type
         .map { row ->
             def atac_dir = resolveAtacDir(row)
             def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -1130,7 +1129,6 @@ workflow ATAC_FINAL {
         .splitCsv(header: true)
         .filter { isNonEmptyRow(it) }  // FIX-A6: skip phantom rows
         .map { trimRow(it) }           // FIX-A5: trim whitespace from fields
-        .filter { isDemux(it) }        // FIX-P0-7: case-insensitive sample_type
         .map { row ->
             def atac_dir = resolveAtacDir(row)
             def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -1253,6 +1251,7 @@ workflow REGULATORY_ANALYSIS {
     da_peaks_optional
     metadata
     fragment_files    // Fragment files for SCPRINTER_BUILD_PRINTER (channel input)
+    cell_type_col     // FIX-46: obs column name for cell types in peak matrix
 
     main:
 
@@ -1456,7 +1455,8 @@ workflow REGULATORY_ANALYSIS {
                 '',
                 MAP_TF_TO_TARGET_GENES.out.tf_targets,
                 cicero_conns_for_fp,
-                pfm_for_fp
+                pfm_for_fp,
+                cell_type_col
             )
 
             if (has_da_peaks) {
@@ -1473,7 +1473,8 @@ workflow REGULATORY_ANALYSIS {
                     params.differential.treatment_condition,
                     MAP_TF_TO_TARGET_GENES.out.tf_targets,
                     cicero_conns_for_fp,
-                    pfm_for_fp
+                    pfm_for_fp,
+                    cell_type_col
                 )
 
                 SCPRINTER_MOTIF_SCAN(
@@ -1512,7 +1513,8 @@ workflow REGULATORY_ANALYSIS {
                 '',
                 file('NO_FILE'),
                 file('NO_FILE'),
-                params.scprinter.pfms ? file(params.scprinter.pfms) : file('NO_FILE')
+                params.scprinter.pfms ? file(params.scprinter.pfms) : file('NO_FILE'),
+                cell_type_col
             )
 
             if (has_da_peaks && params.differential.cell_types && !params.differential.cell_types.isEmpty()) {
@@ -1531,7 +1533,8 @@ workflow REGULATORY_ANALYSIS {
                     params.differential.treatment_condition,
                     file('NO_FILE'),
                     file('NO_FILE'),
-                    params.scprinter.pfms ? file(params.scprinter.pfms) : file('NO_FILE')
+                    params.scprinter.pfms ? file(params.scprinter.pfms) : file('NO_FILE'),
+                    cell_type_col
                 )
 
                 SCPRINTER_MOTIF_SCAN(
@@ -1837,6 +1840,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     rna_h5ad_ch
     cellchat_csv_ch
     pseudobulk_bigwigs_ch
+    cell_type_col             // FIX-43: obs column name for cell types
 
     main:
 
@@ -1880,7 +1884,8 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         peak_matrix,
         ch_enhancer_fp.map { it[1] },
         ch_enhancer_fp.map { it[2] },
-        cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS'))
+        cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')),
+        cell_type_col
     )
 
     // ================================================================
@@ -2149,7 +2154,6 @@ workflow {
             .splitCsv(header: true)
             .filter { isNonEmptyRow(it) }  // FIX-A6
             .map { trimRow(it) }           // FIX-A5
-            .filter { isDemux(it) }        // FIX-P0-7: case-insensitive sample_type
             .map { row ->
                 def atac_dir = resolveAtacDir(row)
                 def frag_fname = row.fragment_file.contains('.') ? row.fragment_file : "${row.fragment_file}.bed.gz"
@@ -2157,12 +2161,17 @@ workflow {
             }
             .collect()
 
+        // FIX-46: ATAC cell type column depends on annotation mode
+        def atac_ct_col = (params.atac.auto_annotate && params.atac.marker_file) ?
+            'cell_type' : 'celltypist_prediction'
+
         REGULATORY_ANALYSIS(
             ATAC_FINAL.out.peak_matrix,
             ATAC_FINAL.out.individual_samples,
             da_peaks_ch,
             file(params.atac.sample_metadata),
-            ch_reg_fragments
+            ch_reg_fragments,
+            atac_ct_col
         )
 
     } else {
@@ -2200,9 +2209,7 @@ workflow {
             .splitCsv(header: true)
             .filter { isNonEmptyRow(it) }  // FIX-A6
             .map { trimRow(it) }           // FIX-A5
-            .filter { isDemux(it) }        // FIX-P0-7: case-insensitive sample_type
             .map { row ->
-                // FIX-P0-11: Warn if condition_group is missing instead of silently defaulting
                 def condition = row.condition_group?.trim()
                 if (!condition) {
                     log.warn "Sample '${row.sample_id}' has no condition_group — defaulting to 'Control'"
@@ -2229,8 +2236,15 @@ workflow {
             }
 
         // Map flat ATAC outputs back to tuples with keys
+        // FIX-45b: Filter out auxiliary h5ads (peak_matrix, gene_matrix, atac_complete,
+        // atac_celltypist_annotations, peak_matrix_annotated, cluster_avg_gene_scores)
+        // that are not per-sample files.
+        def atac_auxiliary = ['peak_matrix', 'gene_matrix', 'atac_complete',
+                              'atac_celltypist_annotations', 'peak_matrix_annotated',
+                              'cluster_avg_gene_scores'] as Set
         ch_atac_mapped = ATAC_FINAL.out.individual_samples
             .flatMap { it instanceof List ? it : [it] }
+            .filter { file -> !atac_auxiliary.contains(file.baseName) }
             .map { file ->
                 def sample_id = file.baseName
                 tuple(sample_id, file)
@@ -2371,6 +2385,10 @@ workflow {
         def bigwigs_ch = (has_grn && params.pycistopic.run) ?
             MULTIOME_GRN.out.pseudobulk_bigwigs : Channel.empty()
 
+        // FIX-43: cell_type_col for enhancer footprinting
+        def enhancer_ct_col = (params.atac.auto_annotate && params.atac.marker_file) ?
+            'cell_type' : 'celltypist_prediction'
+
         ENHANCER_FOOTPRINTING_RECIPES(
             ATAC_FINAL.out.peak_matrix,
             REGULATORY_ANALYSIS.out.scprinter_printer,
@@ -2383,7 +2401,8 @@ workflow {
             dorc_sig_ch,
             rna_ch,
             cellchat_csv_ch,
-            bigwigs_ch
+            bigwigs_ch,
+            enhancer_ct_col
         )
     }
 }

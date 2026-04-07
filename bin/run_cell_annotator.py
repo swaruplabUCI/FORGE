@@ -4,6 +4,7 @@ import scanpy as sc
 import pandas as pd
 import logging
 from cell_annotator import CellAnnotator  # Assuming this is the main class or function
+from h5ad_compat import sanitize_adata
 
 def main():
     parser = argparse.ArgumentParser()
@@ -25,6 +26,7 @@ def main():
     adata = annotator.annotate(adata) 
 
     logger.info(f"Saving annotated data to {args.output}")
+    sanitize_adata(adata, args.output)
     adata.write_h5ad(args.output)
     
     with open("cell_type_annotation_report.txt", "w") as f:

@@ -12,6 +12,7 @@ import scanpy as sc
 import scvi
 import os
 import torch
+from h5ad_compat import sanitize_adata
 torch.set_float32_matmul_precision('medium')
 
 def main():
@@ -110,6 +111,7 @@ def main():
     adata_query.obsm[f'X_scanvi_{args.epochs}e'] = scanvi_query.get_latent_representation()
     
     output_path = os.path.join(args.results_dir, f'annotated_{args.epochs}e.h5ad')
+    sanitize_adata(adata_query, output_path)
     adata_query.write(output_path)
     
     print(f"\nSaved annotated query: {output_path}")

@@ -52,33 +52,21 @@ def parse_args():
 
 def extract_base_sample(sample_str, metadata_samples=None):
     """
-    Extract base sample name from compound IDs.
-    Examples:
-      - "sample1_batch1_batch1" -> "sample1"
-      - "L10_Donor_0_nov" -> "L10_Donor_0"
-      - "Donor_A_july" -> "Donor_A"
-      - "10k_PBMC_10k_batch" -> "10k_PBMC"  (when metadata has "10k_PBMC")
+    Extract base sample name from compound IDs by matching against known
+    metadata sample names with progressively shorter prefixes.
     """
     s = str(sample_str)
 
-    # If we have metadata samples, try progressively shorter prefixes to find a match
+    # Try progressively shorter prefixes to find a match in metadata
     if metadata_samples:
         parts = s.split('_')
-        # Try removing trailing parts one at a time (longest match first)
         for i in range(len(parts), 0, -1):
             candidate = '_'.join(parts[:i])
             if candidate in metadata_samples:
                 return candidate
 
-    # Fallback: strip known batch keywords
-    parts = s.split('_')
-    batch_keywords = ['batch']
-    filtered = [p for p in parts if p.lower() not in batch_keywords]
-
-    if filtered:
-        return '_'.join(filtered)
-
-    return parts[0]
+    # No match found — return as-is
+    return s
 
 
 def apply_marker_annotations(peak_matrix, annotations_path, resolution_key):
@@ -187,7 +175,7 @@ def apply_celltypist_annotations(peak_matrix, celltypist_h5ad_path):
             f"Available: {list(gene_matrix.obs.columns)}"
         )
 
-    # Fill NaN predictions for cells not in gene_matrix (categorical-safe)
+    # Fill NaN predictions for cells not in gene_matrix
     col = peak_matrix.obs['celltypist_prediction']
     if hasattr(col, 'cat'):
         col = col.cat.add_categories('Unknown')
@@ -293,28 +281,74 @@ def generate_celltype_plots(celltypist_h5ad_path, peak_matrix, plot_dir):
             print(f"  WARNING: Could not generate dotplot: {e}")
 
     # UMAPs colored by cell type (if UMAP coords exist)
+    # Adaptive compression: mirror plot_postscanvi.py logic
     if 'X_umap' in gene_matrix.obsm:
-        for color_col, filename in [
-            ('celltypist_prediction', 'atac_umap_celltypist_prediction.pdf'),
-            ('cell_type_broad', 'atac_umap_cell_type_broad.pdf'),
-        ]:
-            if color_col in gene_matrix.obs.columns:
-                try:
-                    fig, ax = plt.subplots(figsize=(10, 8))
+        min_cells_plot = 100
+
+        # Determine best column via viability check on celltypist_prediction
+        ct_col = 'celltypist_prediction'
+        if ct_col in gene_matrix.obs.columns:
+            ct_counts = gene_matrix.obs[ct_col].value_counts()
+            n_total_types = len(ct_counts)
+            n_passing = (ct_counts >= min_cells_plot).sum()
+            viable_ratio = n_passing / n_total_types if n_total_types > 0 else 1.0
+
+            if viable_ratio < 0.5 and 'cell_type_broad' in gene_matrix.obs.columns:
+                print(f"  UMAP: {n_passing}/{n_total_types} types >= {min_cells_plot} cells "
+                      f"({viable_ratio:.0%}) — compressing to broad categories")
+                plot_col = 'cell_type_broad'
+            else:
+                plot_col = ct_col
+        elif 'cell_type_broad' in gene_matrix.obs.columns:
+            plot_col = 'cell_type_broad'
+        else:
+            plot_col = None
+
+        if plot_col is not None:
+            plot_counts = gene_matrix.obs[plot_col].value_counts()
+            # Exclude 'Other'/'Unknown' from viability filter but keep them plotted
+            valid_types = plot_counts[
+                (plot_counts >= min_cells_plot) &
+                (~plot_counts.index.isin(['Unknown']))
+            ].index.tolist()
+            gm_plot = gene_matrix[gene_matrix.obs[plot_col].isin(valid_types)].copy()
+            n_plot_types = len(valid_types)
+            print(f"  UMAP: plotting {n_plot_types} cell types (>= {min_cells_plot} cells) using '{plot_col}'")
+
+            try:
+                if n_plot_types <= 20:
+                    fig_width = max(12, 10 + (n_plot_types * 0.3))
+                    fig, ax = plt.subplots(figsize=(fig_width, 8))
                     sc.pl.umap(
-                        gene_matrix,
-                        color=color_col,
-                        ax=ax,
-                        show=False,
-                        frameon=False,
-                        title=color_col.replace('_', ' ').title(),
+                        gm_plot, color=plot_col, ax=ax, show=False,
+                        frameon=False, legend_loc='right margin', legend_fontsize=7,
+                        title=f'ATAC Cell Types ({plot_col}, >= {min_cells_plot} cells)',
                     )
-                    plt.tight_layout()
-                    fig.savefig(plot_dir / filename, dpi=300, bbox_inches='tight')
-                    plt.close(fig)
-                    print(f"  Saved: {filename}")
-                except Exception as e:
-                    print(f"  WARNING: Could not generate UMAP for {color_col}: {e}")
+                else:
+                    fig, ax = plt.subplots(figsize=(12, 10))
+                    sc.pl.umap(
+                        gm_plot, color=plot_col, ax=ax, show=False,
+                        frameon=False, legend_loc='none',
+                        title=f'ATAC Cell Types ({plot_col}, >= {min_cells_plot} cells)',
+                    )
+                    categories = sorted(gm_plot.obs[plot_col].unique())
+                    palette = dict(zip(categories, sc.pl.palettes.default_102[:len(categories)]))
+                    handles = [plt.Line2D([0], [0], marker='o', color='w',
+                               markerfacecolor=palette.get(c, '#888888'), markersize=6, label=c)
+                               for c in categories]
+                    ncol = max(3, len(categories) // 15 + 1)
+                    ax.legend(handles, categories, loc='upper center',
+                              bbox_to_anchor=(0.5, -0.05), ncol=ncol, fontsize=6,
+                              frameon=False, columnspacing=1.0, handletextpad=0.3)
+
+                plt.tight_layout()
+                fig.savefig(plot_dir / "atac_umap_cell_types.pdf", dpi=300, bbox_inches='tight')
+                plt.close(fig)
+                print(f"  Saved: atac_umap_cell_types.pdf")
+            except Exception as e:
+                print(f"  WARNING: Could not generate UMAP: {e}")
+        else:
+            print("  No cell type columns available — skipping UMAP plots")
     else:
         print("  No X_umap in gene_matrix — skipping UMAP plots")
 
@@ -330,17 +364,9 @@ def merge_sample_metadata(peak_matrix, metadata_path, original_barcodes):
     print(f"Metadata shape: {metadata.shape}")
     print(f"Metadata columns: {list(metadata.columns)}")
 
-    # FIX: Filter metadata to only include individual sample entries (not lane entries)
-    if 'sample_type' in metadata.columns:
-        print(f"\nFiltering metadata to only 'demux' sample types...")
-        metadata = metadata[metadata['sample_type'] == 'demux'].copy()
-        print(f"Filtered metadata shape: {metadata.shape}")
-    else:
-        print("\nWARNING: 'sample_type' column not found in metadata - using all rows")
-
     # Identify the correct sample column in metadata
     sample_col_metadata = None
-    for col_name in ['demux_sample', 'sample', 'sample_id', 'Sample', 'sample_name']:
+    for col_name in ['sample_id', 'sample', 'Sample', 'sample_name']:
         if col_name in metadata.columns:
             sample_col_metadata = col_name
             print(f"Found sample column in metadata: '{sample_col_metadata}'")

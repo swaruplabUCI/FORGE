@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import glob
 import re
+from h5ad_compat import sanitize_adata
 
 def concatenate_and_qc(h5ad_files, output_file, metrics_file, plots_dir):
     """Concatenate multiple h5ad files with comprehensive QC at experiment level"""
@@ -320,50 +321,40 @@ def concatenate_and_qc(h5ad_files, output_file, metrics_file, plots_dir):
     print(f"Per-sample metrics (row format) saved to: {metrics_file}")
 
     # ------------------------------------------------------------------
-    # Neural marker dotplot (template-style, pre-integration)
+    # Data-derived marker dotplot (pre-integration, Wilcoxon DE)
     # ------------------------------------------------------------------
-    key_markers = {
-        'Oligodendrocyte': ['MBP', 'PLP1', 'MAG', 'MOG'],
-        'Astrocyte': ['GFAP', 'S100B', 'ALDH1L1', 'SLC1A3'],
-        'Microglia': ['P2RY12', 'CX3CR1', 'TMEM119'],
-        'Vasculature': ['PDGFRB', 'FLT1'],
-        'Pan-neuronal': ['SYT1'],
-        'Excitatory Neuron': ['SLC17A7', 'SATB2', 'RORB', 'FEZF2', 'THEMIS'],
-        'Inhibitory Neuron': ['GAD1', 'GAD2', 'PVALB', 'SST', 'VIP', 'LAMP5'],
-        'OPC': ['PDGFRA', 'CSPG4', 'OLIG2'],
-        'Endothelial cells': ['PECAM1', 'VWF', 'VEGFA', 'CLDN5'],
-        'Pericytes': ['ACTA2', 'S100A4', 'NRP1'],
-        'Immune cells': ['CD4', 'CD68'],
-    }
-    # Restrict to markers actually present in the data
-    markers_in_data = {}
-    for cell_type, markers in key_markers.items():
-        present = [m for m in markers if m in adata.var_names]
-        if present:
-            markers_in_data[cell_type] = present
-
-    if markers_in_data and 'leiden_0.5' in adata.obs.columns:
+    clustering_key = 'leiden_0.5'
+    if clustering_key in adata.obs.columns:
         try:
-            dp = sc.pl.dotplot(
-                adata,
-                markers_in_data,
-                groupby="leiden_0.5",
-                standard_scale="var",
-                swap_axes=True,
-                show=False,
-            )
+            sc.tl.rank_genes_groups(adata, clustering_key, method='wilcoxon')
 
-            fig = plt.gcf()
-            fig.savefig(
-                os.path.join(plots_dir, "neural_markers_dotplot_leiden_0_5.png"),
-                dpi=300,
-                bbox_inches="tight",
-            )
-            plt.close(fig)
-            print("Neural marker dotplot saved.")
+            top_genes = []
+            for group in adata.obs[clustering_key].unique():
+                genes = adata.uns['rank_genes_groups']['names'][str(group)][:5]
+                top_genes.extend(genes)
+            top_genes = list(dict.fromkeys(top_genes))
+
+            if top_genes:
+                sc.pl.dotplot(
+                    adata,
+                    top_genes,
+                    groupby=clustering_key,
+                    standard_scale="var",
+                    swap_axes=True,
+                    show=False,
+                )
+
+                fig = plt.gcf()
+                fig.savefig(
+                    os.path.join(plots_dir, "marker_dotplot_leiden_0_5.png"),
+                    dpi=300,
+                    bbox_inches="tight",
+                )
+                plt.close(fig)
+                print(f"Marker dotplot saved ({len(top_genes)} DE genes).")
 
         except Exception as e:
-            print(f"Warning: could not generate neural marker dotplot: {e}")
+            print(f"Warning: could not generate marker dotplot: {e}")
     
     # ============================================
     # CONSOLIDATE LANE-LEVEL QC METRICS
@@ -705,6 +696,7 @@ def concatenate_and_qc(h5ad_files, output_file, metrics_file, plots_dir):
     # ============================================
     
     print(f"\nSaving concatenated data to {output_file}...")
+    sanitize_adata(adata, output_file)
     adata.write(output_file)
     
     print("\n" + "="*70)

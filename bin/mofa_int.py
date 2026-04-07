@@ -12,6 +12,7 @@ import argparse
 import sys
 import json
 import warnings
+from h5ad_compat import sanitize_mudata
 
 warnings.filterwarnings('ignore')
 
@@ -43,6 +44,16 @@ def run_mofa_high_memory(mudata_path, output_dir, n_factors=10,
 
     # RNA: top 5000 HVGs
     rna = mdata.mod['rna']
+    # Ensure RNA is log1p-normalized (seurat HVG flavor requires it; raw counts overflow expm1)
+    import numpy as np
+    from scipy import sparse
+    x_max = rna.X.data.max() if sparse.issparse(rna.X) else rna.X.max()
+    if x_max > 50:  # raw counts, not yet normalized
+        print("  Normalizing RNA (raw counts detected)...")
+        if 'counts' not in rna.layers:
+            rna.layers['counts'] = rna.X.copy()
+        sc.pp.normalize_total(rna, target_sum=1e4)
+        sc.pp.log1p(rna)
     if 'highly_variable' not in rna.var.columns:
         sc.pp.highly_variable_genes(rna, n_top_genes=5000)
     rna_features = rna.var_names[rna.var['highly_variable']]
@@ -61,6 +72,18 @@ def run_mofa_high_memory(mudata_path, output_dir, n_factors=10,
         'rna': rna[:, rna_features].copy(),
         'atac': atac[:, atac_features].copy()
     })
+
+    # Copy cell-level metadata from original MuData (cell type annotations, etc.)
+    for col in mdata.obs.columns:
+        if col not in mdata_subset.obs.columns:
+            mdata_subset.obs[col] = mdata.obs[col].values
+    # Also copy modality-level obs (e.g., rna:celltypist_prediction)
+    for mod_key in ['rna', 'atac']:
+        if mod_key in mdata.mod and mod_key in mdata_subset.mod:
+            for col in mdata.mod[mod_key].obs.columns:
+                if col not in mdata_subset.mod[mod_key].obs.columns:
+                    mdata_subset.mod[mod_key].obs[col] = mdata.mod[mod_key].obs[col].values
+    print(f"  Copied metadata to subset: {list(mdata_subset.obs.columns)}")
 
     # -------------------------------------------------------------------------
     # STEP 3: PREPARE DATA FOR MOFAPY2
@@ -157,6 +180,7 @@ def run_mofa_high_memory(mudata_path, output_dir, n_factors=10,
     # STEP 6: SAVE INTEGRATED MUDATA AND FACTOR MATRIX
     # -------------------------------------------------------------------------
     output_path = Path(output_dir) / "mofa_integrated.h5mu"
+    sanitize_mudata(mdata_subset, output_path)
     mdata_subset.write_h5mu(output_path)
     print(f"Saved integrated MuData: {output_path}")
     n_retained = factors_array.shape[1]

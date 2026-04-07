@@ -114,7 +114,6 @@ def main():
     
     # Load metadata
     metadata = pd.read_csv(args.metadata)
-    metadata = metadata[metadata['sample_type'] == 'demux'].copy()
 
     # Create a unique QC sample ID per (sample_id, batch)
     # e.g. L1_Donor_0_july, L1_Donor_0_november

@@ -32,7 +32,8 @@ process SCPRINTER_FOOTPRINTING {
     // + footprint computation buffers.  250 GB per node is sufficient.
     maxForks 7
 
-    publishDir "${params.outdir}/scprinter/footprints/${cell_type}", mode: 'copy'
+    // FIX-43: Sanitize cell_type — '/' in names creates unintended subdirectories
+    publishDir "${params.outdir}/scprinter/footprints/${cell_type.replace('/', '_')}", mode: 'copy'
 
     input:
     path peak_matrix
@@ -46,8 +47,10 @@ process SCPRINTER_FOOTPRINTING {
     path tf_mapping            // Optional: tf_target_genes.json for TF annotation on plots
     path cicero_connections    // Optional: Cicero connections TSV.gz for CCAN arc panel
     path pfm_path              // Optional: JASPAR PFM file for TF motif logo panel
+    val cell_type_col          // FIX-46: obs column name for cell types
 
     output:
+    // FIX-43: Output globs already use wildcards — safe for cell types with '/'
     path "footprints_*.h5ad", emit: footprints
     path "tfbs_*.h5ad", emit: tfbs, optional: true                           // FIX-38
     path "enhancer_footprints_*.h5ad", emit: enhancer_footprints, optional: true
@@ -118,6 +121,7 @@ process SCPRINTER_FOOTPRINTING {
         ${tf_mapping_arg} \\
         ${cicero_arg} \\
         ${pfm_arg} \\
+        --cell-type-col '${cell_type_col}' \
         --cpus ${task.cpus}
 
     # FIX-40: Clean up local copy to save disk space in work dir

@@ -105,6 +105,7 @@ for _, row in df.iterrows():
         full_path = frag_file
     else:
         full_path = os.path.join(data_dir, frag_file)
+
     if not os.path.exists(full_path):
         raise FileNotFoundError(
             f"Fragments file not found for sample_id '{sample_id}': {full_path}"
@@ -148,7 +149,7 @@ PY
     python ${projectDir}/bin/run_pycistopic_prepare.py \
       --fragments-map fragments_map.tsv \
       --cell-metadata cell_metadata_for_pycistopic.safe.tsv \
-      --species ${species} \
+      --species hsapiens \
       --sample-id-col sample_id \
       --cell-type-col cell_type_safe \
       --variable cell_type_safe \

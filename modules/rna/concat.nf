@@ -13,6 +13,7 @@ process CONCAT_BATCHES {
     
     script:
     """
+    # v2: fixed suffix stripping regex and removed legacy batch inference
     python ${baseDir}/bin/concat_batches.py \
         --inputs ${h5ad_files} \
         --output concatenated.h5ad \

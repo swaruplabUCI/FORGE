@@ -4,6 +4,7 @@ import argparse
 import muon as mu
 import numpy as np
 import scvi
+from h5ad_compat import sanitize_mudata
 from scvi.model import MULTIVI
 
 
@@ -114,6 +115,7 @@ def main():
 
     # Save model and updated MuData
     mvi.save(args.out_model, overwrite=True)
+    sanitize_mudata(mdata, args.out_mudata)
     mdata.write_h5mu(args.out_mudata)
 
 

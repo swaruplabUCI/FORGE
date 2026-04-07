@@ -6,6 +6,7 @@ import scanpy as sc
 import scvi
 import os
 import torch
+from h5ad_compat import sanitize_adata
 torch.set_float32_matmul_precision('medium')
 
 def train_refmap_scvi_model(adata, number_of_epochs, batch_key, results_dir):
@@ -118,6 +119,7 @@ def main():
     if args.save_adata:
         ref_out = os.path.join(args.results_dir, f'reference_scvi_{args.epochs}e.h5ad')
         print(f"Writing reference h5ad with embeddings to {ref_out}...", flush=True)
+        sanitize_adata(ref_trained, ref_out)
         ref_trained.write(ref_out)
         print(f"  [OK] Saved reference with SCVI embedding: {ref_out}", flush=True)
     

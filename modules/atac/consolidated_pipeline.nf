@@ -46,6 +46,7 @@ process ATAC_FINAL_PIPELINE {
         --tempdir ${params.tempdir} \\
         --n_jobs ${task.cpus} \\
         ${gtf_arg} \\
-        ${cisbp_arg}
+        ${cisbp_arg} \\
+        --genome_build ${params.scprinter.genome}
     """
 }
