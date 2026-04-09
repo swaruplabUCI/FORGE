@@ -14,8 +14,8 @@ process EXTRACT_ATAC_CELL_TYPES {
 
     script:
     def ct_key = params.differential.condition_key ?: 'cell_type'
-    // Annotation key depends on mode: marker-based → 'cell_type', CellTypist → 'celltypist_prediction'
-    def annotation_key = params.atac.marker_file ? 'cell_type' : 'celltypist_prediction'
+    // Annotation key depends on mode: marker-based → 'cell_type', scATAnno → 'cell_type_prediction', CellTypist → 'celltypist_prediction'
+    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
     """
     python ${projectDir}/bin/extract_cell_types.py \\
         --h5ad ${peak_matrix} \\
@@ -34,24 +34,28 @@ process SNAPATAC_DIFFERENTIAL {
     path peak_matrix
     path metadata
     tuple val(treatment), val(control)
-    val cell_types    
-    
+    val cell_type
+
     output:
-    path "DA_peaks_${cell_type}.csv", emit: da_peaks
-    path "plots_${cell_type}/*", emit: plots, optional: true
-    
+    path "DA_peaks_${cell_type}__${treatment}_vs_${control}.csv", emit: da_peaks
+    path "plots_${cell_type}__${treatment}_vs_${control}/*", emit: plots, optional: true
+
     script:
+    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
+    def prefix = "${cell_type}__${treatment}_vs_${control}"
     """
-    mkdir -p plots_${cell_type}
-    
+    mkdir -p "plots_${prefix}"
+
     python ${projectDir}/bin/run_snapatac_diff.py \\
         --peak_matrix ${peak_matrix} \\
         --metadata ${metadata} \\
         --cell_type "${cell_type}" \\
-        --control "${params.differential.control_condition}" \\
-        --treatment "${params.differential.treatment_condition}" \\
+        --cell_type_key ${annotation_key} \\
+        --condition_key ${params.differential.condition_key} \\
+        --control "${control}" \\
+        --treatment "${treatment}" \\
         --min_cells ${params.differential.min_cells} \\
         --fdr ${params.differential.fdr_threshold} \\
-        --output_prefix "${cell_type}"
+        --output_prefix "${prefix}"
     """
 }

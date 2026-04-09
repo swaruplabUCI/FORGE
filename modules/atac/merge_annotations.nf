@@ -1,9 +1,10 @@
 // modules/atac/merge_annotations.nf
 //
 // Merge cell type annotations + sample metadata into the ATAC peak matrix.
-// Supports two annotation modes:
+// Supports three annotation modes:
 //   - 'marker':     cluster-level JSON from marker-based annotation → 'cell_type' column
 //   - 'celltypist': per-cell CellTypist h5ad from gene activity scores → 'celltypist_prediction' column
+//   - 'scatanno':   per-cell scATAnno h5ad from reference peak atlas → 'cell_type_prediction' column
 
 process MERGE_ANNOTATIONS {
     label 'process_medium'
@@ -28,6 +29,14 @@ process MERGE_ANNOTATIONS {
             --celltypist-h5ad ${annotations} \\
             --metadata ${metadata} \\
             --plot-dir . \\
+            --output peak_matrix_annotated.h5ad
+        """
+    } else if (annotation_mode == 'scatanno') {
+        """
+        python ${projectDir}/bin/merge_annotations.py \\
+            --peak-matrix ${peak_matrix} \\
+            --scatanno-h5ad ${annotations} \\
+            --metadata ${metadata} \\
             --output peak_matrix_annotated.h5ad
         """
     } else {

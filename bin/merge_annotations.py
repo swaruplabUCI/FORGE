@@ -37,13 +37,16 @@ def parse_args():
     p.add_argument("--plot-dir", default=".",
                    help="Directory for output plots")
 
+    # scATAnno mode arg
+    p.add_argument("--scatanno-h5ad", default=None,
+                   help="scATAnno-annotated h5ad (scatanno mode)")
+
     args = p.parse_args()
 
     # Validate: exactly one mode must be specified
-    if args.annotations and args.celltypist_h5ad:
-        p.error("Cannot specify both --annotations and --celltypist-h5ad")
-    if not args.annotations and not args.celltypist_h5ad:
-        p.error("Must specify either --annotations (marker mode) or --celltypist-h5ad (celltypist mode)")
+    modes = sum([bool(args.annotations), bool(args.celltypist_h5ad), bool(args.scatanno_h5ad)])
+    if modes != 1:
+        p.error("Must specify exactly one of --annotations, --celltypist-h5ad, or --scatanno-h5ad")
     if args.annotations and not args.resolution:
         p.error("--resolution is required when using --annotations (marker mode)")
 
@@ -199,6 +202,83 @@ def apply_celltypist_annotations(peak_matrix, celltypist_h5ad_path):
     broad_counts = peak_matrix.obs['cell_type_broad'].value_counts()
     for ct in broad_counts.index:
         print(f"    {ct}: {broad_counts[ct]}")
+
+
+def apply_scatanno_annotations(peak_matrix, scatanno_h5ad_path):
+    """scATAnno mode: transfer per-cell predictions from scATAnno h5ad → peak_matrix."""
+    print(f"\n{'='*70}")
+    print("ANNOTATION MODE: scATAnno (reference peak atlas)")
+    print(f"{'='*70}")
+
+    print(f"Loading scATAnno-annotated data from {scatanno_h5ad_path}")
+    scatanno = ad.read_h5ad(scatanno_h5ad_path)
+    print(f"  scATAnno data: {scatanno.n_obs} cells")
+    print(f"  scATAnno obs columns: {list(scatanno.obs.columns)}")
+
+    # Barcode alignment
+    peak_barcodes = set(peak_matrix.obs_names)
+    sa_barcodes = set(scatanno.obs_names)
+    common = peak_barcodes & sa_barcodes
+    print(f"\n  Peak matrix barcodes: {len(peak_barcodes)}")
+    print(f"  scATAnno barcodes: {len(sa_barcodes)}")
+    print(f"  Common barcodes: {len(common)}")
+
+    if len(common) == 0:
+        raise ValueError(
+            "No common barcodes between peak_matrix and scATAnno data. "
+            "Check barcode format alignment."
+        )
+
+    if len(common) < len(peak_barcodes):
+        missing = len(peak_barcodes) - len(common)
+        print(f"  WARNING: {missing} peak_matrix cells not in scATAnno — will be labeled 'Unknown'")
+
+    # Transfer scATAnno columns by index alignment
+    sa_columns = ['cell_type_prediction', 'pred_y', 'cluster_annotation',
+                  'Uncertainty_Score', 'uncertainty_score_step1', 'uncertainty_score_step2',
+                  '1.knn-based_celltype', '2.corrected_celltype']
+    transferred = []
+    for col in sa_columns:
+        if col in scatanno.obs.columns:
+            peak_matrix.obs[col] = scatanno.obs[col].reindex(peak_matrix.obs_names)
+            transferred.append(col)
+
+    print(f"\n  Transferred columns: {transferred}")
+
+    # Ensure cell_type_prediction exists (primary column for downstream)
+    if 'cell_type_prediction' not in transferred:
+        if 'pred_y' in transferred:
+            peak_matrix.obs['cell_type_prediction'] = peak_matrix.obs['pred_y']
+            print("  Created cell_type_prediction from pred_y")
+        else:
+            raise ValueError(
+                "scATAnno h5ad missing both 'cell_type_prediction' and 'pred_y'. "
+                f"Available: {list(scatanno.obs.columns)}"
+            )
+
+    # Fill NaN for cells not in scATAnno
+    for col in ['cell_type_prediction', 'pred_y', 'cluster_annotation']:
+        if col in peak_matrix.obs.columns:
+            series = peak_matrix.obs[col]
+            if hasattr(series, 'cat'):
+                if 'Unknown' not in series.cat.categories:
+                    series = series.cat.add_categories('Unknown')
+            peak_matrix.obs[col] = series.fillna('Unknown')
+
+    # Report
+    print(f"\n  Cell type predictions (cell_type_prediction):")
+    ct_counts = peak_matrix.obs['cell_type_prediction'].value_counts()
+    for ct in ct_counts.head(15).index:
+        print(f"    {ct}: {ct_counts[ct]}")
+    if len(ct_counts) > 15:
+        print(f"    ... and {len(ct_counts) - 15} more types")
+
+    n_unknown = (peak_matrix.obs['cell_type_prediction'].str.lower() == 'unknown').sum()
+    print(f"\n  Unknown fraction: {n_unknown}/{peak_matrix.n_obs} ({100*n_unknown/peak_matrix.n_obs:.1f}%)")
+
+    if 'Uncertainty_Score' in peak_matrix.obs.columns:
+        u = peak_matrix.obs['Uncertainty_Score'].astype(float)
+        print(f"  Uncertainty: mean={u.mean():.3f}, median={u.median():.3f}")
 
 
 def generate_celltype_plots(celltypist_h5ad_path, peak_matrix, plot_dir):
@@ -499,6 +579,8 @@ def main():
     # --- Apply cell type annotations (mode-dependent) ---
     if args.celltypist_h5ad:
         apply_celltypist_annotations(peak_matrix, args.celltypist_h5ad)
+    elif args.scatanno_h5ad:
+        apply_scatanno_annotations(peak_matrix, args.scatanno_h5ad)
     else:
         apply_marker_annotations(peak_matrix, args.annotations, args.resolution)
 

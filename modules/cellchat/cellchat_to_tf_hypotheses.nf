@@ -22,11 +22,13 @@ process CELLCHAT_TO_TF_HYPOTHESES {
     path "hypothesis_summary.txt",           emit: summary
 
     script:
+    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
     """
     python ${projectDir}/bin/cellchat_to_tf_hypotheses.py \\
         --cellchat-csv '${cellchat_csv}' \\
         --chromvar-dev '${chromvar_dev}' \\
         --pathway-to-tfs '${pathway_to_tfs_json}' \\
+        --cell-type-key ${annotation_key} \\
         --pval-threshold 0.05 \\
         --outdir .
     """

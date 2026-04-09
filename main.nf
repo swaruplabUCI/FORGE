@@ -64,6 +64,7 @@ include { ATAC_FINAL_PIPELINE } from './modules/atac/consolidated_pipeline'
 // Cell-type annotation for ATAC
 include { ATAC_CELLTYPE_ANNOTATION } from './modules/atac/celltype_annotation'
 include { ATAC_CELLTYPIST } from './modules/atac/atac_celltypist'
+include { ATAC_SCATANNO } from './modules/atac/atac_scatanno'
 include { MERGE_ANNOTATIONS } from './modules/atac/merge_annotations'
 
 // Differential ATAC analysis
@@ -153,6 +154,11 @@ include { COMPOSITE_ENHANCER_VIZ      } from './modules/visualization/enhancer_v
 def has_reference = (params.species == 'human' && params.ref_dir_human_integrated) ||
                     (params.species == 'mouse' && params.ref_dir_mouse_integrated)
 def cell_type_key = has_reference ? 'scanvi_prediction' : 'celltypist_prediction'
+
+// ATAC cell type column: depends on annotation mode
+// marker_file → 'cell_type', scATAnno → 'cell_type_prediction', CellTypist → 'celltypist_prediction'
+def atac_cell_type_key = params.atac.marker_file ? 'cell_type' :
+    (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
 
 
 // ============================================================================
@@ -1158,6 +1164,20 @@ workflow ATAC_FINAL {
                 'marker'
             )
             peak_matrix_annotated = MERGE_ANNOTATIONS.out.peak_matrix
+        } else if (params.atac.annotation_method == 'scatanno') {
+            // scATAnno mode: reference-based peak annotation → 'cell_type_prediction' column
+            log.info "ATAC annotation: scATAnno reference-based (annotation_method = scatanno)"
+            ATAC_SCATANNO(
+                ATAC_FINAL_PIPELINE.out.anndataset,
+                file(params.scatanno.reference_atlas)
+            )
+            MERGE_ANNOTATIONS(
+                ATAC_FINAL_PIPELINE.out.peak_matrix,
+                ATAC_SCATANNO.out.annotations,
+                file(params.atac.sample_metadata),
+                'scatanno'
+            )
+            peak_matrix_annotated = MERGE_ANNOTATIONS.out.peak_matrix
         } else {
             // Default mode: CellTypist on gene activity → 'celltypist_prediction' column
             log.info "ATAC annotation: CellTypist on gene activity scores (default mode)"
@@ -1326,13 +1346,11 @@ workflow REGULATORY_ANALYSIS {
         }
 
         if (is_discovery_mode && params.scprinter.run) {
-            def atac_celltype_col = params.atac.marker_file ? 'cell_type' : 'celltypist_prediction'
-
             EXTRACT_CHROMVAR_MOTIFS(
                 GPU_CHROMVAR.out.chromvar_dev,
                 params.chromvar.top_n_per_celltype,
                 params.chromvar.min_motif_zscore,
-                atac_celltype_col
+                atac_cell_type_key
             )
 
             EXTRACT_CHROMVAR_MOTIFS.out.report.view {
@@ -2161,17 +2179,13 @@ workflow {
             }
             .collect()
 
-        // FIX-46: ATAC cell type column depends on annotation mode
-        def atac_ct_col = (params.atac.auto_annotate && params.atac.marker_file) ?
-            'cell_type' : 'celltypist_prediction'
-
         REGULATORY_ANALYSIS(
             ATAC_FINAL.out.peak_matrix,
             ATAC_FINAL.out.individual_samples,
             da_peaks_ch,
             file(params.atac.sample_metadata),
             ch_reg_fragments,
-            atac_ct_col
+            atac_cell_type_key
         )
 
     } else {
@@ -2240,7 +2254,8 @@ workflow {
         // atac_celltypist_annotations, peak_matrix_annotated, cluster_avg_gene_scores)
         // that are not per-sample files.
         def atac_auxiliary = ['peak_matrix', 'gene_matrix', 'atac_complete',
-                              'atac_celltypist_annotations', 'peak_matrix_annotated',
+                              'atac_celltypist_annotations', 'scatanno_annotations',
+                              'peak_matrix_annotated',
                               'cluster_avg_gene_scores'] as Set
         ch_atac_mapped = ATAC_FINAL.out.individual_samples
             .flatMap { it instanceof List ? it : [it] }
@@ -2385,10 +2400,6 @@ workflow {
         def bigwigs_ch = (has_grn && params.pycistopic.run) ?
             MULTIOME_GRN.out.pseudobulk_bigwigs : Channel.empty()
 
-        // FIX-43: cell_type_col for enhancer footprinting
-        def enhancer_ct_col = (params.atac.auto_annotate && params.atac.marker_file) ?
-            'cell_type' : 'celltypist_prediction'
-
         ENHANCER_FOOTPRINTING_RECIPES(
             ATAC_FINAL.out.peak_matrix,
             REGULATORY_ANALYSIS.out.scprinter_printer,
@@ -2402,7 +2413,7 @@ workflow {
             rna_ch,
             cellchat_csv_ch,
             bigwigs_ch,
-            enhancer_ct_col
+            atac_cell_type_key
         )
     }
 }

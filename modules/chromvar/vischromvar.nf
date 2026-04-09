@@ -15,10 +15,12 @@ process VIS_CHROMVAR {
         path "*.tsv", emit: tables
 
     script:
+    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
     """
     vis_chromvar_nf.py \
       --dev-h5ad ${chromvar_dev} \
-      --out-dir chromvar_plots
+      --out-dir chromvar_plots \
+      --cell-type-key ${annotation_key}
 
     # Move generated files into CWD so publishDir picks them up
     if [ -d chromvar_plots ]; then
