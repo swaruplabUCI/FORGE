@@ -4,7 +4,6 @@
 suppressPackageStartupMessages({
   library(EnhancedVolcano)
   library(tidyverse)
-  library(biomaRt)
   library(optparse)
 })
 
@@ -25,23 +24,6 @@ cat("Input:", opt$input, "\n")
 cat("Output:", opt$output, "\n")
 cat("Species:", opt$species, "\n\n")
 
-# Connect to Ensembl
-cat("Connecting to Ensembl...\n")
-if (opt$species == "human") {
-  ensembl <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", mirror = "useast")
-} else {
-  ensembl <- useEnsembl(biomart = "ensembl", dataset = "mmusculus_gene_ensembl", mirror = "useast")
-}
-
-# Get protein-coding genes
-all_gene_biotypes <- getBM(
-  attributes = c('ensembl_gene_id', 'external_gene_name', 'gene_biotype'),
-  mart = ensembl
-)
-protein_coding_genes <- all_gene_biotypes %>% filter(gene_biotype == "protein_coding")
-
-cat("Loaded", nrow(protein_coding_genes), "protein-coding genes\n\n")
-
 # Load DE results
 cat("Loading DE results...\n")
 de_results <- read_csv(opt$input, show_col_types = FALSE)
@@ -54,11 +36,26 @@ if (length(non_zero_pvals) > 0) {
   cat("Replaced", sum(de_results$p_val_adj == min_pval), "zero p-values with minimum:", min_pval, "\n")
 }
 
-# Filter for protein-coding genes
-de_protein_coding <- de_results %>%
-  filter(gene %in% protein_coding_genes$external_gene_name)
-
-cat("Filtered to", nrow(de_protein_coding), "protein-coding genes\n\n")
+# Optionally filter to protein-coding genes via biomaRt (requires internet)
+de_plot <- de_results
+tryCatch({
+  suppressPackageStartupMessages(library(biomaRt))
+  if (opt$species == "human") {
+    ensembl <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", mirror = "useast")
+  } else {
+    ensembl <- useEnsembl(biomart = "ensembl", dataset = "mmusculus_gene_ensembl", mirror = "useast")
+  }
+  all_gene_biotypes <- getBM(
+    attributes = c('ensembl_gene_id', 'external_gene_name', 'gene_biotype'),
+    mart = ensembl
+  )
+  protein_coding_genes <- all_gene_biotypes %>% filter(gene_biotype == "protein_coding")
+  de_plot <- de_results %>% filter(gene %in% protein_coding_genes$external_gene_name)
+  cat("Filtered to", nrow(de_plot), "protein-coding genes (via biomaRt)\n\n")
+}, error = function(e) {
+  cat("WARNING: biomaRt unavailable (offline node) — using all", nrow(de_results), "genes\n\n")
+  de_plot <<- de_results
+})
 
 # Extract comparison info from filename
 filename <- basename(opt$input)
@@ -70,8 +67,8 @@ pdf(opt$output, width = 10, height = 8)
 
 print(
   EnhancedVolcano(
-    de_protein_coding,
-    lab = de_protein_coding$gene,
+    de_plot,
+    lab = de_plot$gene,
     x = 'avg_log2FC',
     y = 'p_val_adj',
     title = comparison,

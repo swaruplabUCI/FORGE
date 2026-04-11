@@ -59,6 +59,8 @@ def parse_args():
                        help='Batch size for concatenation (default: 10)')
     parser.add_argument('--min_retention', type=float, default=0.0,
                        help='Minimum RNA/ATAC overlap retention rate (default: 0.0)')
+    parser.add_argument('--atac_annotations', type=str, default=None,
+                       help='Path to annotated ATAC peak matrix h5ad (for transferring cell type labels)')
 
     return parser.parse_args()
 
@@ -402,6 +404,55 @@ def main():
         log_message(f"  Unique cell types: {combined_mdata.obs['cell_type'].nunique()}", LOG_FILE)
     else:
         log_message(" No cell type prediction column found in modalities to propagate", LOG_FILE, "WARN")
+
+    # ========================================================================
+    # Transfer ATAC cell type annotations from annotated peak matrix
+    # ========================================================================
+    if args.atac_annotations and Path(args.atac_annotations).exists():
+        log_message("\nTransferring ATAC cell type annotations from annotated peak matrix...", LOG_FILE)
+        try:
+            atac_annot = sc.read_h5ad(args.atac_annotations, backed='r')
+            atac_annot_obs = atac_annot.obs
+
+            # Identify the ATAC cell type column
+            atac_ct_col = None
+            for candidate in ['cell_type_prediction', 'celltypist_prediction', 'cell_type', 'pred_y']:
+                if candidate in atac_annot_obs.columns:
+                    vals = atac_annot_obs[candidate].dropna().unique()
+                    if len(vals) > 1 or (len(vals) == 1 and str(vals[0]).lower() != 'unknown'):
+                        atac_ct_col = candidate
+                        break
+
+            if atac_ct_col:
+                # Build barcode lookup from annotated peak matrix
+                annot_labels = atac_annot_obs[atac_ct_col].to_dict()
+                atac_mod = combined_mdata.mod['atac']
+
+                # Match barcodes: MuData ATAC barcodes are "sample_id:barcode"
+                # Annotated peak matrix barcodes may be just "barcode" or "sample_id:barcode"
+                atac_cell_types = []
+                for bc in atac_mod.obs_names:
+                    # Try full barcode first, then stripped version
+                    if bc in annot_labels:
+                        atac_cell_types.append(str(annot_labels[bc]))
+                    else:
+                        # Strip sample_id prefix (e.g. "SampleA:ACGT..." → "ACGT...")
+                        bare_bc = bc.split(':', 1)[-1] if ':' in bc else bc
+                        atac_cell_types.append(str(annot_labels.get(bare_bc, 'Unknown')))
+
+                atac_mod.obs['cell_type'] = atac_cell_types
+                combined_mdata.obs['atac_cell_type'] = atac_cell_types
+
+                n_annotated = sum(1 for ct in atac_cell_types if ct.lower() != 'unknown')
+                log_message(f"  Transferred '{atac_ct_col}' → atac:cell_type for {n_annotated}/{len(atac_cell_types)} cells", LOG_FILE)
+                log_message(f"  Unique ATAC cell types: {len(set(atac_cell_types) - {'Unknown'})}", LOG_FILE)
+            else:
+                log_message("  No usable cell type column found in annotated peak matrix", LOG_FILE, "WARN")
+
+            del atac_annot
+            gc.collect()
+        except Exception as e:
+            log_message(f"  Could not transfer ATAC annotations: {e}", LOG_FILE, "WARN")
     
     log_message(f"\n Final MuData: {combined_mdata.n_obs:,} cells", LOG_FILE)
     log_memory(LOG_FILE)

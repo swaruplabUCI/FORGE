@@ -107,10 +107,11 @@ def main():
 
     # Verify required columns for chromVAR grouping
     print("\nVerifying metadata columns:")
-    if 'cell_type' in adata.obs.columns:
-        print(f"  ✓ 'cell_type' found: {adata.obs['cell_type'].nunique()} types")
+    ct_col = next((c for c in ['cell_type', 'celltypist_prediction', 'cell_type_prediction'] if c in adata.obs.columns), None)
+    if ct_col:
+        print(f"  ✓ '{ct_col}' found: {adata.obs[ct_col].nunique()} types")
     else:
-        print("  ⚠ 'cell_type' not found in .obs; chromVAR grouping may be limited")
+        print("  ⚠ No cell type column found in .obs; chromVAR grouping may be limited")
     
     if 'sample' in adata.obs.columns:
         print(f"  ✓ 'sample' found: {adata.obs['sample'].nunique()} samples")

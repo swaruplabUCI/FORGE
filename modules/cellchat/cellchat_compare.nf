@@ -16,6 +16,7 @@ process CELLCHAT_PER_CONDITION {
     val  cell_type_key
     val  condition_key
     val  species
+    path group_mapping
 
     output:
     path "cellchat_${condition}.rds",    emit: cellchat_rds
@@ -23,6 +24,7 @@ process CELLCHAT_PER_CONDITION {
     val  condition,                      emit: condition_label
 
     script:
+    def mapping_arg = group_mapping.name != 'NO_FILE' ? "--group_mapping ${group_mapping}" : ""
     """
     run_cellchat_per_condition.R \
         --h5ad ${h5ad} \
@@ -31,7 +33,8 @@ process CELLCHAT_PER_CONDITION {
         --condition_key ${condition_key} \
         --species ${species} \
         --output_rds cellchat_${condition}.rds \
-        --output_dir cellchat_${condition}_plots
+        --output_dir cellchat_${condition}_plots \
+        ${mapping_arg}
     """
 }
 

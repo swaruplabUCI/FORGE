@@ -37,6 +37,7 @@ process MERGE_ANNOTATIONS {
             --peak-matrix ${peak_matrix} \\
             --scatanno-h5ad ${annotations} \\
             --metadata ${metadata} \\
+            --plot-dir . \\
             --output peak_matrix_annotated.h5ad
         """
     } else {

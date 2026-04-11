@@ -9,12 +9,14 @@ process BUILD_MUDATA {
     path scanvi_file
     path metadata_csv
     path sample_map
+    path atac_annotations
 
     output:
     path "integrated.h5mu", emit: mudata
     path "mudata_stats.json", emit: stats
 
     script:
+    def atac_annot_arg = atac_annotations.name != 'NO_FILE' ? "--atac_annotations ${atac_annotations}" : ""
     """
     echo "=== BUILD_MUDATA ==="
     echo "Working directory: \$(pwd)"
@@ -29,6 +31,7 @@ process BUILD_MUDATA {
         --scanvi_file ${scanvi_file.name} \\
         --metadata_file ${metadata_csv.name} \\
         --output_dir . \\
-        --batch_size ${params.mudata.batch_size}
+        --batch_size ${params.mudata.batch_size} \\
+        ${atac_annot_arg}
     """
 }

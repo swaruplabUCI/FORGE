@@ -14,7 +14,7 @@ process EXTRACT_ATAC_CELL_TYPES {
 
     script:
     def ct_key = params.differential.condition_key ?: 'cell_type'
-    // Annotation key depends on mode: marker-based → 'cell_type', scATAnno → 'cell_type_prediction', CellTypist → 'celltypist_prediction'
+    // Annotation key depends on mode: marker-based → 'cell_type', CellTypist → 'celltypist_prediction'
     def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
     """
     python ${projectDir}/bin/extract_cell_types.py \\
@@ -29,7 +29,7 @@ process EXTRACT_ATAC_CELL_TYPES {
 process SNAPATAC_DIFFERENTIAL {
     label 'process_medium'
     publishDir "${params.outdir}/differential", mode: 'copy'
-    
+
     input:
     path peak_matrix
     path metadata

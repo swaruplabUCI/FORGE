@@ -17,11 +17,13 @@ def main():
     parser.add_argument('--min_cells', type=int, default=50)
     parser.add_argument('--fdr', type=float, default=0.05)
     parser.add_argument('--output_prefix', required=True)
+    parser.add_argument('--cell_type_key', default='celltypist_prediction')
+    parser.add_argument('--condition_key', default='condition_group')
     args = parser.parse_args()
-    
-    # ✅ FIX #1: Correct argument names
-    control_condition = args.control_condition      
-    treatment_condition = args.treatment_condition 
+
+    control_condition = args.control_condition
+    treatment_condition = args.treatment_condition
+    cond_key = args.condition_key
     
     print(f"=" * 60)
     print(f"Running differential accessibility analysis")
@@ -35,30 +37,31 @@ def main():
     print(f"Loaded {adata.n_obs} cells × {adata.n_vars} peaks")
     
     #  Validate required columns
-    if 'cell_type' not in adata.obs.columns:
-        print(f"ERROR: 'cell_type' column not found")
+    ct_key = args.cell_type_key
+    if ct_key not in adata.obs.columns:
+        print(f"ERROR: '{ct_key}' column not found")
         print(f"Available columns: {list(adata.obs.columns)}")
         sys.exit(1)
     
-    if 'condition_group' not in adata.obs.columns:
-        print(f"ERROR: 'condition_group' column not found")
+    if cond_key not in adata.obs.columns:
+        print(f"ERROR: '{cond_key}' column not found")
         print(f"Available columns: {list(adata.obs.columns)}")
         sys.exit(1)
     
     # Dynamic cell type filtering 
-    cell_mask = adata.obs['cell_type'] == args.cell_type
+    cell_mask = adata.obs[ct_key] == args.cell_type
     adata_ct = adata[cell_mask].copy()
     
     print(f"\nCells in {args.cell_type}: {adata_ct.n_obs}")
     
     if adata_ct.n_obs == 0:
         print(f"ERROR: No cells found for cell type '{args.cell_type}'")
-        print(f"Available cell types: {adata.obs['cell_type'].unique()}")
+        print(f"Available cell types: {adata.obs[ct_key].unique()}")
         sys.exit(1)
     
     # Get cell indices for each condition
-    control_mask = adata_ct.obs['condition_group'] == control_condition
-    treatment_mask = adata_ct.obs['condition_group'] == treatment_condition
+    control_mask = adata_ct.obs[cond_key] == control_condition
+    treatment_mask = adata_ct.obs[cond_key] == treatment_condition
     
     ctrl_idx = np.where(control_mask)[0]
     treat_idx = np.where(treatment_mask)[0]

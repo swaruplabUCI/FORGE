@@ -390,14 +390,16 @@ Model dimensions:
 
     # 7.1b UMAP by ATAC cell type (FIX-67)
     atac_ct_key = None
-    for candidate in ['atac:cell_type', 'atac:scanvi_prediction']:
+    for candidate in ['atac:cell_type', 'atac:cell_type_prediction', 'atac:scanvi_prediction', 'atac_cell_type']:
         if candidate in mdata.obs.columns:
             atac_ct_key = candidate
             break
     if atac_ct_key is None and 'atac' in mdata.mod:
-        if 'cell_type' in mdata.mod['atac'].obs.columns:
-            mdata.obs['atac_cell_type'] = mdata.mod['atac'].obs['cell_type']
-            atac_ct_key = 'atac_cell_type'
+        for candidate in ['cell_type', 'cell_type_prediction', 'celltypist_prediction']:
+            if candidate in mdata.mod['atac'].obs.columns:
+                mdata.obs['atac_cell_type'] = mdata.mod['atac'].obs[candidate]
+                atac_ct_key = 'atac_cell_type'
+                break
 
     if atac_ct_key:
         print(f"\nPlotting UMAP by ATAC cell type ({atac_ct_key})...")

@@ -19,7 +19,7 @@ process ATAC_INITIAL_QC {
     def frag_list = fragment_files.collect { "'${it}'" }.join(' ')
     
     def min_counts_arg  = params.atac.min_counts  ? "--min_counts ${params.atac.min_counts}"     : ""
-    def min_tsse_arg    = params.atac.min_tsse    ? "--min_tsse ${params.atac.min_tsse}"         : ""
+    def min_tsse_arg    = params.atac.min_tsse    ? "--min_tsse ${params.atac.min_tsse}"         : (params.atac.initial_min_tsse ? "--min_tsse ${params.atac.initial_min_tsse}" : "")
     def max_counts_arg  = params.atac.max_counts  ? "--max_counts ${params.atac.max_counts}"     : ""
     def batch_key_arg   = params.atac.batch_key   ? "--batch_key ${params.atac.batch_key}"       : ""
     def tempdir_arg     = params.atac.tempdir     ? "--tempdir ${params.atac.tempdir}"           : ""

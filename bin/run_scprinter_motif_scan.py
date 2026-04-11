@@ -98,6 +98,11 @@ def parse_args():
         default=1,
         help="Number of jobs/threads for TFBS computation",
     )
+    p.add_argument(
+        "--cell-type-key",
+        default="cell_type",
+        help="obs column for cell type (remapped to 'cell_type' internally)",
+    )
     return p.parse_args()
 
 def normalize_peak_barcode(bc: str) -> str:
@@ -257,8 +262,14 @@ def main():
     print(f"Loading peak matrix from {args.peak_matrix}")
     adata = ad.read_h5ad(args.peak_matrix)
 
+    # Remap cell type column if needed
+    ct_key = args.cell_type_key
+    if ct_key != "cell_type" and ct_key in adata.obs.columns:
+        adata.obs["cell_type"] = adata.obs[ct_key]
+        print(f"✓ Mapped '{ct_key}' → 'cell_type'")
+
     if "cell_type" not in adata.obs.columns:
-        raise ValueError("adata.obs does not contain a 'cell_type' column")
+        raise ValueError(f"adata.obs does not contain '{ct_key}' column")
 
     adata_ct = adata[adata.obs["cell_type"] == args.cell_type].copy()
     n_cells = adata_ct.n_obs
@@ -266,10 +277,16 @@ def main():
     if n_cells == 0:
         raise ValueError(f"No cells found for cell_type '{args.cell_type}'")
 
-    if "condition" not in adata_ct.obs.columns:
-        raise ValueError("adata_ct.obs does not contain a 'condition' column")
+    # Find condition column: try 'condition_group', 'condition', 'Condition'
+    cond_col = None
+    for candidate in ['condition_group', 'condition', 'Condition']:
+        if candidate in adata_ct.obs.columns:
+            cond_col = candidate
+            break
+    if cond_col is None:
+        raise ValueError(f"No condition column found. Available: {list(adata_ct.obs.columns)}")
 
-    conditions = adata_ct.obs["condition"].astype(str).unique()
+    conditions = adata_ct.obs[cond_col].astype(str).unique()
     print(f"Conditions found in this cell type: {conditions}")
 
     control_label = args.control_condition
@@ -278,7 +295,7 @@ def main():
     group_labels = [lab for lab in [control_label, treatment_label] if lab in conditions]
     if len(group_labels) != 2:
         raise ValueError(
-            f"Expected both {control_label} and {treatment_label} in adata_ct.obs['condition'], "
+            f"Expected both {control_label} and {treatment_label} in adata_ct.obs['{cond_col}'], "
             f"but found: {list(conditions)}"
         )
 
@@ -309,7 +326,7 @@ def main():
     # -------------------------------------------------------------------------
     grouping = []
     for lab in group_labels:
-        mask = adata_ct.obs["condition"].astype(str) == lab
+        mask = adata_ct.obs[cond_col].astype(str) == lab
         bcs_ct_raw = adata_ct.obs_names[mask].astype(str)
         bcs_ct = np.array([apply_normalization(b, bc_norm_mode) for b in bcs_ct_raw], dtype=str)
 

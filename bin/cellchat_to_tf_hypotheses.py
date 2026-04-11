@@ -44,6 +44,8 @@ def parse_args():
     p.add_argument("--pathway-to-tfs", required=True, help="Pathway-to-TFs JSON")
     p.add_argument("--pval-threshold", type=float, default=0.05)
     p.add_argument("--outdir", default=".")
+    p.add_argument("--cell-type-key", default="cell_type",
+                   help="obs column for cell type (remapped to 'cell_type' internally)")
     return p.parse_args()
 
 
@@ -151,6 +153,12 @@ def main():
     # Validate with chromVAR
     print(f"\nLoading chromVAR deviations from {args.chromvar_dev}")
     adata = ad.read_h5ad(args.chromvar_dev)
+
+    # Remap cell type column if needed
+    ct_key = args.cell_type_key
+    if ct_key != "cell_type" and ct_key in adata.obs.columns:
+        adata.obs["cell_type"] = adata.obs[ct_key]
+        print(f"✓ Mapped '{ct_key}' → 'cell_type'")
 
     if 'cell_type' not in adata.obs.columns:
         print("WARNING: chromVAR h5ad missing 'cell_type'. Skipping validation.")

@@ -433,6 +433,77 @@ def generate_celltype_plots(celltypist_h5ad_path, peak_matrix, plot_dir):
         print("  No X_umap in gene_matrix — skipping UMAP plots")
 
 
+def generate_scatanno_plots(peak_matrix, plot_dir):
+    """Generate ATAC UMAP colored by scATAnno cell type predictions."""
+    import scanpy as sc
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    print(f"\n{'='*70}")
+    print("GENERATING CELL-TYPE VISUALIZATIONS (scATAnno)")
+    print(f"{'='*70}")
+
+    plot_dir = Path(plot_dir)
+
+    if 'X_umap' not in peak_matrix.obsm:
+        print("  No X_umap in peak_matrix — skipping UMAP plots")
+        return
+
+    plot_col = 'cell_type_prediction'
+    if plot_col not in peak_matrix.obs.columns:
+        print(f"  '{plot_col}' not found — skipping UMAP plots")
+        return
+
+    min_cells_plot = 100
+    ct_counts = peak_matrix.obs[plot_col].value_counts()
+    valid_types = ct_counts[
+        (ct_counts >= min_cells_plot) &
+        (~ct_counts.index.isin(['Unknown']))
+    ].index.tolist()
+
+    if len(valid_types) < 2:
+        print(f"  Only {len(valid_types)} cell type groups with >= {min_cells_plot} cells — skipping")
+        return
+
+    pm_plot = peak_matrix[peak_matrix.obs[plot_col].isin(valid_types)].copy()
+    n_plot_types = len(valid_types)
+    print(f"  UMAP: plotting {n_plot_types} cell types (>= {min_cells_plot} cells)")
+
+    try:
+        if n_plot_types <= 20:
+            fig_width = max(12, 10 + (n_plot_types * 0.3))
+            fig, ax = plt.subplots(figsize=(fig_width, 8))
+            sc.pl.umap(
+                pm_plot, color=plot_col, ax=ax, show=False,
+                frameon=False, legend_loc='right margin', legend_fontsize=7,
+                title=f'ATAC Cell Types (scATAnno, >= {min_cells_plot} cells)',
+            )
+        else:
+            fig, ax = plt.subplots(figsize=(12, 10))
+            sc.pl.umap(
+                pm_plot, color=plot_col, ax=ax, show=False,
+                frameon=False, legend_loc='none',
+                title=f'ATAC Cell Types (scATAnno, >= {min_cells_plot} cells)',
+            )
+            categories = sorted(pm_plot.obs[plot_col].unique())
+            palette = dict(zip(categories, sc.pl.palettes.default_102[:len(categories)]))
+            handles = [plt.Line2D([0], [0], marker='o', color='w',
+                       markerfacecolor=palette.get(c, '#888888'), markersize=6, label=c)
+                       for c in categories]
+            ncol = max(3, len(categories) // 15 + 1)
+            ax.legend(handles, categories, loc='upper center',
+                      bbox_to_anchor=(0.5, -0.05), ncol=ncol, fontsize=6,
+                      frameon=False, columnspacing=1.0, handletextpad=0.3)
+
+        plt.tight_layout()
+        fig.savefig(plot_dir / "atac_umap_cell_types.pdf", dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"  Saved: atac_umap_cell_types.pdf")
+    except Exception as e:
+        print(f"  WARNING: Could not generate UMAP: {e}")
+
+
 def merge_sample_metadata(peak_matrix, metadata_path, original_barcodes):
     """Merge sample-level metadata onto peak_matrix. Shared by both modes."""
     print(f"\n{'='*70}")
@@ -584,9 +655,11 @@ def main():
     else:
         apply_marker_annotations(peak_matrix, args.annotations, args.resolution)
 
-    # --- Generate cell-type plots (CellTypist mode only) ---
+    # --- Generate cell-type plots ---
     if args.celltypist_h5ad:
         generate_celltype_plots(args.celltypist_h5ad, peak_matrix, args.plot_dir)
+    elif args.scatanno_h5ad and args.plot_dir:
+        generate_scatanno_plots(peak_matrix, args.plot_dir)
 
     # --- Merge sample metadata (always) ---
     merge_sample_metadata(peak_matrix, args.metadata, original_barcodes)

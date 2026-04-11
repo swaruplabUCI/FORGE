@@ -833,7 +833,7 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
         }])
 
         # --- Step 1: Compute multiscale footprint scores ---
-        fp_key = f"footprints_{label}_{gene}"
+        fp_key = f"footprints_{safe_label}_{gene}"
         print(f"  Computing multiscale footprint scores (scales 2-100)...")
         scp.tl.get_footprint_score(
             printer,
@@ -861,7 +861,7 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
             print(f"  [WARN] No footprintsadata entry for key '{fp_key}'")
 
         # --- Step 2: Compute TFBS binding scores ---
-        bs_key = f"tfbs_{label}_{gene}"
+        bs_key = f"tfbs_{safe_label}_{gene}"
         bs_ok = False
         if has_tfbs:
             print(f"  Computing TFBS binding scores (contextRadius=100)...")
@@ -1271,8 +1271,8 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
         print(f"  Cell type: {label}, Control: {control_label}, Treatment: {treatment_label}")
         print(f"{'='*60}")
 
-        fp_key = f"footprints_{label}_{gene}"
-        bs_key = f"tfbs_{label}_{gene}"
+        fp_key = f"footprints_{safe_label}_{gene}"
+        bs_key = f"tfbs_{safe_label}_{gene}"
 
         regions_df = pd.DataFrame([{
             "Chromosome": region["chr"],

@@ -121,21 +121,42 @@ def prepare_reference_and_query(ref_path, query_path, species, results_dir, n_to
         SCANVI_LABELS_KEY = 'Subclass'
     else:  # mouse
         print("Filtering Allen reference...")
+        # Support both column naming conventions: 'subclass_label'/'class_label' (ABC Atlas)
+        # and 'subclass'/'class' (older Allen VISp reference)
+        sub_col = 'subclass_label' if 'subclass_label' in ref.obs.columns else 'subclass'
+        cls_col = 'class_label' if 'class_label' in ref.obs.columns else 'class'
         ref = ref[
-            ~ref.obs['subclass_label'].isna() &
-            ~ref.obs['class_label'].isna()
+            ~ref.obs[sub_col].isna() &
+            ~ref.obs[cls_col].isna()
         ]
-        SCANVI_LABELS_KEY = 'subclass_label'
+        SCANVI_LABELS_KEY = sub_col
 
     print(f"Reference after filtering: {ref.n_obs} cells, {ref.n_vars} genes")
+
+    # Subsample large references to keep training tractable
+    max_ref_cells = 50000
+    if ref.n_obs > max_ref_cells:
+        print(f"\nSubsampling reference from {ref.n_obs} to {max_ref_cells} cells (stratified by {SCANVI_LABELS_KEY})...")
+        sc.pp.subsample(ref, n_obs=max_ref_cells)
+        print(f"Reference after subsampling: {ref.n_obs} cells")
 
     # ============================================
     # CRITICAL: SUBSET TO COMMON GENES
     # ============================================
     print("\nSubsetting to common genes...")
 
+    # Detect if reference has raw counts or is already normalized/scaled.
+    # Raw counts: non-negative integers. Pre-processed: floats with negatives or small decimals.
+    import scipy.sparse as sp
+    ref_x_sample = ref.X[:min(100, ref.n_obs), :min(100, ref.n_vars)]
+    if sp.issparse(ref_x_sample):
+        ref_x_sample = ref_x_sample.toarray()
+    ref_is_raw = (ref_x_sample >= 0).all() and (ref_x_sample == ref_x_sample.astype(int)).all()
+    print(f"Reference X appears {'raw counts' if ref_is_raw else 'pre-processed (normalized/scaled)'}")
+
     # Save raw counts BEFORE subsetting
-    ref.layers["counts"] = ref.X.copy()
+    if ref_is_raw:
+        ref.layers["counts"] = ref.X.copy()
     if 'counts' not in adata_query.layers:
         adata_query.layers["counts"] = adata_query.X.copy()
 
@@ -153,20 +174,25 @@ def prepare_reference_and_query(ref_path, query_path, species, results_dir, n_to
     # ============================================
     # NORMALIZE AND SELECT HVGs ON REFERENCE
     # ============================================
-    print("\nNormalizing reference and selecting HVGs...")
-    sc.pp.normalize_total(ref, target_sum=1e4)
-    sc.pp.log1p(ref)
+    if ref_is_raw:
+        print("\nNormalizing reference and selecting HVGs...")
+        sc.pp.normalize_total(ref, target_sum=1e4)
+        sc.pp.log1p(ref)
+    else:
+        print("\nReference already normalized — skipping normalize_total + log1p")
 
     # FIX-33b: Select HVGs with donor-level batch awareness.
-    # Previously used batch_key="source" which was always 'reference' here
-    # (no batch awareness).  Using 'sample' (mapped to Donor ID) gives
-    # proper per-donor HVG selection.
-    sc.pp.highly_variable_genes(
-        ref,
-        n_top_genes=n_top_genes,
-        batch_key="sample",
-        subset=False
-    )
+    if ref_is_raw:
+        sc.pp.highly_variable_genes(
+            ref,
+            n_top_genes=n_top_genes,
+            batch_key="sample",
+            subset=False
+        )
+    else:
+        # Pre-processed reference: already HVG-selected, mark all common genes as HVG
+        ref.var['highly_variable'] = True
+        print(f"Pre-processed reference: marking all {ref.n_vars} common genes as HVG")
 
     n_hvgs = ref.var['highly_variable'].sum()
     print(f"Selected {n_hvgs} highly variable genes")

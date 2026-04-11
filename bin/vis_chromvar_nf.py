@@ -21,6 +21,10 @@ def parse_args():
         "--out-dir", required=True,
         help="Output directory for PDFs and TSVs"
     )
+    p.add_argument(
+        "--cell-type-key", default="cell_type",
+        help="obs column to use as cell type (default: cell_type)"
+    )
     return p.parse_args()
 
 def select_motifs_by_tf(dev, tf_list):
@@ -97,8 +101,14 @@ def main():
     dev = ad.read_h5ad(DEV_H5AD)
     print(dev)
 
+    # Remap cell type column if needed (so downstream code can use 'cell_type')
+    ct_key = args.cell_type_key
+    if ct_key != "cell_type" and ct_key in dev.obs.columns:
+        dev.obs["cell_type"] = dev.obs[ct_key]
+        print(f"✓ Mapped '{ct_key}' → 'cell_type'")
+
     # -------------------------------------------------------------------
-    # Require condition column 
+    # Require condition column
     # -------------------------------------------------------------------
     condition_col_candidates = ["condition_group", "Condition", "condition", "group", "diagnosis"]
     cond_col = None

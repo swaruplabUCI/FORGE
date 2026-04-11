@@ -18,7 +18,8 @@
 suppressPackageStartupMessages({
     library(CellChat)
     library(Seurat)
-    library(SeuratDisk)
+    library(zellkonverter)
+    library(SingleCellExperiment)
     library(patchwork)
     library(ggplot2)
     library(optparse)
@@ -32,21 +33,40 @@ option_list <- list(
     make_option("--condition_key", type = "character", default = "condition_group"),
     make_option("--species",       type = "character", default = "human"),
     make_option("--output_rds",    type = "character", default = "cellchat.rds"),
-    make_option("--output_dir",    type = "character", default = "cellchat_plots")
+    make_option("--output_dir",    type = "character", default = "cellchat_plots"),
+    make_option("--group_mapping", type = "character", default = NULL,
+                help = "JSON file mapping sample_id → condition_group (used if condition_key column is missing from h5ad)")
 )
 opts <- parse_args(OptionParser(option_list = option_list))
 
 dir.create(opts$output_dir, recursive = TRUE, showWarnings = FALSE)
 
 # --- Load & subset ----------------------------------------------------------
-cat("Loading h5ad and converting to Seurat...\n")
+cat("Loading h5ad via zellkonverter...\n")
 
-# Convert h5ad to Seurat
-Convert(opts$h5ad, dest = "h5seurat", overwrite = TRUE)
-h5seurat_file <- sub("\\.h5ad$", ".h5seurat", basename(opts$h5ad))
-seurat_obj <- LoadH5Seurat(h5seurat_file)
+# Read h5ad as SingleCellExperiment, then convert to Seurat
+sce <- readH5AD(opts$h5ad)
+seurat_obj <- as.Seurat(sce, counts = "X", data = NULL)
 
 cat(sprintf("Total cells: %d\n", ncol(seurat_obj)))
+
+# FIX-46: If condition_key column is missing, merge from group_mapping JSON
+if (!opts$condition_key %in% colnames(seurat_obj@meta.data)) {
+    if (is.null(opts$group_mapping) || !file.exists(opts$group_mapping)) {
+        stop(sprintf("Column '%s' not found in h5ad and no --group_mapping provided.",
+                     opts$condition_key))
+    }
+    cat(sprintf("Column '%s' not found — merging from group_mapping JSON...\n", opts$condition_key))
+    mapping <- jsonlite::fromJSON(opts$group_mapping)
+    sample_col <- if ("sample" %in% colnames(seurat_obj@meta.data)) "sample"
+                  else if ("sample_id" %in% colnames(seurat_obj@meta.data)) "sample_id"
+                  else if ("batch" %in% colnames(seurat_obj@meta.data)) "batch"
+                  else stop("Cannot find sample/sample_id/batch column to join group mapping")
+    seurat_obj@meta.data[[opts$condition_key]] <- mapping[seurat_obj@meta.data[[sample_col]]]
+    assigned <- sum(!is.na(seurat_obj@meta.data[[opts$condition_key]]))
+    cat(sprintf("  Mapped %d/%d cells via '%s' column\n", assigned, ncol(seurat_obj), sample_col))
+}
+
 cat(sprintf("Subsetting to condition: %s (key: %s)\n", opts$condition, opts$condition_key))
 
 # Subset to the requested condition

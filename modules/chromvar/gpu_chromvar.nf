@@ -36,13 +36,18 @@ process GPU_CHROMVAR {
 
     script:
     // FIX-23b: sentinel names are now NO_FILE_DA_PEAKS, NO_FILE_METADATA, etc.
-    // Use .startsWith('NO_FILE') so any NO_FILE* variant is treated as absent.
-    def da_arg    = !da_peaks.name.startsWith('NO_FILE')          ? "--da-peaks ${da_peaks}"           : "--da-peaks ''"
-    def meta_arg  = !metadata.name.startsWith('NO_FILE')          ? "--metadata ${metadata}"           : ""
+    // da_peaks may be a list (from .collect()) or a single sentinel file.
+    // When multiple DA peak files exist (differential mode), merge them into one CSV.
+    def da_list   = da_peaks instanceof List ? da_peaks : [da_peaks]
+    def real_da   = da_list.findAll { !it.name.startsWith('NO_FILE') }
+    def has_da    = real_da.size() > 0
+    def meta_arg  = (metadata instanceof List ? metadata[0] : metadata).name.startsWith('NO_FILE') ? "" : "--metadata ${metadata}"
     def pfms_arg  = pfms                                         ? "--pfms '${pfms}'"                 : ""
     def chunk_sz  = params.chromvar.chunk_size ?: 10000
 
     """
+    ${has_da ? "head -1 '${real_da[0]}' > merged_da_peaks.csv && tail -n +2 -q ${real_da.collect { "'${it}'" }.join(' ')} >> merged_da_peaks.csv" : ""}
+
     gpu_chromvar_nf.py \\
       --peak-matrix ${peak_matrix} \\
       ${meta_arg} \\
@@ -51,6 +56,6 @@ process GPU_CHROMVAR {
       --genome '${genome}' \\
       --out-prefix chromvar_matrix \\
       --chunk-size ${chunk_sz} \\
-      ${da_arg}
+      ${has_da ? "--da-peaks merged_da_peaks.csv" : "--da-peaks ''"}
     """
 }

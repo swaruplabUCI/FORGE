@@ -99,11 +99,14 @@ process CREATE_VOLCANO_PLOTS {
     path "*.pdf", emit: plots
     
     script:
-    def basename = de_results.baseName
+    def safe_name = de_results.name.replaceAll(/[^a-zA-Z0-9_.\-]/, '_')
     """
+    # Symlink to safe filename to avoid shell quoting issues with colons/spaces
+    ln -sf ${de_results} "${safe_name}"
+
     Rscript ${projectDir}/bin/create_volcano_plots.R \\
-        --input ${de_results} \\
-        --output ${basename}_volcano.pdf \\
+        --input "${safe_name}" \\
+        --output "${safe_name}_volcano.pdf" \\
         --species ${params.species} \\
         --pval_cutoff 0.05 \\
         --fc_cutoff 0.25
@@ -113,20 +116,24 @@ process CREATE_VOLCANO_PLOTS {
 process RUN_GO_ENRICHMENT {
     label 'process_medium'
     publishDir "${params.outdir}/rna_differential/go_enrichment", mode: 'copy'
-    
+
     input:
     path de_results
-    
+
     output:
-    path "${de_results.baseName}/*", emit: enrichment_results
-    
+    path "${safe_dir}/*", emit: enrichment_results
+
     script:
+    safe_name = de_results.name.replaceAll(/[^a-zA-Z0-9_.\-]/, '_')
+    safe_dir = de_results.baseName.replaceAll(/[^a-zA-Z0-9_.\-]/, '_')
     """
-    mkdir -p ${de_results.baseName}
-    
-    Rscript ${projectDir}/bin/go_enrichment_single.R ${de_results}
-    
+    # Symlink to safe filename to avoid shell quoting issues with colons/spaces
+    ln -sf ${de_results} "${safe_name}"
+    mkdir -p "${safe_dir}"
+
+    Rscript ${projectDir}/bin/go_enrichment_single.R "${safe_name}"
+
     # Move results to named directory
-    mv *.pdf *.csv *_summary.txt ${de_results.baseName}/ 2>/dev/null || true
+    mv *.pdf *.csv *_summary.txt "${safe_dir}/" 2>/dev/null || true
     """
 }

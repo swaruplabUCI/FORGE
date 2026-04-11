@@ -859,7 +859,8 @@ workflow RNA {
                 ch_conditions,
                 cell_type_key,
                 params.cellchat.condition_key,
-                params.species
+                params.species,
+                file('NO_FILE')
             )
 
             CELLCHAT_COMPARE(
@@ -1610,6 +1611,7 @@ workflow MULTIOME_INTEGRATION {
     scanvi_predictions
     metadata_csv
     sample_map
+    atac_peak_matrix_annotated
 
     main:
     log.info """
@@ -1624,7 +1626,8 @@ workflow MULTIOME_INTEGRATION {
         atac_h5ad_files.flatten().collect(),
         scanvi_predictions,
         metadata_csv,
-        sample_map
+        sample_map,
+        atac_peak_matrix_annotated
     )
 
     // Export RNA modality from MuData for DORC / downstream use
@@ -2338,7 +2341,8 @@ workflow {
             ch_synced_atac,
             ch_integrated_rna,
             file(params.metadata_file),
-            ch_sample_map_file
+            ch_sample_map_file,
+            ch_atac_peak_matrix
         )
     } else if (params.run_multiome_integration && (!rna_completed || !atac_completed)) {
         log.warn """
