@@ -37,12 +37,13 @@ process SNAPATAC_DIFFERENTIAL {
     val cell_type
 
     output:
-    path "DA_peaks_${cell_type}__${treatment}_vs_${control}.csv", emit: da_peaks
-    path "plots_${cell_type}__${treatment}_vs_${control}/*", emit: plots, optional: true
+    path "DA_peaks_${safe_ct}__${treatment}_vs_${control}.csv", emit: da_peaks
+    path "plots_${safe_ct}__${treatment}_vs_${control}/*", emit: plots, optional: true
 
     script:
+    safe_ct = cell_type.replaceAll('[/ ]', '_')
     def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
-    def prefix = "${cell_type}__${treatment}_vs_${control}"
+    def prefix = "${safe_ct}__${treatment}_vs_${control}"
     """
     mkdir -p "plots_${prefix}"
 

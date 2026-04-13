@@ -9,7 +9,8 @@ process HDWGCNA_DIFFERENTIAL {
     label 'process_medium'
     container params.containers.r_seurat
 
-    publishDir "${params.outdir}/hdwgcna/differential/${cell_type}", mode: 'copy'
+    // FIX: sanitize cell_type for filesystem paths
+    publishDir "${params.outdir}/hdwgcna/differential/${cell_type_safe}", mode: 'copy'
 
     input:
     path seurat_rds
@@ -25,20 +26,21 @@ process HDWGCNA_DIFFERENTIAL {
     path "dme_plots/",                emit: dme_plots,           optional: true
     path "module_trait_*.pdf",        emit: module_trait_plots,   optional: true
     path "enrichment_results/",       emit: enrichment_results,  optional: true
-    path "hdwgcna_diff_${cell_type}.log", emit: log
+    path "hdwgcna_diff_${cell_type_safe}.log", emit: log
 
     script:
+    cell_type_safe = cell_type.replaceAll(/[\/\s\(\)]+/, '_')
     def traits_arg = traits ? "--traits ${traits}" : ""
     """
-    run_hdwgcna_differential.R \
-        --seurat_rds ${seurat_rds} \
-        --cell_type "${cell_type}" \
-        --cell_type_key ${cell_type_key} \
-        --condition_key ${condition_key} \
-        --control "${control_condition}" \
-        --treatment "${treatment_condition}" \
-        ${traits_arg} \
-        --output_prefix hdwgcna_diff 2>&1 | tee hdwgcna_diff_${cell_type}.log
+    run_hdwgcna_differential.R \\
+        --seurat_rds ${seurat_rds} \\
+        --cell_type "${cell_type}" \\
+        --cell_type_key ${cell_type_key} \\
+        --condition_key ${condition_key} \\
+        --control "${control_condition}" \\
+        --treatment "${treatment_condition}" \\
+        ${traits_arg} \\
+        --output_prefix hdwgcna_diff 2>&1 | tee "hdwgcna_diff_${cell_type_safe}.log"
     """
 }
 
@@ -47,7 +49,8 @@ process HDWGCNA_ENRICHMENT {
     label 'process_medium'
     container params.containers.r_seurat
 
-    publishDir "${params.outdir}/hdwgcna/enrichment/${cell_type}", mode: 'copy'
+    // FIX: sanitize cell_type for filesystem paths
+    publishDir "${params.outdir}/hdwgcna/enrichment/${cell_type_safe}", mode: 'copy'
 
     input:
     path seurat_rds
@@ -59,14 +62,15 @@ process HDWGCNA_ENRICHMENT {
     path "enrichr_results.csv",       emit: enrichr_table,      optional: true
     path "network_plots/",            emit: network_plots,      optional: true
     path "module_umap.pdf",           emit: module_umap,        optional: true
-    path "enrichment_${cell_type}.log", emit: log
+    path "enrichment_${cell_type_safe}.log", emit: log
 
     script:
+    cell_type_safe = cell_type.replaceAll(/[\/\s\(\)]+/, '_')
     """
-    run_hdwgcna_enrichment.R \
-        --seurat_rds ${seurat_rds} \
-        --cell_type "${cell_type}" \
-        --species ${species} \
-        --output_prefix enrichment 2>&1 | tee enrichment_${cell_type}.log
+    run_hdwgcna_enrichment.R \\
+        --seurat_rds ${seurat_rds} \\
+        --cell_type "${cell_type}" \\
+        --species ${species} \\
+        --output_prefix enrichment 2>&1 | tee "enrichment_${cell_type_safe}.log"
     """
 }

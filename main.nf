@@ -860,7 +860,7 @@ workflow RNA {
                 cell_type_key,
                 params.cellchat.condition_key,
                 params.species,
-                file('NO_FILE')
+                file(params.cellchat.group_mapping ?: 'NO_FILE')
             )
 
             CELLCHAT_COMPARE(
@@ -922,14 +922,10 @@ workflow RNA {
 
             def traits_str = params.hdwgcna.traits ? params.hdwgcna.traits.join(',') : ""
 
+            // FIX: .out.results is tuple(val(cell_type), path(rds)) — destructure properly
             HDWGCNA_DIFFERENTIAL(
-                HDWGCNA_PER_CELLTYPE.out.results,
-                HDWGCNA_PER_CELLTYPE.out.results
-                    .map { rds_file ->
-                        def basename = rds_file.baseName
-                        def ct = basename.replaceAll(/^hdwgcna_/, '')
-                        ct
-                    },
+                HDWGCNA_PER_CELLTYPE.out.results.map { ct, rds -> rds },
+                HDWGCNA_PER_CELLTYPE.out.results.map { ct, rds -> ct },
                 cell_type_key,
                 params.hdwgcna.condition_key,
                 params.hdwgcna.control_condition,

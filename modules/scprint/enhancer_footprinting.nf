@@ -9,8 +9,8 @@ process ENHANCER_FOOTPRINTING {
     tag "${cell_type}_${tf_name}"
     label 'process_high'
     maxForks 7
-    // FIX-43: Sanitize cell_type/tf_name — '/' in names creates unintended subdirectories
-    publishDir "${params.outdir}/enhancer_footprinting/footprints/${cell_type.replace('/', '_')}/${tf_name.replace('/', '_')}", mode: 'copy'
+    // FIX-43: Sanitize cell_type/tf_name — slashes/spaces/parens in names break filesystem paths
+    publishDir "${params.outdir}/enhancer_footprinting/footprints/${cell_type.replaceAll(/[\/\s\(\)]+/, '_')}/${tf_name.replaceAll(/[\/\s\(\)]+/, '_')}", mode: 'copy'
 
     input:
     path region_set_bed       // Per-TF BED file from MOTIF_SCAN_ENHANCERS or EXTRACT_EREGULON_REGIONS

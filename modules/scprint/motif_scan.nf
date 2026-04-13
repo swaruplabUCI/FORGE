@@ -1,6 +1,7 @@
 process SCPRINTER_MOTIF_SCAN {
     label 'process_high'
-    publishDir "${params.outdir}/scprinter/motifs/${cell_type}", mode: 'copy'
+    // FIX: sanitize cell_type for filesystem paths
+    publishDir "${params.outdir}/scprinter/motifs/${cell_type.replaceAll(/[\/\s\(\)]+/, '_')}", mode: 'copy'
 
     input:
     path peak_matrix

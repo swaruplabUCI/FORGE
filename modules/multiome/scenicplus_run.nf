@@ -62,6 +62,7 @@ process SCENICPLUS_RUN {
         --ctx-scores ${ctx_db_scores} \\
         --motif-annotations ${motif_annotations_tbl} \\
         --bc-transform "${bc_transform}" \\
+        --species ${params.scenicplus.species} \\
         --gtf ${params.scenicplus.gtf} \\
         --fai ${params.scenicplus.fai} \\
         --outdir .

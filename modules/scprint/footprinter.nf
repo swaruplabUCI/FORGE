@@ -32,8 +32,8 @@ process SCPRINTER_FOOTPRINTING {
     // + footprint computation buffers.  250 GB per node is sufficient.
     maxForks 7
 
-    // FIX-43: Sanitize cell_type — '/' in names creates unintended subdirectories
-    publishDir "${params.outdir}/scprinter/footprints/${cell_type.replace('/', '_')}", mode: 'copy'
+    // FIX-43: Sanitize cell_type — slashes/spaces/parens in names break filesystem paths
+    publishDir "${params.outdir}/scprinter/footprints/${cell_type.replaceAll(/[\/\s\(\)]+/, '_')}", mode: 'copy'
 
     input:
     path peak_matrix

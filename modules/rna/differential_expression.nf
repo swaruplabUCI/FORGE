@@ -72,9 +72,11 @@ process RUN_MAST_DE {
     tuple val(cell_type), val(group1), val(group2)
     
     output:
-    path "${cell_type}_${group1}_vs_${group2}_DEResults.csv", emit: de_results
-    
+    // FIX: R script sanitizes cell type (spaces/slashes → underscores), match that here
+    path "${safe_ct}_${group1}_vs_${group2}_DEResults.csv", emit: de_results
+
     script:
+    safe_ct = cell_type.replaceAll(/[\/\s]+/, '_')
     """
     Rscript ${projectDir}/bin/run_mast_de.R \\
         --input ${seurat_rds} \\
@@ -100,9 +102,10 @@ process CREATE_VOLCANO_PLOTS {
     
     script:
     def safe_name = de_results.name.replaceAll(/[^a-zA-Z0-9_.\-]/, '_')
+    def ln_cmd = (safe_name != de_results.name) ? "ln -sf '${de_results}' '${safe_name}'" : "true"
     """
-    # Symlink to safe filename to avoid shell quoting issues with colons/spaces
-    ln -sf ${de_results} "${safe_name}"
+    # Symlink to safe filename only if names differ (avoid self-referencing symlink)
+    ${ln_cmd}
 
     Rscript ${projectDir}/bin/create_volcano_plots.R \\
         --input "${safe_name}" \\
@@ -115,6 +118,7 @@ process CREATE_VOLCANO_PLOTS {
 
 process RUN_GO_ENRICHMENT {
     label 'process_medium'
+    maxForks 3  // Throttle to avoid EnrichR API rate limit (429)
     publishDir "${params.outdir}/rna_differential/go_enrichment", mode: 'copy'
 
     input:
@@ -126,9 +130,10 @@ process RUN_GO_ENRICHMENT {
     script:
     safe_name = de_results.name.replaceAll(/[^a-zA-Z0-9_.\-]/, '_')
     safe_dir = de_results.baseName.replaceAll(/[^a-zA-Z0-9_.\-]/, '_')
+    ln_cmd = (safe_name != de_results.name) ? "ln -sf '${de_results}' '${safe_name}'" : "true"
     """
-    # Symlink to safe filename to avoid shell quoting issues with colons/spaces
-    ln -sf ${de_results} "${safe_name}"
+    # Symlink to safe filename only if names differ (avoid self-referencing symlink)
+    ${ln_cmd}
     mkdir -p "${safe_dir}"
 
     Rscript ${projectDir}/bin/go_enrichment_single.R "${safe_name}"
