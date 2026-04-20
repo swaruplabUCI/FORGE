@@ -647,76 +647,86 @@ def main():
             ]
             subprocess.check_call(cmd)
 
-    # Barcode-level QC via CLI
-    # Use first sample's fragments file (args.fragments may be None in multi-sample mode)
-    first_sample_id = list(path_to_fragments.keys())[0]
-    qc_fragments_path = path_to_fragments[first_sample_id]
-    logger.info("Running pycistopic qc on fragments (barcode-level metrics) using sample '%s': %s",
-                first_sample_id, qc_fragments_path)
-    qc_prefix = os.path.join(qc_outdir, "sample")
-    # TSS BED now matches the canonical 7-column pycisTopic format
-    # (# Chromosome, Start, End, Gene, Score, Strand, Transcript_type)
-    # so no monkey-patching is needed.
-    cmd_qc = [
-        "pycistopic",
-        "qc",
-        "--fragments",
-        qc_fragments_path,
-        "--regions",
-        consensus_bed_path,
-        "--tss",
-        tss_bed,
-        "--output",
-        qc_prefix,
-    ]
-    subprocess.check_call(cmd_qc)
-
-    # Get barcodes passing QC
+    # Barcode-level QC via CLI — iterate over ALL samples
     from pycisTopic.qc import get_barcodes_passing_qc_for_sample
 
-    # The QC output prefix is "sample" (from --output qc/sample), so
-    # get_barcodes_passing_qc_for_sample expects sample_id="sample" to
-    # find sample.fragments_stats_per_cb.parquet.  But path_to_fragments
-    # uses the real sample ID (e.g. '10k_PBMC').
-    qc_prefix = "sample"
-    sample_id = first_sample_id  # real sample ID for fragments lookup
-    bc_passing, thresholds = get_barcodes_passing_qc_for_sample(
-        sample_id=qc_prefix,
-        pycistopic_qc_output_dir=qc_outdir,
-        unique_fragments_threshold=None,
-        tss_enrichment_threshold=None,
-        frip_threshold=0,
-        use_automatic_thresholds=True,
-    )
+    sample_ids = list(path_to_fragments.keys())
+    logger.info(f"Running barcode-level QC for {len(sample_ids)} samples...")
 
-    logger.info(f"{sample_id}: {len(bc_passing)} barcodes passing QC")
+    cistopic_objects = []
+    total_cells = 0
+    for sid in sample_ids:
+        frag_path = path_to_fragments[sid]
+        logger.info(f"Running pycistopic qc on fragments (barcode-level metrics) using sample '{sid}': {frag_path}")
 
-    # Create cisTopic object
-    logger.info("Creating cisTopic object from fragments...")
-    sample_metrics = (
-        pl.read_parquet(os.path.join(qc_outdir, f"{qc_prefix}.fragments_stats_per_cb.parquet"))
-        .to_pandas()
-        .set_index("CB")
-        .loc[bc_passing]
-    )
+        # QC output per sample to avoid overwriting
+        sample_qc_prefix = os.path.join(qc_outdir, sid)
+        cmd_qc = [
+            "pycistopic",
+            "qc",
+            "--fragments",
+            frag_path,
+            "--regions",
+            consensus_bed_path,
+            "--tss",
+            tss_bed,
+            "--output",
+            sample_qc_prefix,
+        ]
+        subprocess.check_call(cmd_qc)
 
-    # Use the appropriate fragments file for this sample_id from path_to_fragments
-    if sample_id not in path_to_fragments:
-        raise ValueError(
-            f"Sample_id '{sample_id}' used for QC is not present in path_to_fragments. "
-            f"Available keys: {list(path_to_fragments.keys())[:10]}"
+        bc_passing, thresholds = get_barcodes_passing_qc_for_sample(
+            sample_id=sid,
+            pycistopic_qc_output_dir=qc_outdir,
+            unique_fragments_threshold=None,
+            tss_enrichment_threshold=None,
+            frip_threshold=0,
+            use_automatic_thresholds=True,
         )
 
-    cistopic_obj = create_cistopic_object_from_fragments(
-        path_to_fragments=path_to_fragments[sample_id],
-        path_to_regions=consensus_bed_path,
-        path_to_blacklist=path_to_blacklist,
-        metrics=sample_metrics,
-        valid_bc=bc_passing,
-        n_cpu=1,
-        project=sample_id,
-        split_pattern="-",
-    )
+        logger.info(f"  {sid}: {len(bc_passing)} barcodes passing QC")
+
+        if len(bc_passing) == 0:
+            logger.warning(f"  {sid}: 0 barcodes passing QC — skipping")
+            continue
+
+        sample_metrics = (
+            pl.read_parquet(os.path.join(qc_outdir, f"{sid}.fragments_stats_per_cb.parquet"))
+            .to_pandas()
+            .set_index("CB")
+            .loc[bc_passing]
+        )
+
+        obj = create_cistopic_object_from_fragments(
+            path_to_fragments=frag_path,
+            path_to_regions=consensus_bed_path,
+            path_to_blacklist=path_to_blacklist,
+            metrics=sample_metrics,
+            valid_bc=bc_passing,
+            n_cpu=1,
+            project=sid,
+            split_pattern="-",
+        )
+        cistopic_objects.append(obj)
+        total_cells += len(bc_passing)
+        logger.info(f"  {sid}: created cisTopic object with {len(obj.cell_names)} cells")
+
+    if len(cistopic_objects) == 0:
+        raise ValueError("No samples produced cells passing QC — cannot proceed.")
+
+    # Merge per-sample cisTopic objects
+    if len(cistopic_objects) == 1:
+        cistopic_obj = cistopic_objects[0]
+        logger.info(f"Single sample — {len(cistopic_obj.cell_names)} cells total")
+    else:
+        cistopic_obj = cistopic_objects[0].merge(
+            cistopic_objects[1:],
+            is_acc=1,
+            project="merged",
+            copy=True,
+            split_pattern="-",
+        )
+        logger.info(f"Merged {len(cistopic_objects)} samples — {len(cistopic_obj.cell_names)} cells total")
 
     # Merge cell type annotations into cistopic_obj.cell_data
     # create_cistopic_object_from_fragments builds cell_data from fragment metrics

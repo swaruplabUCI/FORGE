@@ -93,9 +93,10 @@ if (is.null(de_results)) {
 de_results$gene <- rownames(de_results)
 
 # Save results
+safe_cell_type <- gsub("[/ ]+", "_", opt$cell_type)
 output_file <- file.path(
   opt$output_dir,
-  paste0(opt$cell_type, "_", opt$group1, "_vs_", opt$group2, "_DEResults.csv")
+  paste0(safe_cell_type, "_", opt$group1, "_vs_", opt$group2, "_DEResults.csv")
 )
 
 cat("\nSaving results to:", output_file, "\n")

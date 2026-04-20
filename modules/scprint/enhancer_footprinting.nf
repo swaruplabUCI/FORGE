@@ -38,15 +38,23 @@ process ENHANCER_FOOTPRINTING {
     mkdir -p "\${_XDG}"
     [ ! -e "\${_XDG}/scprinter" ] && ln -s '${params.scprinter.cache_dir}' "\${_XDG}/scprinter" || true
 
+    # Route heavy I/O (printer copy + scPRINTER's backed supp store +
+    # peak matrix copy) to node-local scratch. Per-task DFS writes reached
+    # ~100 GB (supp store) + ~2 GB (printer copy); TMPDIR is node-local and
+    # auto-cleaned by SLURM on job exit.
+    SCRATCH="\${TMPDIR:-/tmp}/fp_\${SLURM_JOB_ID:-\$\$}"
+    mkdir -p "\${SCRATCH}"
+    trap 'rm -rf "\${SCRATCH}"' EXIT
+
     # Local copy of printer — source is read-only to prevent corruption,
     # but Rust anndata backend requires read-write access
-    PRINTER_LOCAL="printer_local_copy.h5ad"
+    PRINTER_LOCAL="\${SCRATCH}/printer_local_copy.h5ad"
     cp -L '${printer}' "\${PRINTER_LOCAL}"
     chmod u+w "\${PRINTER_LOCAL}"
 
     # FIX-75: Local copy of peak matrix — multiple tasks read the same file
     # concurrently on NFS, causing HDF5 locking errors (errno 11)
-    PEAK_LOCAL="peak_matrix_local_copy.h5ad"
+    PEAK_LOCAL="\${SCRATCH}/peak_matrix_local_copy.h5ad"
     cp -L '${peak_matrix}' "\${PEAK_LOCAL}"
     chmod u+w "\${PEAK_LOCAL}"
 
@@ -60,7 +68,7 @@ process ENHANCER_FOOTPRINTING {
         --genome '${params.scprinter.genome}' \\
         --cpus ${task.cpus} \\
         --pfm-path '${params.scprinter.pfms}' \\
-        --gtf '${params.scprinter.gtf_human}' \\
+        --gtf '${params.species == "mouse" ? params.scprinter.gtf_mouse : params.scprinter.gtf_human}' \\
         --cicero-connections '${cicero_connections}' \\
         --cell-type-col '${cell_type_col}'
     """

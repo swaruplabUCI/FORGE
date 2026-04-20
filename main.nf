@@ -63,7 +63,6 @@ include { ATAC_FINAL_PIPELINE } from './modules/atac/consolidated_pipeline'
 
 // Cell-type annotation for ATAC
 include { ATAC_CELLTYPE_ANNOTATION } from './modules/atac/celltype_annotation'
-include { ATAC_CELLTYPIST } from './modules/atac/atac_celltypist'
 include { ATAC_SCATANNO } from './modules/atac/atac_scatanno'
 include { MERGE_ANNOTATIONS } from './modules/atac/merge_annotations'
 
@@ -77,7 +76,9 @@ include { SNAPATAC_DIFFERENTIAL } from './modules/atac/snapatac_diff'
 
 // Cicero modules
 include { CICERO_TRIPLETS } from './modules/cicero/cicero_triplets'
-include { CICERO_FULL } from './modules/cicero/cicero_full'
+include { CICERO_ESTIMATE_DP } from './modules/cicero/cicero_estimate_dp'
+include { CICERO_FULL_CHROM  } from './modules/cicero/cicero_full_chrom'
+include { CICERO_JOIN        } from './modules/cicero/cicero_join'
 include { CICERO_TARGET_PLOTS } from './modules/cicero/cicero_target_plots'
 
 // ChromVAR modules
@@ -114,6 +115,12 @@ include { CONVERT_CELLISMO; CONCAT_CELLISMO } from './modules/multiome/convert_c
 // MultiVI integration
 include { MULTIVI_INTEGRATE } from './modules/multiome/multivi_integrate'
 include { MULTIVI_VISUALIZE } from './modules/multiome/multivi_visualize'
+
+// MultiVI downstream analysis
+include { MULTIVI_MASKING_SWEEP_ONE; MULTIVI_MASKING_SWEEP_AGGREGATE } from './modules/multiome/multivi_masking_sweep'
+include { MULTIVI_DRIVER_FACTORS } from './modules/multiome/multivi_driver_factors'
+include { MULTIVI_GAP_FILL } from './modules/multiome/multivi_gap_fill'
+include { MULTIVI_VALIDATE } from './modules/multiome/multivi_validate'
 
 // ============================================================================
 // PYcistopic / SCENIC+ / DORC MODULES
@@ -153,7 +160,11 @@ include { COMPOSITE_ENHANCER_VIZ      } from './modules/visualization/enhancer_v
 // ============================================================================
 def has_reference = (params.species == 'human' && params.ref_dir_human_integrated) ||
                     (params.species == 'mouse' && params.ref_dir_mouse_integrated)
-def cell_type_key = has_reference ? 'scanvi_prediction' : 'celltypist_prediction'
+// Unified canonical cell-type column. BUILD_MUDATA and PLOT_POST_SCANVI write
+// 'cell_type' by precedence (scanvi > celltypist > marker) and stamp provenance
+// in 'cell_type_source'. Downstream modules use this single key regardless of
+// which annotation tool ran.
+def cell_type_key = 'cell_type'
 
 // ATAC cell type column: depends on annotation mode
 // marker_file → 'cell_type', scATAnno → 'cell_type_prediction', CellTypist → 'celltypist_prediction'
@@ -1176,18 +1187,7 @@ workflow ATAC_FINAL {
             )
             peak_matrix_annotated = MERGE_ANNOTATIONS.out.peak_matrix
         } else {
-            // Default mode: CellTypist on gene activity → 'celltypist_prediction' column
-            log.info "ATAC annotation: CellTypist on gene activity scores (default mode)"
-            ATAC_CELLTYPIST(
-                ATAC_FINAL_PIPELINE.out.gene_matrix
-            )
-            MERGE_ANNOTATIONS(
-                ATAC_FINAL_PIPELINE.out.peak_matrix,
-                ATAC_CELLTYPIST.out.annotated_gene_matrix,
-                file(params.atac.sample_metadata),
-                'celltypist'
-            )
-            peak_matrix_annotated = MERGE_ANNOTATIONS.out.peak_matrix
+            error "ATAC auto_annotate is enabled but no annotation method was selected. Set params.atac.marker_file for super-user marker mode, or params.atac.annotation_method = 'scatanno' for reference-based annotation. ATAC_CELLTYPIST on gene activity has been removed — use scATAnno instead."
         }
     } else {
         peak_matrix_annotated = ATAC_FINAL_PIPELINE.out.peak_matrix
@@ -1291,24 +1291,38 @@ workflow REGULATORY_ANALYSIS {
     // PARALLEL LEG A: Cicero Co-Accessibility (genome-wide)
     // ================================================================
     if (params.cicero.run) {
-        log.info "Running Cicero co-accessibility network analysis..."
+        log.info "Running Cicero co-accessibility network analysis (per-chrom fan-out)..."
 
         CICERO_TRIPLETS(peak_matrix)
 
-        def sample_num = params.cicero.sample_num ?: 100
+        // Phase 3 rewrite: global distance_parameter -> per-chrom run_cicero -> rbind.
+        // Validated rho=1.0 vs single-process baseline in tests/cicero_parallel_test/.
+        CICERO_ESTIMATE_DP(CICERO_TRIPLETS.out.triplets)
 
-        CICERO_FULL(
-            CICERO_TRIPLETS.out.triplets,
-            params.cicero.gtf_full,
-            sample_num
+        // Mouse: chr1..19 + X/Y/M; human: chr1..22 + X/Y/M. chrUn_* excluded
+        // upstream in the R scripts.
+        def cicero_chroms = (params.species == 'mouse' ? (1..19) : (1..22))
+                                .collect { "chr${it}" } + ['chrX', 'chrY', 'chrM']
+        chroms_ch = Channel.fromList(cicero_chroms)
+
+        per_chrom_in = chroms_ch
+            .combine(CICERO_ESTIMATE_DP.out.cicero_cds)
+            .combine(CICERO_ESTIMATE_DP.out.gene_ann)
+            .combine(CICERO_ESTIMATE_DP.out.dp)
+        CICERO_FULL_CHROM(per_chrom_in)
+
+        CICERO_JOIN(
+            CICERO_FULL_CHROM.out.chrom_conns.map { it[1] }.collect(),
+            CICERO_ESTIMATE_DP.out.ordered_cds,
+            params.cicero.gtf_full
         )
 
         if (!use_chromvar_for_cicero && params.cicero.target_genes && !params.cicero.target_genes.isEmpty()) {
             log.info "Rendering Cicero target plots with static gene list: ${params.cicero.target_genes}"
             CICERO_TARGET_PLOTS(
-                CICERO_FULL.out.connections,
-                CICERO_FULL.out.ccan,
-                CICERO_FULL.out.cds,
+                CICERO_JOIN.out.connections,
+                CICERO_JOIN.out.ccan,
+                CICERO_JOIN.out.cds,
                 params.cicero.gtf_plot,
                 params.cicero.target_genes
             )
@@ -1368,9 +1382,9 @@ workflow REGULATORY_ANALYSIS {
             }
 
         CICERO_TARGET_PLOTS(
-            CICERO_FULL.out.connections,
-            CICERO_FULL.out.ccan,
-            CICERO_FULL.out.cds,
+            CICERO_JOIN.out.connections,
+            CICERO_JOIN.out.ccan,
+            CICERO_JOIN.out.cds,
             params.cicero.gtf_plot,
             ch_chromvar_target_genes
         )
@@ -1416,7 +1430,7 @@ workflow REGULATORY_ANALYSIS {
             MAP_TF_TO_TARGET_GENES(
                 GPU_CHROMVAR.out.chromvar_raw,
                 EXTRACT_CHROMVAR_MOTIFS.out.motif_list,
-                CICERO_FULL.out.ccan,
+                CICERO_JOIN.out.ccan,
                 tf_map_gtf
             )
 
@@ -1453,7 +1467,7 @@ workflow REGULATORY_ANALYSIS {
             log.info "Fan-out footprinting at TF target gene promoters..."
 
             def cicero_conns_for_fp = params.cicero.run ?
-                CICERO_FULL.out.connections.ifEmpty(file('NO_FILE')) :
+                CICERO_JOIN.out.connections.ifEmpty(file('NO_FILE')) :
                 Channel.value(file('NO_FILE'))
             def pfm_for_fp = params.scprinter.pfms ?
                 Channel.value(file(params.scprinter.pfms)) :
@@ -1584,8 +1598,8 @@ workflow REGULATORY_ANALYSIS {
     // EMIT
     // ================================================================
     emit:
-    cicero_connections   = params.cicero.run ? CICERO_FULL.out.connections : Channel.empty()
-    cicero_ccan          = params.cicero.run ? CICERO_FULL.out.ccan : Channel.empty()
+    cicero_connections   = params.cicero.run ? CICERO_JOIN.out.connections : Channel.empty()
+    cicero_ccan          = params.cicero.run ? CICERO_JOIN.out.ccan : Channel.empty()
     chromvar_deviations  = params.chromvar.run ? GPU_CHROMVAR.out.chromvar_dev : Channel.empty()
     chromvar_per_ct      = (is_discovery_mode && params.chromvar.run && params.scprinter.run) ?
         EXTRACT_CHROMVAR_MOTIFS.out.motif_list : Channel.empty()
@@ -1708,6 +1722,59 @@ workflow MULTIOME_INTEGRATION {
             MULTIVI_INTEGRATE.out.integrated,
             MULTIVI_INTEGRATE.out.model
         )
+
+        // Step 3b: MultiVI masking sweep (parallel with driver factors)
+        // Fan out (fraction, seed) pairs into independent tasks so each MultiVI
+        // fit runs in a fresh Python process — the scvi-tools host-RAM leak
+        // cannot accumulate across fits this way. AGGREGATE joins the per-fit
+        // outputs into the canonical results CSV + summary JSON + plots.
+        if (params.multivi.masking_sweep.run) {
+            log.info "Running MultiVI masking sweep benchmark (fan-out)..."
+            masking_fractions = params.multivi.masking_sweep.fractions.toString().tokenize(',').collect { it.trim() }
+            masking_seeds     = params.multivi.masking_sweep.seeds.toString().tokenize(',').collect { it.trim() }
+            masking_sweep_ch  = Channel.fromList(masking_fractions)
+                                       .combine(Channel.fromList(masking_seeds))
+                                       .combine(BUILD_MUDATA.out.mudata)
+            MULTIVI_MASKING_SWEEP_ONE(masking_sweep_ch)
+            masking_fit_outputs = MULTIVI_MASKING_SWEEP_ONE.out.rna
+                .mix(MULTIVI_MASKING_SWEEP_ONE.out.atac)
+                .mix(MULTIVI_MASKING_SWEEP_ONE.out.integration)
+                .collect()
+            MULTIVI_MASKING_SWEEP_AGGREGATE(masking_fit_outputs)
+        }
+
+        // Step 3c: MultiVI driver factor analysis
+        if (params.multivi.driver_factors.run) {
+            log.info "Running MultiVI driver factor analysis..."
+            // Pass MOFA-integrated MuData for comparison if available
+            def mofa_input = (params.mofa.run && params.multivi.driver_factors.compare_mofa) ?
+                MOFA_VISUALIZE.out.integrated_mudata : Channel.fromPath("NO_MOFA")
+            MULTIVI_DRIVER_FACTORS(
+                MULTIVI_INTEGRATE.out.integrated,
+                MULTIVI_INTEGRATE.out.model,
+                mofa_input
+            )
+        }
+
+        // Step 3d: MultiVI gap-filling
+        // Uses the pre-intersection RNA (concatenated) and ATAC (peak matrix)
+        // to identify cells lost during BUILD_MUDATA inner join
+        if (params.multivi.gap_fill.run) {
+            log.info "Running MultiVI gap-filling for QC-filtered cells..."
+            MULTIVI_GAP_FILL(
+                BUILD_MUDATA.out.mudata,
+                Channel.fromPath(params.multivi.gap_fill.rna_h5ad),
+                Channel.fromPath(params.multivi.gap_fill.atac_h5ad)
+            )
+
+            // Step 3e: Biological validation of gap-filled cells
+            log.info "Validating gap-filled cells..."
+            MULTIVI_VALIDATE(
+                MULTIVI_GAP_FILL.out.gap_filled,
+                Channel.fromPath(params.multivi.gap_fill.rna_h5ad),
+                Channel.fromPath(params.multivi.gap_fill.atac_h5ad)
+            )
+        }
 
     } else {
         log.info "Skipping MultiVI integration (disabled in config)"

@@ -1243,7 +1243,7 @@ def main():
             modes=np.arange(2, 101),
             n_jobs=args.cpus,
             save_key=save_key_fp,
-            backed=False,
+            backed=True,
             overwrite=True,
         )
     except Exception as e:
@@ -1252,14 +1252,38 @@ def main():
     fp_saved = False
     if hasattr(printer, 'footprintsadata') and save_key_fp in printer.footprintsadata:
         fp_data = printer.footprintsadata[save_key_fp]
+        # scPRINTER stores the multi-scale footprint tensor in obsm (one
+        # [n_groups x n_scales x n_positions] array per region); X is empty.
+        # Persisting the full obsm is ~100 GB per pair and downstream consumers
+        # (cross_modal_validation.py, signal_chain_correlation.py) only compute
+        # np.nanmean(X, axis=1) — which on the current empty-X h5ad silently
+        # returns zeros/NaN. Reduce obsm to a [n_groups x n_regions] per-region
+        # mean in X: ~1 MB on disk, meaningful per-group mean footprint scores.
+        n_groups = fp_data.n_obs
+        var_names_list = list(fp_data.var_names)
+        n_regions = len(var_names_list)
+        summary_X = np.zeros((n_groups, n_regions), dtype=np.float32)
+        obsm_keys = set(fp_data.obsm.keys()) if hasattr(fp_data, 'obsm') else set()
+        missing = 0
+        for j, region_key in enumerate(var_names_list):
+            if region_key in obsm_keys:
+                tensor = np.asarray(fp_data.obsm[region_key])
+                summary_X[:, j] = np.nanmean(tensor, axis=(1, 2)).astype(np.float32)
+            else:
+                missing += 1
+        if missing:
+            print(f"  WARNING: {missing}/{n_regions} regions missing in obsm (left as 0)")
+        summary_ad = ad.AnnData(
+            X=summary_X,
+            obs=pd.DataFrame(index=list(fp_data.obs_names)),
+            var=pd.DataFrame(index=var_names_list),
+            uns={'summary_version': 'region_group_mean_v1', 'cell_type': ct, 'tf': tf},
+        )
         fp_h5ad = f"enhancer_footprints_{safe_ct}_{safe_tf}.h5ad"
-        try:
-            fp_data = fp_data.copy()
-        except Exception:
-            pass
-        fp_data.write(fp_h5ad)
+        summary_ad.write(fp_h5ad, compression='gzip')
         fp_saved = True
-        print(f"  Saved footprints to {fp_h5ad}")
+        print(f"  Saved region-group mean footprint summary to {fp_h5ad} "
+              f"(shape={summary_X.shape}, {summary_ad.X.nbytes/1024:.1f} KB)")
 
     # FIX-96: Compute promoter footprints/binding scores SEPARATELY
     # (different region width than enhancers — scPRINTER requires uniform shapes)
@@ -1282,7 +1306,7 @@ def main():
             scp.tl.get_footprint_score(
                 printer, grouping, uniq_groups, promoter_df,
                 modes=np.arange(2, 101), n_jobs=args.cpus,
-                save_key=save_key_fp_promo, backed=False, overwrite=True,
+                save_key=save_key_fp_promo, backed=True, overwrite=True,
             )
             print(f"  [OK] Promoter footprints computed")
         except Exception as e:
@@ -1518,11 +1542,13 @@ def main():
             try:
                 # Create condition-specific groupings
                 adata_ct = ad.read_h5ad(args.peak_matrix)
-                if 'condition' in adata_ct.obs.columns:
+                _cond_col = next((c for c in ["condition", "condition_group"]
+                                  if c in adata_ct.obs.columns), None)
+                if _cond_col is not None:
                     ctrl_mask = (adata_ct.obs[ct_col] == ct) & (
-                        adata_ct.obs['condition'].astype(str) == args.control_condition)
+                        adata_ct.obs[_cond_col].astype(str) == args.control_condition)
                     trt_mask = (adata_ct.obs[ct_col] == ct) & (
-                        adata_ct.obs['condition'].astype(str) == args.treatment_condition)
+                        adata_ct.obs[_cond_col].astype(str) == args.treatment_condition)
 
                     bc_strategy = detect_barcode_strategy(
                         adata_ct.obs_names.astype(str), set(map(str, printer.obs_names)))

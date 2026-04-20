@@ -65,22 +65,43 @@ wrapText <- function(x, len) {
   sapply(x, function(y) paste(strwrap(y, len), collapse = "\n"), USE.NAMES = FALSE)
 }
 
-# Function to run enrichR analysis
-run_enrichr_analysis <- function(gene_list, output_prefix, title_prefix) {
+# Function to run enrichR analysis with retry on rate limit
+run_enrichr_analysis <- function(gene_list, output_prefix, title_prefix, max_retries = 3) {
   if(length(gene_list) == 0) {
     cat("No genes for", title_prefix, "- skipping\n")
     return(NULL)
   }
-  
-  # Run enrichR
-  enriched <- enrichr(gene_list, ENRICHR_DBS)
-  
+
+  # Run enrichR with retry on rate limit (429)
+  enriched <- NULL
+  for (attempt in 1:max_retries) {
+    enriched <- tryCatch(enrichr(gene_list, ENRICHR_DBS), error = function(e) NULL)
+    # Check if result looks valid (has expected columns)
+    if (!is.null(enriched) && length(enriched) > 0 &&
+        "Adjusted.P.value" %in% colnames(enriched[[1]])) {
+      break
+    }
+    cat(sprintf("  EnrichR attempt %d/%d returned malformed results, retrying in %ds...\n",
+                attempt, max_retries, attempt * 30))
+    Sys.sleep(attempt * 30)
+  }
+
+  # Final validation — if still malformed, write summary and exit gracefully
+  if (is.null(enriched) || length(enriched) == 0 ||
+      !"Adjusted.P.value" %in% colnames(enriched[[1]])) {
+    cat("  WARNING: EnrichR API returned invalid results after", max_retries,
+        "attempts — skipping", title_prefix, "\n")
+    writeLines(paste("EnrichR failed for", title_prefix, "- API rate limit or unavailable"),
+               file.path(output_dir, paste0(output_prefix, "_summary.txt")))
+    return(NULL)
+  }
+
   # Save results
   for(i in seq_along(ENRICHR_DBS)) {
-    if(nrow(enriched[[i]]) > 0) {
+    if(nrow(enriched[[i]]) > 0 && "Adjusted.P.value" %in% colnames(enriched[[i]])) {
       significant_results <- enriched[[i]] %>%
         filter(Adjusted.P.value < P_VALUE_CUTOFF)
-      
+
       if(nrow(significant_results) > 0) {
         db_name <- gsub("[^a-zA-Z0-9]", "_", ENRICHR_DBS[i])
         csv_file <- file.path(output_dir, paste0(output_prefix, "_", db_name, ".csv"))
@@ -88,15 +109,16 @@ run_enrichr_analysis <- function(gene_list, output_prefix, title_prefix) {
       }
     }
   }
-  
+
   # Create plots
   pdf_file <- file.path(output_dir, paste0(output_prefix, "_enrichment.pdf"))
   pdf(pdf_file, width = ENRICHMENT_PLOT_WIDTH, height = ENRICHMENT_PLOT_HEIGHT)
-  
+
   par(mfrow=c(3,1), mar=c(2,22,2,2))
-  
+
   for(i in seq_along(ENRICHR_DBS)) {
     db_name <- ENRICHR_DBS[i]
+    if (!"Adjusted.P.value" %in% colnames(enriched[[i]])) next
     significant_results <- enriched[[i]] %>% filter(Adjusted.P.value < P_VALUE_CUTOFF)
     
     if(nrow(significant_results) > 0) {

@@ -17,13 +17,16 @@
 
 suppressPackageStartupMessages({
     library(CellChat)
-    library(Seurat)
     library(zellkonverter)
     library(SingleCellExperiment)
+    library(Matrix)
     library(patchwork)
     library(ggplot2)
     library(optparse)
 })
+
+## Match run_cellchat.R: allow large globals for future (CellChat parallelization)
+options(future.globals.maxSize = +Inf)
 
 # --- CLI args ---------------------------------------------------------------
 option_list <- list(
@@ -44,70 +47,76 @@ dir.create(opts$output_dir, recursive = TRUE, showWarnings = FALSE)
 # --- Load & subset ----------------------------------------------------------
 cat("Loading h5ad via zellkonverter...\n")
 
-# Read h5ad as SingleCellExperiment, then convert to Seurat
+# Read h5ad as SingleCellExperiment (no Seurat conversion — matches run_cellchat.R)
 sce <- readH5AD(opts$h5ad)
-seurat_obj <- as.Seurat(sce, counts = "X", data = NULL)
+meta <- as.data.frame(colData(sce))
 
-cat(sprintf("Total cells: %d\n", ncol(seurat_obj)))
+cat(sprintf("Total cells: %d\n", ncol(sce)))
 
 # FIX-46: If condition_key column is missing, merge from group_mapping JSON
-if (!opts$condition_key %in% colnames(seurat_obj@meta.data)) {
+if (!opts$condition_key %in% colnames(meta)) {
     if (is.null(opts$group_mapping) || !file.exists(opts$group_mapping)) {
         stop(sprintf("Column '%s' not found in h5ad and no --group_mapping provided.",
                      opts$condition_key))
     }
     cat(sprintf("Column '%s' not found — merging from group_mapping JSON...\n", opts$condition_key))
     mapping <- jsonlite::fromJSON(opts$group_mapping)
-    sample_col <- if ("sample" %in% colnames(seurat_obj@meta.data)) "sample"
-                  else if ("sample_id" %in% colnames(seurat_obj@meta.data)) "sample_id"
-                  else if ("batch" %in% colnames(seurat_obj@meta.data)) "batch"
+    sample_col <- if ("sample" %in% colnames(meta)) "sample"
+                  else if ("sample_id" %in% colnames(meta)) "sample_id"
+                  else if ("batch" %in% colnames(meta)) "batch"
                   else stop("Cannot find sample/sample_id/batch column to join group mapping")
-    seurat_obj@meta.data[[opts$condition_key]] <- mapping[seurat_obj@meta.data[[sample_col]]]
-    assigned <- sum(!is.na(seurat_obj@meta.data[[opts$condition_key]]))
-    cat(sprintf("  Mapped %d/%d cells via '%s' column\n", assigned, ncol(seurat_obj), sample_col))
+    meta[[opts$condition_key]] <- mapping[meta[[sample_col]]]
+    assigned <- sum(!is.na(meta[[opts$condition_key]]))
+    cat(sprintf("  Mapped %d/%d cells via '%s' column\n", assigned, ncol(sce), sample_col))
 }
 
 cat(sprintf("Subsetting to condition: %s (key: %s)\n", opts$condition, opts$condition_key))
 
 # Subset to the requested condition
-cells_keep <- which(seurat_obj@meta.data[[opts$condition_key]] == opts$condition)
+cells_keep <- which(meta[[opts$condition_key]] == opts$condition)
 if (length(cells_keep) < 50) {
     stop(sprintf("Too few cells (%d) for condition '%s'. Minimum 50 required.",
                  length(cells_keep), opts$condition))
 }
-seurat_sub <- subset(seurat_obj, cells = colnames(seurat_obj)[cells_keep])
-cat(sprintf("Cells after subsetting: %d\n", ncol(seurat_sub)))
+sce_sub <- sce[, cells_keep]
+meta <- meta[cells_keep, , drop = FALSE]
+meta[[opts$cell_type_key]] <- droplevels(factor(meta[[opts$cell_type_key]]))
+cat(sprintf("Cells after subsetting: %d\n", ncol(sce_sub)))
+
+# --- Extract expression data (matches run_cellchat.R pattern) ----------------
+if ("scvi_normalized" %in% assayNames(sce_sub)) {
+    data.input <- assay(sce_sub, "scvi_normalized")
+} else if ("X" %in% assayNames(sce_sub)) {
+    counts <- assay(sce_sub, "X")
+    library.size <- Matrix::colSums(counts)
+    data.input <- log1p(Matrix::t(Matrix::t(counts) / library.size) * 10000)
+} else {
+    stop("Cannot find appropriate expression matrix in h5ad")
+}
 
 # --- Create CellChat object -------------------------------------------------
 cat("Creating CellChat object...\n")
-
-# Set cell type identities
-Idents(seurat_sub) <- seurat_sub@meta.data[[opts$cell_type_key]]
-
-# Get normalized data
-data.input <- GetAssayData(seurat_sub, assay = "RNA", slot = "data")
-meta <- seurat_sub@meta.data
 
 # Create CellChat object
 cellchat <- createCellChat(object = data.input, meta = meta,
                            group.by = opts$cell_type_key)
 
-# Set the L-R database
+# Set the L-R database (matches run_cellchat.R — full DB, not subset)
 if (opts$species == "human") {
     CellChatDB <- CellChatDB.human
 } else {
     CellChatDB <- CellChatDB.mouse
 }
+cellchat@DB <- CellChatDB
 
-# Use Secreted Signaling subset (most relevant for brain tissue)
-CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
-cellchat@DB <- CellChatDB.use
-
-# --- Core L-R inference pipeline --------------------------------------------
+# --- Core L-R inference pipeline (matches run_cellchat.R) -------------------
 cat("Running CellChat L-R inference...\n")
 
 cellchat <- subsetData(cellchat)
-cellchat <- identifyOverExpressedGenes(cellchat)
+
+future::plan("multisession", workers = 4)
+
+cellchat <- identifyOverExpressedGenes(cellchat, do.fast = FALSE)
 cellchat <- identifyOverExpressedInteractions(cellchat)
 
 # Compute communication probability

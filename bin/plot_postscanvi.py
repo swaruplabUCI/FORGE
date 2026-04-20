@@ -491,7 +491,7 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
     # SAVE UPDATED ADATA
     # ========================================
 
-    output_h5ad = os.path.join(output_dir, 'annotated_with_scanvi_clustering.h5ad')
+    output_h5ad = os.path.join(output_dir, 'annotated_with_celltype.h5ad')
     sanitize_adata(adata, output_h5ad)
     adata.write(output_h5ad, compression='gzip')
     print(f"\n✓ Updated h5ad saved to: {output_h5ad}")
@@ -618,13 +618,13 @@ def main():
     else:
         if args.cell_type_key:
             print(f"WARNING: Requested cell_type_key '{args.cell_type_key}' not usable — auto-detecting")
-        for candidate in ['celltypist_prediction', 'scanvi_prediction', 'cell_type_prediction']:
+        for candidate in ['scanvi_prediction', 'celltypist_prediction', 'cell_type_prediction']:
             if candidate in adata.obs.columns and _has_real_labels(candidate):
                 cell_type_key = candidate
                 break
         if cell_type_key is None:
             print("ERROR: No cell type prediction column with real labels found in adata.obs. "
-                  "Expected one of: celltypist_prediction, scanvi_prediction, cell_type_prediction. "
+                  "Expected one of: scanvi_prediction, celltypist_prediction, cell_type_prediction. "
                   f"Available columns: {list(adata.obs.columns)}")
             sys.exit(1)
     print(f"Using cell type key: {cell_type_key}")
@@ -648,12 +648,31 @@ def main():
         min_cells=args.hdwgcna_min_cells
     )
 
-    # Re-save h5ad if cell_type_broad was added (needed by downstream CONVERT_H5AD_TO_SEURAT)
-    if 'cell_type_broad' in adata.obs.columns:
-        output_h5ad = os.path.join(args.output_dir, 'annotated_with_scanvi_clustering.h5ad')
-        sanitize_adata(adata, output_h5ad)
-        adata.write(output_h5ad, compression='gzip')
-        print(f"Re-saved h5ad with cell_type_broad column: {output_h5ad}")
+    # Stamp canonical 'cell_type' + provenance on obs so downstream modules
+    # (BUILD_MUDATA, MULTIVI_GAP_FILL) don't have to juggle tool-specific names.
+    _CT_CANDIDATES = [
+        ('scanvi_prediction', 'scanvi'),
+        ('celltypist_prediction', 'celltypist'),
+        ('cell_type_prediction', 'celltypist'),
+        ('cell_type_marker', 'marker'),
+    ]
+    chosen_col, chosen_src = None, None
+    for col, src in _CT_CANDIDATES:
+        if col in adata.obs.columns and _has_real_labels(col):
+            chosen_col, chosen_src = col, src
+            break
+    if chosen_col is not None:
+        adata.obs['cell_type'] = adata.obs[chosen_col].values
+        adata.obs['cell_type_source'] = chosen_src
+        print(f"Stamped canonical 'cell_type' from '{chosen_col}' (source={chosen_src})")
+
+    # Always write the canonical output (renamed from annotated_with_scanvi_clustering.h5ad
+    # to reflect that the column is tool-agnostic). Keep the old filename as a symlink
+    # only if something downstream still references it.
+    output_h5ad = os.path.join(args.output_dir, 'annotated_with_celltype.h5ad')
+    sanitize_adata(adata, output_h5ad)
+    adata.write(output_h5ad, compression='gzip')
+    print(f"Saved annotated h5ad: {output_h5ad}")
 
 if __name__ == "__main__":
     main()

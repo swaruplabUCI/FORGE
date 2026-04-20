@@ -21,6 +21,9 @@ def main():
     parser.add_argument('--condition_key', default='condition_group')
     args = parser.parse_args()
 
+    # Sanitize output_prefix: cell type names may contain / or spaces
+    args.output_prefix = args.output_prefix.replace('/', '_').replace(' ', '_')
+
     control_condition = args.control_condition
     treatment_condition = args.treatment_condition
     cond_key = args.condition_key

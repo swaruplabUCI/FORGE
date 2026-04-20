@@ -130,23 +130,35 @@ def main():
     # ========================================================================
     # Load SCANVI predictions if provided
     # ========================================================================
+    # Canonical cell-type precedence: scanvi > celltypist (aliases) > marker.
+    # We write the chosen value under a unified column name 'cell_type' and
+    # record provenance in 'cell_type_source' so downstream modules don't need
+    # to juggle annotation-tool-specific column names.
+    _CT_CANDIDATES = [
+        ('scanvi_prediction', 'scanvi'),
+        ('celltypist_prediction', 'celltypist'),
+        ('cell_type_prediction', 'celltypist'),
+        ('cell_type_marker', 'marker'),
+    ]
     scanvi_predictions = {}
+    scanvi_source = None
     if args.scanvi_file and Path(args.scanvi_file).exists():
-        log_message(f"\nLoading SCANVI predictions from {args.scanvi_file}", LOG_FILE)
+        log_message(f"\nLoading cell-type predictions from {args.scanvi_file}", LOG_FILE)
         try:
             scanvi_adata = sc.read_h5ad(args.scanvi_file)
             pred_col = None
-            for candidate in ['celltypist_prediction', 'scanvi_prediction', 'cell_type_prediction']:
+            for candidate, source in _CT_CANDIDATES:
                 if candidate in scanvi_adata.obs.columns:
                     vals = scanvi_adata.obs[candidate].dropna().unique()
                     if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
                         pred_col = candidate
+                        scanvi_source = source
                         break
             if pred_col:
                 scanvi_predictions = scanvi_adata.obs[pred_col].to_dict()
-                log_message(f"✓ Loaded predictions from '{pred_col}' for {len(scanvi_predictions)} cells", LOG_FILE)
+                log_message(f"✓ Loaded predictions from '{pred_col}' (source={scanvi_source}) for {len(scanvi_predictions)} cells", LOG_FILE)
         except Exception as e:
-            log_message(f"⚠ Could not load SCANVI file: {e}", LOG_FILE, "WARN")
+            log_message(f"⚠ Could not load cell-type file: {e}", LOG_FILE, "WARN")
     
     # ========================================================================
     # NEW: Process MATCHED sample pairs
@@ -240,11 +252,14 @@ def main():
             rna_sub = rna_adata[common_barcodes, :].copy()
             atac_sub = atac_adata[common_barcodes, :].copy()
             
-            # Add SCANVI predictions
+            # Write canonical 'cell_type' + provenance to both modalities.
             if scanvi_predictions:
                 cell_types = [scanvi_predictions.get(bc, 'Unknown') for bc in common_barcodes]
-                rna_sub.obs['scanvi_prediction'] = cell_types
-                atac_sub.obs['scanvi_prediction'] = cell_types
+                src = scanvi_source or 'unknown'
+                rna_sub.obs['cell_type'] = cell_types
+                rna_sub.obs['cell_type_source'] = src
+                atac_sub.obs['cell_type'] = cell_types
+                atac_sub.obs['cell_type_source'] = src
             
             # Make barcodes globally unique across samples
             new_barcodes = [f"{sample_id}:{bc}" for bc in common_barcodes]
@@ -380,28 +395,40 @@ def main():
     # ========================================================================
     log_message("\nPropagating cell type annotations to global obs...", LOG_FILE)
     
-    # Check for cell type prediction column in RNA modality and propagate to global
+    # The per-sample loop already wrote 'cell_type' + 'cell_type_source' to
+    # both modality obs when scanvi_predictions was non-empty, so we primarily
+    # use this block as a defensive fallback: if 'cell_type' is absent, try to
+    # derive it by precedence from legacy columns that may exist on the merged mod.
     pred_col_found = None
     for modality_name in ['rna', 'atac']:
         if modality_name not in combined_mdata.mod:
             continue
         mod_obs = combined_mdata.mod[modality_name].obs
-        for candidate in ['celltypist_prediction', 'scanvi_prediction', 'cell_type_prediction']:
+        if 'cell_type' in mod_obs.columns:
+            vals = mod_obs['cell_type'].dropna().unique()
+            if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
+                pred_col_found = (modality_name, 'cell_type', mod_obs.get('cell_type_source'))
+                break
+        for candidate, src in _CT_CANDIDATES:
             if candidate in mod_obs.columns:
                 vals = mod_obs[candidate].dropna().unique()
                 if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
-                    pred_col_found = (modality_name, candidate)
+                    pred_col_found = (modality_name, candidate, src)
                     break
         if pred_col_found:
             break
 
     if pred_col_found:
-        mod_name, col_name = pred_col_found
+        mod_name, col_name, src = pred_col_found
         values = combined_mdata.mod[mod_name].obs[col_name].values
-        combined_mdata.obs['cell_type'] = values
-        combined_mdata.obs['scanvi_prediction'] = values  # backward compat
-        log_message(f" Propagated '{col_name}' from {mod_name} modality to global obs", LOG_FILE)
-        log_message(f"  Unique cell types: {combined_mdata.obs['cell_type'].nunique()}", LOG_FILE)
+        # Ensure both modality obs have 'cell_type' populated (defensive).
+        for m in ['rna', 'atac']:
+            if m in combined_mdata.mod:
+                combined_mdata.mod[m].obs['cell_type'] = values
+                if 'cell_type_source' not in combined_mdata.mod[m].obs.columns:
+                    combined_mdata.mod[m].obs['cell_type_source'] = src if isinstance(src, str) else 'unknown'
+        log_message(f" Canonical 'cell_type' set from '{col_name}' on {mod_name} (source={src})", LOG_FILE)
+        log_message(f"  Unique cell types: {combined_mdata.mod[mod_name].obs['cell_type'].nunique()}", LOG_FILE)
     else:
         log_message(" No cell type prediction column found in modalities to propagate", LOG_FILE, "WARN")
 
@@ -441,6 +468,8 @@ def main():
                         atac_cell_types.append(str(annot_labels.get(bare_bc, 'Unknown')))
 
                 atac_mod.obs['cell_type'] = atac_cell_types
+                # Override source on atac mod — this column now comes from scATAnno, not RNA annotation.
+                atac_mod.obs['cell_type_source'] = 'scatanno'
                 combined_mdata.obs['atac_cell_type'] = atac_cell_types
 
                 n_annotated = sum(1 for ct in atac_cell_types if ct.lower() != 'unknown')

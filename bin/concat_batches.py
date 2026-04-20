@@ -89,6 +89,9 @@ def concatenate_and_qc(h5ad_files, output_file, metrics_file, plots_dir):
     n_samples = len(sample_counts)
     print(sample_counts)
     
+    # Alias sample → sample_id for consistency with MuData convention
+    adata.obs['sample_id'] = adata.obs['sample']
+
     # Add batch information
     # Batch is set from the sample name; actual batch comes from manifest downstream
     adata.obs['batch'] = adata.obs['sample']

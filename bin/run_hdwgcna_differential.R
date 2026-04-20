@@ -58,6 +58,9 @@ if (is.null(GetModules(seurat_obj))) {
     stop("No hdWGCNA modules found in Seurat object. Run HDWGCNA_PER_CELLTYPE first.")
 }
 
+# Sanitize cell type name for filesystem-safe filenames
+safe_cell_type <- gsub("[^A-Za-z0-9._-]", "_", opts$cell_type)
+
 cat(sprintf("Cell type: %s\n", opts$cell_type))
 cat(sprintf("Condition key: %s\n", opts$condition_key))
 cat(sprintf("Control: %s vs Treatment: %s\n", opts$control, opts$treatment))
@@ -103,7 +106,7 @@ DMEs <- FindDMEs(
 )
 
 # Save DME results
-dme_file <- paste0("dme_results_", opts$cell_type, ".csv")
+dme_file <- paste0("dme_results_", safe_cell_type, ".csv")
 write.csv(DMEs, file = dme_file, row.names = TRUE)
 cat(sprintf("DME results saved to %s\n", dme_file))
 
@@ -122,7 +125,7 @@ tryCatch({
         wgcna_name = wgcna_name,
         pvalue = "p_val_adj"
     )
-    ggsave(file.path("dme_plots", paste0("lollipop_", opts$cell_type, ".pdf")),
+    ggsave(file.path("dme_plots", paste0("lollipop_", safe_cell_type, ".pdf")),
            p_lollipop, width = 8, height = 6)
 }, error = function(e) cat(sprintf("Lollipop plot failed: %s\n", e$message)))
 
@@ -132,7 +135,7 @@ tryCatch({
         seurat_obj, DMEs,
         wgcna_name = wgcna_name
     )
-    ggsave(file.path("dme_plots", paste0("volcano_", opts$cell_type, ".pdf")),
+    ggsave(file.path("dme_plots", paste0("volcano_", safe_cell_type, ".pdf")),
            p_volcano, width = 8, height = 6)
 }, error = function(e) cat(sprintf("Volcano plot failed: %s\n", e$message)))
 
@@ -198,7 +201,7 @@ if (!is.null(opts$traits) && opts$traits != "") {
                     combine = TRUE
                 )
 
-                ggsave(paste0("module_trait_", opts$cell_type, ".pdf"),
+                ggsave(paste0("module_trait_", safe_cell_type, ".pdf"),
                        p_trait, width = 12, height = 8)
                 cat("Module-trait correlation heatmap saved.\n")
             }, error = function(e) {
@@ -221,7 +224,7 @@ tryCatch({
     seurat_obj <- RunEnrichr(seurat_obj, dbs = dbs, max_genes = 100)
     enrich_df <- GetEnrichrTable(seurat_obj)
 
-    write.csv(enrich_df, file.path("enrichment_results", paste0("enrichr_all_", opts$cell_type, ".csv")),
+    write.csv(enrich_df, file.path("enrichment_results", paste0("enrichr_all_", safe_cell_type, ".csv")),
               row.names = FALSE)
 
     # Generate bar plots per module
@@ -240,7 +243,7 @@ tryCatch({
             database = "GO_Biological_Process_2023",
             n_terms = 3
         )
-        ggsave(file.path("enrichment_results", paste0("dotplot_BP_", opts$cell_type, ".pdf")),
+        ggsave(file.path("enrichment_results", paste0("dotplot_BP_", safe_cell_type, ".pdf")),
                p_dot, width = 14, height = 10)
     }, error = function(e) cat(sprintf("Enrichr dot plot failed: %s\n", e$message)))
 

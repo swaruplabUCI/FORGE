@@ -116,6 +116,9 @@ get_cell_type_abbreviation <- function(cell_type) {
 cell_abbrev <- get_cell_type_abbreviation(opt$cell_type)
 wgcna_name <- paste0("hdWGCNA_", gsub("\\s+|/", "_", opt$cell_type))
 
+# Sanitize cell type name for filesystem-safe filenames
+safe_cell_type <- gsub("[^A-Za-z0-9._-]", "_", opt$cell_type)
+
 # ============================================================================
 # LOAD AND SUBSET SEURAT OBJECT
 # ============================================================================
@@ -141,7 +144,7 @@ if(n_cells < 100) {
     )
     
     write.csv(skip_summary, 
-              file = file.path(opt$output_dir, paste0(opt$cell_type, "_analysis_skipped.csv")),
+              file = file.path(opt$output_dir, paste0(safe_cell_type, "_analysis_skipped.csv")),
               row.names = FALSE)
     quit(save = "no", status = 0)
 }
@@ -223,7 +226,7 @@ if(n_metacells < 20) {
     )
     
     write.csv(skip_summary, 
-              file = file.path(opt$output_dir, paste0(opt$cell_type, "_analysis_skipped.csv")),
+              file = file.path(opt$output_dir, paste0(safe_cell_type, "_analysis_skipped.csv")),
               row.names = FALSE)
     quit(save = "no", status = 0)
 }
@@ -261,7 +264,7 @@ seurat_obj <- SetDatExpr(
     group_name = opt$cell_type,
     group.by = opt$cell_type_key,
     assay = 'RNA',
-    slot = 'data',
+    layer = 'data',
     wgcna_name = wgcna_name
 )
 
@@ -282,11 +285,11 @@ power_table <- GetPowerTable(seurat_obj, wgcna_name = wgcna_name)
 print("Power table:")
 print(power_table)
 write.csv(power_table, 
-          file = file.path(output_dir, paste0(opt$cell_type, "_power_table.csv")),
+          file = file.path(output_dir, paste0(safe_cell_type, "_power_table.csv")),
           row.names = FALSE)
 
 plot_list <- PlotSoftPowers(seurat_obj, wgcna_name = wgcna_name)
-soft_power_png <- file.path(output_dir, paste0(opt$cell_type, "_soft_powers.png"))
+soft_power_png <- file.path(output_dir, paste0(safe_cell_type, "_soft_powers.png"))
 png(soft_power_png, width = 2000, height = 1500, res = 200)
 print(wrap_plots(plot_list, ncol=2))
 dev.off()
@@ -320,7 +323,7 @@ print(paste("Selected soft power:", selected_power))
 
 print("Constructing co-expression network...")
 timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-unique_tom_name <- paste0(opt$cell_type, "_TOM_", timestamp)
+unique_tom_name <- paste0(safe_cell_type, "_TOM_", timestamp)
 
 seurat_obj <- ConstructNetwork(
     seurat_obj,
@@ -332,7 +335,7 @@ seurat_obj <- ConstructNetwork(
 )
 
 # Plot dendrogram
-pdf(file.path(output_dir, paste0(opt$cell_type, "_dendrogram.pdf")), width = 12, height = 6)
+pdf(file.path(output_dir, paste0(safe_cell_type, "_dendrogram.pdf")), width = 12, height = 6)
 PlotDendrogram(seurat_obj, main = paste(opt$cell_type, 'hdWGCNA Dendrogram'), wgcna_name = wgcna_name)
 dev.off()
 
@@ -369,7 +372,7 @@ mods <- mods[mods != 'grey']
 print(paste("Number of modules:", length(mods)))
 
 write.csv(modules, 
-          file = file.path(output_dir, paste0(opt$cell_type, "_modules.csv")),
+          file = file.path(output_dir, paste0(safe_cell_type, "_modules.csv")),
           row.names = FALSE)
 
 # ============================================================================
@@ -416,7 +419,7 @@ if(length(cur_traits) > 0) {
             wgcna_name = wgcna_name
         )
         
-        pdf(file.path(output_dir, paste0(opt$cell_type, "_module_trait_correlation.pdf")), 
+        pdf(file.path(output_dir, paste0(safe_cell_type, "_module_trait_correlation.pdf")), 
             width = max(10, length(cur_traits) * 1.5), 
             height = max(8, length(mods) * 0.5))
         print(p)
@@ -437,7 +440,7 @@ for(mod in mods) {
     hub_genes_list[[mod]] <- hub_genes
     
     write.csv(hub_genes, 
-              file = file.path(output_dir, paste0(opt$cell_type, "_", mod, "_hub_genes.csv")),
+              file = file.path(output_dir, paste0(safe_cell_type, "_", mod, "_hub_genes.csv")),
               row.names = FALSE)
 }
 
@@ -447,7 +450,7 @@ all_hub_genes <- do.call(rbind, lapply(names(hub_genes_list), function(x) {
     return(df)
 }))
 write.csv(all_hub_genes, 
-          file = file.path(output_dir, paste0(opt$cell_type, "_all_hub_genes.csv")),
+          file = file.path(output_dir, paste0(safe_cell_type, "_all_hub_genes.csv")),
           row.names = FALSE)
 
 # ============================================================================
@@ -466,7 +469,7 @@ print("Creating hub gene network plots...")
 if(length(mods) > 0) {
     top_modules <- mods[1:min(4, length(mods))]
     
-    pdf(file.path(output_dir, paste0(opt$cell_type, "_hub_gene_networks.pdf")), 
+    pdf(file.path(output_dir, paste0(safe_cell_type, "_hub_gene_networks.pdf")), 
         width = 16, height = 12)
     HubGeneNetworkPlot(
         seurat_obj,
@@ -501,7 +504,7 @@ plot_list <- ModuleFeaturePlot(
     wgcna_name = wgcna_name
 )
 
-pdf(file.path(output_dir, paste0(opt$cell_type, "_module_scores_umap.pdf")), 
+pdf(file.path(output_dir, paste0(safe_cell_type, "_module_scores_umap.pdf")), 
     width = 20, height = ceiling(length(mods)/4) * 5)
 print(wrap_plots(plot_list, ncol = 4))
 dev.off()
@@ -527,7 +530,7 @@ summary_stats <- data.frame(
 )
 
 write.csv(summary_stats, 
-          file = file.path(output_dir, paste0(opt$cell_type, "_analysis_summary.csv")),
+          file = file.path(output_dir, paste0(safe_cell_type, "_analysis_summary.csv")),
           row.names = FALSE)
 
 # ============================================================================
@@ -535,7 +538,7 @@ write.csv(summary_stats,
 # ============================================================================
 
 print("Saving results...")
-saveRDS(seurat_obj, file = file.path(opt$output_dir, paste0(opt$cell_type, "_seurat_with_wgcna.rds")))
+saveRDS(seurat_obj, file = file.path(opt$output_dir, paste0(safe_cell_type, "_seurat_with_wgcna.rds")))
 
 # Get module eigengenes
 MEs <- GetMEs(seurat_obj, harmonized = TRUE, wgcna_name = wgcna_name)
@@ -554,7 +557,7 @@ results <- list(
     n_metacells = n_metacells
 )
 
-saveRDS(results, file = file.path(opt$output_dir, paste0(opt$cell_type, "_complete_results.rds")))
+saveRDS(results, file = file.path(opt$output_dir, paste0(safe_cell_type, "_complete_results.rds")))
 
 print("============================================================")
 print("ANALYSIS COMPLETE!")

@@ -154,19 +154,26 @@ def assemble_composite_figure(
         print("[WARN] No panels available — cannot assemble composite figure")
         return None
 
-    # Determine layout
+    # Determine layout — compute height ratios from actual image aspect ratios
     n_panels = len(panel_imgs)
     has_motif = motif_pwm is not None
+    fig_width = 24
+    # Compute the natural height each panel image needs at fig_width
+    panel_heights = []
+    for img in panel_imgs:
+        h, w = img.shape[:2]
+        panel_heights.append(fig_width * (h / w))
+    motif_height = 2.0  # inches for motif logo
+    total_height = sum(panel_heights) + (motif_height if has_motif else 0)
+    height_ratios = panel_heights + ([motif_height] if has_motif else [])
     n_rows = n_panels + (1 if has_motif else 0)
-    height_ratios = [3] * n_panels + ([1.5] if has_motif else [])
-    figsize = (24, 4 * n_rows)
 
-    fig = plt.figure(figsize=figsize, constrained_layout=True)
+    fig = plt.figure(figsize=(fig_width, total_height), constrained_layout=True)
     gs = gridspec.GridSpec(n_rows, 1, figure=fig, height_ratios=height_ratios)
 
     for row, (img, label) in enumerate(zip(panel_imgs, panel_labels)):
         ax = fig.add_subplot(gs[row])
-        ax.imshow(img, aspect='auto')
+        ax.imshow(img, aspect='equal')
         ax.axis('off')
         ax.set_title(label, fontsize=14, fontweight='bold', loc='left')
 

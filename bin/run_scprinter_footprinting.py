@@ -1198,10 +1198,17 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
 
     adata_ct = adata[cell_mask].copy()
 
-    if "condition" not in adata_ct.obs.columns:
-        raise ValueError("adata_ct.obs does not contain a 'condition' column")
+    # Accept either 'condition' or 'condition_group' column name
+    cond_col = None
+    for _cand in ["condition", "condition_group"]:
+        if _cand in adata_ct.obs.columns:
+            cond_col = _cand
+            break
+    if cond_col is None:
+        raise ValueError("adata_ct.obs does not contain a 'condition' or 'condition_group' column. "
+                         f"Available: {list(adata_ct.obs.columns)}")
 
-    conditions = adata_ct.obs["condition"].astype(str).unique()
+    conditions = adata_ct.obs[cond_col].astype(str).unique()
     print(f"  Conditions found: {conditions}")
 
     control_label = args.control_condition
@@ -1209,10 +1216,18 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
 
     group_labels = [lab for lab in [control_label, treatment_label] if lab in conditions]
     if len(group_labels) != 2:
-        raise ValueError(
-            f"Expected both {control_label} and {treatment_label} in adata_ct.obs['condition'], "
-            f"but found: {list(conditions)}"
+        print(
+            f"  SKIP: Cell type '{args.cell_type}' has only conditions {list(conditions)} "
+            f"(need both {control_label} and {treatment_label}). "
+            f"Writing empty outputs and returning."
         )
+        # Write minimal outputs so Nextflow output globs are satisfied
+        dummy = ad.AnnData()
+        dummy.write_h5ad(f"footprints_{safe_label}_SKIPPED.h5ad")
+        pd.DataFrame(columns=["mode", "gene", "region"]).to_csv(
+            "footprint_summary.csv", index=False
+        )
+        return
 
     printer_barcodes = set(map(str, printer.obs_names))
 
@@ -1222,7 +1237,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
 
     grouping = []
     for lab in group_labels:
-        mask = adata_ct.obs["condition"].astype(str) == lab
+        mask = adata_ct.obs[cond_col].astype(str) == lab
         bcs_ct_raw = adata_ct.obs_names[mask].astype(str)
         bcs_ct = np.array(
             [apply_normalization(b, bc_norm_mode) for b in bcs_ct_raw], dtype=str

@@ -110,8 +110,11 @@ def generate_chromsizes_from_fai(fai_path, out_path, logger):
 
 
 def write_config_yaml(cfg_path, input_data, output_data, params_general, params_data, params_motif, params_infer, bc_transform_func=None):
-    if bc_transform_func is None:
-        bc_transform_func = "lambda x: f'{x}-10x_multiome_brain'"
+    # FIX-91: "none" sentinel from Nextflow (avoids null channel crash) and
+    # None default both mean "no barcode transform needed" → identity lambda.
+    # SCENIC+ CLI _function() requires a valid lambda string.
+    if bc_transform_func is None or bc_transform_func == "none":
+        bc_transform_func = "lambda x: x"
     cfg = textwrap.dedent(
         f"""
         input_data:
@@ -161,7 +164,7 @@ def write_config_yaml(cfg_path, input_data, output_data, params_general, params_
           search_space_extend_tss: "10 10"
 
         params_motif_enrichment:
-          species: "homo_sapiens"
+          species: "{params_data['motif_species']}"
           annotation_version: "v10nr_clust"
           motif_similarity_fdr: 0.001
           orthologous_identity_threshold: 0.0
@@ -238,6 +241,72 @@ def preprocess_rna_raw(rna_path, logger):
     return preprocessed_path
 
 
+def _auto_detect_bc_transform(cistopic_path, rna_path, logger):
+    """Detect barcode format mismatch between cisTopic ATAC and RNA objects.
+
+    Common pattern in FORGE: ATAC barcodes are 'BARCODE-SAMPLE' (pycisTopic
+    uses split_pattern='-' + project=sample_id), while RNA barcodes are
+    'SAMPLE:BARCODE'.  Returns the correct lambda string, or identity if
+    barcodes already match.
+    """
+    import pickle
+    import anndata
+
+    logger.info("Auto-detecting barcode transform...")
+
+    with open(cistopic_path, "rb") as f:
+        ct = pickle.load(f)
+    atac_bcs = list(ct.cell_names)[:20]
+
+    adata = anndata.read_h5ad(rna_path, backed="r")
+    rna_bcs = list(adata.obs_names[:20])
+    rna_set = set(adata.obs_names)
+    adata.file.close()
+
+    # Quick check: do they already overlap?
+    atac_set = set(ct.cell_names)
+    if len(atac_set & rna_set) > 0:
+        logger.info("  Barcodes already overlap — using identity transform")
+        return "lambda x: x"
+
+    logger.info(f"  ATAC example: {atac_bcs[0]}")
+    logger.info(f"  RNA  example: {rna_bcs[0]}")
+
+    # Detect 'BARCODE-SAMPLE' (ATAC) vs 'SAMPLE:BARCODE' (RNA) pattern
+    # Test by transforming ATAC→RNA to confirm the mismatch pattern,
+    # but return the INVERSE (RNA→ATAC) because SCENIC+ applies
+    # bc_transform_func to RNA barcodes to match ATAC.
+    if "-" in atac_bcs[0] and ":" in rna_bcs[0]:
+        test_transform = lambda x: x.rsplit("-", 1)[1] + ":" + x.rsplit("-", 1)[0]
+        transformed = {test_transform(b) for b in ct.cell_names}
+        overlap = len(transformed & rna_set)
+        if overlap > 0:
+            # Return RNA→ATAC: SAMPLE:BARCODE -> BARCODE-SAMPLE
+            func = "lambda x: x.split(':', 1)[1] + '-' + x.split(':', 1)[0]"
+            logger.info(f"  Detected BARCODE-SAMPLE (ATAC) vs SAMPLE:BARCODE (RNA) ({overlap} overlap)")
+            logger.info(f"  Using bc_transform_func (RNA->ATAC): {func}")
+            return func
+
+    # Detect 'SAMPLE:BARCODE' (ATAC) vs 'BARCODE-SAMPLE' (RNA) — reverse case
+    if ":" in atac_bcs[0] and "-" in rna_bcs[0]:
+        test_transform = lambda x: x.split(":", 1)[1] + "-" + x.split(":", 1)[0]
+        transformed = {test_transform(b) for b in ct.cell_names}
+        overlap = len(transformed & rna_set)
+        if overlap > 0:
+            # Return RNA→ATAC: BARCODE-SAMPLE -> SAMPLE:BARCODE
+            func = "lambda x: x.rsplit('-', 1)[1] + ':' + x.rsplit('-', 1)[0]"
+            logger.info(f"  Detected SAMPLE:BARCODE (ATAC) vs BARCODE-SAMPLE (RNA) ({overlap} overlap)")
+            logger.info(f"  Using bc_transform_func (RNA->ATAC): {func}")
+            return func
+
+    logger.warning("  Could not auto-detect barcode transform — falling back to identity")
+    logger.warning(f"  ATAC barcodes: {atac_bcs[:3]}")
+    logger.warning(f"  RNA  barcodes: {rna_bcs[:3]}")
+    return "lambda x: x"
+
+
+
+
 def main():
     args = parse_args()
     logger = setup_logger()
@@ -305,8 +374,14 @@ def main():
         "seed": 666,
     }
 
+    # Map short species name to motif enrichment species name
+    motif_species_map = {
+        "hsapiens": "homo_sapiens",
+        "mmusculus": "mus_musculus",
+    }
     params_data = {
         "species": args.species,
+        "motif_species": motif_species_map.get(args.species, args.species),
         "biomart_host": args.biomart_host,
     }
 
@@ -314,6 +389,13 @@ def main():
     params_infer = {}  # same
 
     ensure_dir(params_general["temp_dir"])
+
+    # Auto-detect barcode transform when set to "none" (identity)
+    bc_transform = args.bc_transform
+    if bc_transform is None or bc_transform == "none":
+        bc_transform = _auto_detect_bc_transform(
+            os.path.abspath(args.cistopic), rna_path, logger
+        )
 
     logger.info(f"Writing SCENIC+ config to {cfg_path}")
     write_config_yaml(
@@ -324,7 +406,7 @@ def main():
         params_data,
         params_motif,
         params_infer,
-        bc_transform_func=args.bc_transform,
+        bc_transform_func=bc_transform,
     )
 
     # Pre-generate genome annotation + chromsizes from local files (bypass BioMart)

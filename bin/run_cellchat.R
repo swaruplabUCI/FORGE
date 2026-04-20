@@ -96,7 +96,7 @@ future::plan("multisession", workers = opt$threads)
 
 # Identify over-expressed genes and interactions
 message("Identifying over-expressed genes and interactions...")
-cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedGenes(cellchat, do.fast = FALSE)
 cellchat <- identifyOverExpressedInteractions(cellchat)
 
 # Compute communication probabilities

@@ -190,6 +190,9 @@ def apply_normalization(bc: str, mode: str) -> str:
 def main():
     args = parse_args()
 
+    # Sanitize cell type for filesystem-safe filenames
+    safe_cell_type = re.sub(r"[^A-Za-z0-9._-]", "_", args.cell_type)
+
     # Configure scPrinter cache
     os.environ["SCPRINTER_CACHE_DIR"] = args.cache_dir
 
@@ -223,7 +226,7 @@ def main():
         enrichment_df = pd.DataFrame(
             columns=["tf", "cell_type", "n_up_peaks", "n_down_peaks"]
         )
-        out_csv = f"motif_enrichment_{args.cell_type}.csv"
+        out_csv = f"motif_enrichment_{safe_cell_type}.csv"
         enrichment_df.to_csv(out_csv, index=False)
         print(f"Saved empty enrichment file to {out_csv}")
         return
@@ -348,7 +351,7 @@ def main():
     # -------------------------------------------------------------------------
     # Compute TF binding scores with scp.tl.get_binding_score
     # -------------------------------------------------------------------------
-    save_key = f"tfbs_{args.cell_type}"
+    save_key = f"tfbs_{safe_cell_type}"
     print(f"\nComputing TF binding scores with save_key='{save_key}' over {len(regions_df)} regions")
 
     scp.tl.get_binding_score(
@@ -366,7 +369,7 @@ def main():
 
     if hasattr(printer, "bindingscoreadata") and save_key in printer.bindingscoreadata:
         bs_data = printer.bindingscoreadata[save_key]
-        tfbs_out = f"tfbs_{args.cell_type}.h5ad"
+        tfbs_out = f"tfbs_{safe_cell_type}.h5ad"
         print(f"Saving TFBS data to {tfbs_out}")
         try:
             bs_data = bs_data.copy()
@@ -403,7 +406,7 @@ def main():
         )
 
     enrichment_df = pd.DataFrame(enrichment_results)
-    out_csv = f"motif_enrichment_{args.cell_type}.csv"
+    out_csv = f"motif_enrichment_{safe_cell_type}.csv"
     enrichment_df.to_csv(out_csv, index=False)
     print(f"Saved enrichment results to {out_csv}")
 

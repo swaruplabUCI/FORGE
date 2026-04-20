@@ -8,7 +8,7 @@ process PLOT_POST_SCANVI {
 
     output:
     path("*.png"), emit: plots
-    path("annotated_with_scanvi_clustering.h5ad"), emit: annotated_updated  // ← Explicit filename
+    path("annotated_with_celltype.h5ad"), emit: annotated_updated
     path("hdwgcna_cell_types.txt"), emit: cell_types_file
     path("hdwgcna_cell_type_counts.csv"), emit: cell_type_counts
 
