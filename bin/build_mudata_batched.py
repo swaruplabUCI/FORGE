@@ -140,8 +140,15 @@ def main():
         ('cell_type_prediction', 'celltypist'),
         ('cell_type_marker', 'marker'),
     ]
+    # Lookup keyed by (sample, stripped_barcode). Built by parsing the scanvi
+    # h5ad's obs_names using the `batch`/`sample` column to strip the concat
+    # suffix. Falls back to (None, stripped_bc) for sample-agnostic matches.
     scanvi_predictions = {}
     scanvi_source = None
+
+    def _strip_gem(bc):
+        return re.sub(r'-\d+$', '', str(bc))
+
     if args.scanvi_file and Path(args.scanvi_file).exists():
         log_message(f"\nLoading cell-type predictions from {args.scanvi_file}", LOG_FILE)
         try:
@@ -155,8 +162,36 @@ def main():
                         scanvi_source = source
                         break
             if pred_col:
-                scanvi_predictions = scanvi_adata.obs[pred_col].to_dict()
-                log_message(f"✓ Loaded predictions from '{pred_col}' (source={scanvi_source}) for {len(scanvi_predictions)} cells", LOG_FILE)
+                sample_col = None
+                for c in ('batch', 'sample', 'sample_id'):
+                    if c in scanvi_adata.obs.columns:
+                        sample_col = c
+                        break
+                samples_series = (
+                    scanvi_adata.obs[sample_col].astype(str).values
+                    if sample_col is not None else [''] * scanvi_adata.n_obs
+                )
+                preds_series = scanvi_adata.obs[pred_col].astype(object).values
+                for obs_name, sample, pred in zip(
+                    scanvi_adata.obs_names, samples_series, preds_series
+                ):
+                    obs_name = str(obs_name)
+                    # scanpy.concat(index_unique='-') appends "-{batch}" to each barcode
+                    if sample and obs_name.endswith(f'-{sample}'):
+                        raw = obs_name[: -(len(sample) + 1)]
+                    else:
+                        raw = obs_name
+                    stripped = _strip_gem(raw)
+                    scanvi_predictions[(str(sample), stripped)] = pred
+                    # Sample-agnostic fallback for single-sample/untagged inputs
+                    scanvi_predictions[('', stripped)] = pred
+                n_unique = len({p for p in preds_series if not pd.isna(p)})
+                log_message(
+                    f"✓ Loaded predictions from '{pred_col}' (source={scanvi_source}) "
+                    f"for {scanvi_adata.n_obs} cells, {n_unique} unique cell types; "
+                    f"sample_col='{sample_col}'",
+                    LOG_FILE,
+                )
         except Exception as e:
             log_message(f"⚠ Could not load cell-type file: {e}", LOG_FILE, "WARN")
     
@@ -252,14 +287,28 @@ def main():
             rna_sub = rna_adata[common_barcodes, :].copy()
             atac_sub = atac_adata[common_barcodes, :].copy()
             
-            # Write canonical 'cell_type' + provenance to both modalities.
+            # Write canonical 'cell_type' + provenance on the RNA modality only
+            # (RNA-side labels come from scanvi_file). ATAC side is populated
+            # separately below from the scATAnno-annotated peak matrix, since
+            # ATAC and RNA annotations come from independent tools/references
+            # and should not be conflated. On lookup miss, leave NaN (not a
+            # literal 'Unknown' string) so downstream consumers can distinguish
+            # unlabeled from a real 'Unknown' call.
             if scanvi_predictions:
-                cell_types = [scanvi_predictions.get(bc, 'Unknown') for bc in common_barcodes]
+                sid = str(sample_id)
+                cell_types = [
+                    scanvi_predictions.get((sid, bc),
+                        scanvi_predictions.get(('', bc), np.nan))
+                    for bc in common_barcodes
+                ]
+                n_matched = sum(1 for ct in cell_types if not pd.isna(ct))
                 src = scanvi_source or 'unknown'
                 rna_sub.obs['cell_type'] = cell_types
                 rna_sub.obs['cell_type_source'] = src
-                atac_sub.obs['cell_type'] = cell_types
-                atac_sub.obs['cell_type_source'] = src
+                log_message(
+                    f"  RNA cell_type lookup matched {n_matched}/{len(common_barcodes)} barcodes",
+                    LOG_FILE,
+                )
             
             # Make barcodes globally unique across samples
             new_barcodes = [f"{sample_id}:{bc}" for bc in common_barcodes]
@@ -391,57 +440,53 @@ def main():
     log_memory(LOG_FILE)
 
     # ========================================================================
-    # CRITICAL FIX: Propagate cell type annotations to global obs
+    # RNA-side cell_type: defensive fallback only
     # ========================================================================
-    log_message("\nPropagating cell type annotations to global obs...", LOG_FILE)
-    
-    # The per-sample loop already wrote 'cell_type' + 'cell_type_source' to
-    # both modality obs when scanvi_predictions was non-empty, so we primarily
-    # use this block as a defensive fallback: if 'cell_type' is absent, try to
-    # derive it by precedence from legacy columns that may exist on the merged mod.
-    pred_col_found = None
-    for modality_name in ['rna', 'atac']:
-        if modality_name not in combined_mdata.mod:
-            continue
-        mod_obs = combined_mdata.mod[modality_name].obs
-        if 'cell_type' in mod_obs.columns:
-            vals = mod_obs['cell_type'].dropna().unique()
-            if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
-                pred_col_found = (modality_name, 'cell_type', mod_obs.get('cell_type_source'))
-                break
-        for candidate, src in _CT_CANDIDATES:
-            if candidate in mod_obs.columns:
-                vals = mod_obs[candidate].dropna().unique()
-                if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
-                    pred_col_found = (modality_name, candidate, src)
-                    break
-        if pred_col_found:
-            break
-
-    if pred_col_found:
-        mod_name, col_name, src = pred_col_found
-        values = combined_mdata.mod[mod_name].obs[col_name].values
-        # Ensure both modality obs have 'cell_type' populated (defensive).
-        for m in ['rna', 'atac']:
-            if m in combined_mdata.mod:
-                combined_mdata.mod[m].obs['cell_type'] = values
-                if 'cell_type_source' not in combined_mdata.mod[m].obs.columns:
-                    combined_mdata.mod[m].obs['cell_type_source'] = src if isinstance(src, str) else 'unknown'
-        log_message(f" Canonical 'cell_type' set from '{col_name}' on {mod_name} (source={src})", LOG_FILE)
-        log_message(f"  Unique cell types: {combined_mdata.mod[mod_name].obs['cell_type'].nunique()}", LOG_FILE)
-    else:
-        log_message(" No cell type prediction column found in modalities to propagate", LOG_FILE, "WARN")
+    # Per-sample loop already wrote rna cell_type from scanvi_predictions.
+    # Only fall back to legacy columns on the RNA modality (do NOT touch ATAC
+    # here — ATAC is populated independently below from scATAnno).
+    log_message("\nChecking RNA cell_type (fallback if per-sample write failed)...", LOG_FILE)
+    if 'rna' in combined_mdata.mod:
+        rna_obs = combined_mdata.mod['rna'].obs
+        need_fallback = True
+        if 'cell_type' in rna_obs.columns:
+            vals = rna_obs['cell_type'].dropna().unique()
+            if len(vals) >= 1:
+                need_fallback = False
+                log_message(
+                    f"  RNA cell_type present: {rna_obs['cell_type'].nunique(dropna=True)} unique labels",
+                    LOG_FILE,
+                )
+        if need_fallback:
+            for candidate, src in _CT_CANDIDATES:
+                if candidate in rna_obs.columns:
+                    vals = rna_obs[candidate].dropna().unique()
+                    if len(vals) > 1 or (len(vals) == 1 and str(vals[0]).lower() != 'unknown'):
+                        rna_obs['cell_type'] = rna_obs[candidate].values
+                        rna_obs['cell_type_source'] = src
+                        log_message(
+                            f"  RNA cell_type fallback: set from '{candidate}' (source={src})",
+                            LOG_FILE,
+                        )
+                        break
+            else:
+                log_message(
+                    "  WARN: no usable RNA cell_type column; leaving NaN",
+                    LOG_FILE, "WARN",
+                )
 
     # ========================================================================
-    # Transfer ATAC cell type annotations from annotated peak matrix
+    # ATAC-side cell_type from scATAnno (independent of RNA annotation)
     # ========================================================================
+    # Both sides are normalized to (sample, stripped_barcode) to paper over
+    # differing concat conventions: annot may use "sample:raw-GEM" or
+    # "raw-GEM-sample"; mdata uses "sample:stripped". NaN on miss.
     if args.atac_annotations and Path(args.atac_annotations).exists():
         log_message("\nTransferring ATAC cell type annotations from annotated peak matrix...", LOG_FILE)
         try:
             atac_annot = sc.read_h5ad(args.atac_annotations, backed='r')
             atac_annot_obs = atac_annot.obs
 
-            # Identify the ATAC cell type column
             atac_ct_col = None
             for candidate in ['cell_type_prediction', 'celltypist_prediction', 'cell_type', 'pred_y']:
                 if candidate in atac_annot_obs.columns:
@@ -451,30 +496,63 @@ def main():
                         break
 
             if atac_ct_col:
-                # Build barcode lookup from annotated peak matrix
-                annot_labels = atac_annot_obs[atac_ct_col].to_dict()
-                atac_mod = combined_mdata.mod['atac']
+                # Detect sample column on the annot side
+                annot_sample_col = None
+                for c in ('batch', 'sample', 'sample_id'):
+                    if c in atac_annot_obs.columns:
+                        annot_sample_col = c
+                        break
+                annot_samples = (
+                    atac_annot_obs[annot_sample_col].astype(str).values
+                    if annot_sample_col is not None else [''] * atac_annot.n_obs
+                )
+                annot_preds = atac_annot_obs[atac_ct_col].astype(object).values
 
-                # Match barcodes: MuData ATAC barcodes are "sample_id:barcode"
-                # Annotated peak matrix barcodes may be just "barcode" or "sample_id:barcode"
-                atac_cell_types = []
-                for bc in atac_mod.obs_names:
-                    # Try full barcode first, then stripped version
-                    if bc in annot_labels:
-                        atac_cell_types.append(str(annot_labels[bc]))
+                annot_lookup = {}  # (sample, stripped_bc) -> label
+                for obs_name, sample, label in zip(
+                    atac_annot.obs_names, annot_samples, annot_preds
+                ):
+                    obs_name = str(obs_name)
+                    # Handle "sample:raw-GEM" vs "raw-GEM-sample" vs "raw-GEM"
+                    if ':' in obs_name:
+                        s_prefix, bc_core = obs_name.split(':', 1)
+                        if not sample:
+                            sample = s_prefix
+                    elif sample and obs_name.endswith(f'-{sample}'):
+                        bc_core = obs_name[: -(len(sample) + 1)]
                     else:
-                        # Strip sample_id prefix (e.g. "SampleA:ACGT..." → "ACGT...")
-                        bare_bc = bc.split(':', 1)[-1] if ':' in bc else bc
-                        atac_cell_types.append(str(annot_labels.get(bare_bc, 'Unknown')))
+                        bc_core = obs_name
+                    stripped = _strip_gem(bc_core)
+                    annot_lookup[(str(sample), stripped)] = label
+                    annot_lookup[('', stripped)] = label
+
+                atac_mod = combined_mdata.mod['atac']
+                # Recover per-cell sample id from the MuData (atac mod was populated
+                # with sample_id in the per-sample loop via combined_mdata.obs['sample_id'])
+                atac_samples = combined_mdata.obs.loc[atac_mod.obs_names, 'sample_id'].astype(str).values
+                atac_cell_types = []
+                n_matched = 0
+                for bc, sid in zip(atac_mod.obs_names, atac_samples):
+                    bc = str(bc)
+                    bc_core = bc.split(':', 1)[-1] if ':' in bc else bc
+                    stripped = _strip_gem(bc_core)
+                    lbl = annot_lookup.get((sid, stripped),
+                                           annot_lookup.get(('', stripped)))
+                    if lbl is not None and not pd.isna(lbl):
+                        n_matched += 1
+                        atac_cell_types.append(str(lbl))
+                    else:
+                        atac_cell_types.append(np.nan)
 
                 atac_mod.obs['cell_type'] = atac_cell_types
-                # Override source on atac mod — this column now comes from scATAnno, not RNA annotation.
                 atac_mod.obs['cell_type_source'] = 'scatanno'
                 combined_mdata.obs['atac_cell_type'] = atac_cell_types
-
-                n_annotated = sum(1 for ct in atac_cell_types if ct.lower() != 'unknown')
-                log_message(f"  Transferred '{atac_ct_col}' → atac:cell_type for {n_annotated}/{len(atac_cell_types)} cells", LOG_FILE)
-                log_message(f"  Unique ATAC cell types: {len(set(atac_cell_types) - {'Unknown'})}", LOG_FILE)
+                n_uniq = len({ct for ct in atac_cell_types if not pd.isna(ct)})
+                log_message(
+                    f"  Transferred '{atac_ct_col}' → atac:cell_type for "
+                    f"{n_matched}/{len(atac_cell_types)} cells; {n_uniq} unique labels",
+                    LOG_FILE,
+                )
             else:
                 log_message("  No usable cell type column found in annotated peak matrix", LOG_FILE, "WARN")
 
@@ -482,7 +560,39 @@ def main():
             gc.collect()
         except Exception as e:
             log_message(f"  Could not transfer ATAC annotations: {e}", LOG_FILE, "WARN")
-    
+
+    # ========================================================================
+    # Unified MuData-level obs/cell_type: prefer RNA, fall back to ATAC, NaN otherwise
+    # ========================================================================
+    rna_ct = combined_mdata.mod['rna'].obs.get('cell_type') if 'rna' in combined_mdata.mod else None
+    atac_ct = combined_mdata.mod['atac'].obs.get('cell_type') if 'atac' in combined_mdata.mod else None
+    if rna_ct is not None or atac_ct is not None:
+        unified = pd.Series(index=combined_mdata.obs_names, dtype=object)
+        if rna_ct is not None:
+            rna_ct_reidx = rna_ct.reindex(combined_mdata.obs_names)
+            unified.loc[rna_ct_reidx.notna()] = rna_ct_reidx[rna_ct_reidx.notna()].astype(str).values
+        if atac_ct is not None:
+            atac_ct_reidx = atac_ct.reindex(combined_mdata.obs_names)
+            fill_mask = unified.isna() & atac_ct_reidx.notna()
+            unified.loc[fill_mask] = atac_ct_reidx[fill_mask].astype(str).values
+        combined_mdata.obs['cell_type'] = unified.values
+        # Record which source each cell's unified label came from
+        source = pd.Series('none', index=combined_mdata.obs_names, dtype=object)
+        if rna_ct is not None:
+            source.loc[rna_ct.reindex(combined_mdata.obs_names).notna()] = 'rna'
+        if atac_ct is not None:
+            both_na_mask = source == 'none'
+            atac_avail = atac_ct.reindex(combined_mdata.obs_names).notna()
+            source.loc[both_na_mask & atac_avail] = 'atac'
+        combined_mdata.obs['cell_type_source'] = source.values
+        n_rna = int((source == 'rna').sum())
+        n_atac = int((source == 'atac').sum())
+        n_none = int((source == 'none').sum())
+        log_message(
+            f"Unified obs/cell_type: {n_rna} from RNA, {n_atac} from ATAC, {n_none} unlabeled",
+            LOG_FILE,
+        )
+
     log_message(f"\n Final MuData: {combined_mdata.n_obs:,} cells", LOG_FILE)
     log_memory(LOG_FILE)
     

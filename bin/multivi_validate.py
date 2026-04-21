@@ -362,25 +362,74 @@ PBMC_MARKERS = {
 }
 
 
-def plot_marker_dotplots(gap_mdata, marker_genes, cell_type_key, output_dir):
+def _sanitize_groupby_column(adata, col):
+    """Prep a dotplot groupby column: strip literal 'nan' string artifact, drop
+    NaN cells, and rebuild Categorical so only observed categories are enumerated.
+
+    Returns (new_adata_subset, n_unique_groups). new_adata_subset may be an
+    empty view when every cell is unlabeled.
     """
-    Side-by-side dot plots: observed vs imputed RNA for marker genes.
+    s = adata.obs[col].astype(object)
+    # Treat a historical sanitizer artifact ('nan' as string) as true NaN.
+    s = s.where(s != "nan", np.nan)
+    keep = s.notna().values
+    if not keep.all():
+        adata = adata[keep].copy()
+        s = s[keep]
+    adata.obs[col] = pd.Categorical(s.astype(str))
+    return adata, int(adata.obs[col].nunique())
+
+
+def _nn_transfer_labels(gap_mdata, source_mask, target_mask, source_labels, k=10):
+    """Majority-vote NN transfer in X_MultiVI space from source → target cells.
+
+    Returns np.ndarray of transferred labels (str) aligned with target_mask cells;
+    NaN where the target cell has no valid source neighbors.
+    """
+    Z = gap_mdata.obsm.get("X_MultiVI")
+    if Z is None or source_mask.sum() == 0 or target_mask.sum() == 0:
+        return np.array([np.nan] * int(target_mask.sum()), dtype=object)
+    k = min(k, int(source_mask.sum()))
+    nn = NearestNeighbors(n_neighbors=k, metric="euclidean").fit(Z[source_mask])
+    _, ind = nn.kneighbors(Z[target_mask])
+    source_labels = np.asarray(source_labels)
+    out = []
+    for i in range(int(target_mask.sum())):
+        neigh = source_labels[ind[i]]
+        valid = [x for x in neigh if not (x is None or (isinstance(x, float) and np.isnan(x)))]
+        if valid:
+            out.append(pd.Series(valid).mode().iloc[0])
+        else:
+            out.append(np.nan)
+    return np.array(out, dtype=object)
+
+
+def plot_marker_dotplots(gap_mdata, marker_genes, cell_type_key, output_dir):
+    """Side-by-side dot plots: observed (paired) vs imputed (ATAC-only) RNA.
+
+    Observed panel groupby: cell_type_key (RNA annotation).
+    Imputed panel groupby (hybrid): primary atac:cell_type (scATAnno,
+    independent of MultiVI); fallback NN-transfer in X_MultiVI space from
+    paired cells' RNA labels. Both label columns are persisted on imputed_ad
+    as 'groupby_scatanno' and 'groupby_nn_transfer' for inspection.
+    Panels are skipped (not crashed) when <2 groups remain after sanitation.
     """
     print("\n[3] Marker gene dot plots...")
 
     modality = np.array(gap_mdata.obs["modality"])
-
-    # Get imputed expression
     if "multivi_imputed" not in gap_mdata.mod["rna"].layers:
         print("  No multivi_imputed layer found. Skipping.")
         return
 
-    # Build AnnData for observed cells
     paired_mask = modality == "paired"
+    atac_only_mask = modality == "accessibility"
+    if atac_only_mask.sum() == 0:
+        print("  No imputed RNA cells. Skipping dot plots.")
+        return
+
     rna_X = gap_mdata.mod["rna"].X[paired_mask]
     if issparse(rna_X):
         rna_X = rna_X.toarray()
-
     observed_ad = ad.AnnData(
         X=rna_X,
         obs=gap_mdata.obs[paired_mask].copy(),
@@ -388,16 +437,9 @@ def plot_marker_dotplots(gap_mdata, marker_genes, cell_type_key, output_dir):
     )
     observed_ad.obs_names = gap_mdata.obs_names[paired_mask]
 
-    # Build AnnData for imputed cells (ATAC-only cells with imputed RNA)
-    atac_only_mask = modality == "accessibility"
-    if atac_only_mask.sum() == 0:
-        print("  No imputed RNA cells. Skipping dot plots.")
-        return
-
     imputed_X = gap_mdata.mod["rna"].layers["multivi_imputed"][atac_only_mask]
     if issparse(imputed_X):
         imputed_X = imputed_X.toarray()
-
     imputed_ad = ad.AnnData(
         X=imputed_X,
         obs=gap_mdata.obs[atac_only_mask].copy(),
@@ -405,37 +447,92 @@ def plot_marker_dotplots(gap_mdata, marker_genes, cell_type_key, output_dir):
     )
     imputed_ad.obs_names = gap_mdata.obs_names[atac_only_mask]
 
-    # Filter to available marker genes
     available_markers = [g for g in marker_genes if g in observed_ad.var_names]
     if len(available_markers) == 0:
-        print(f"  No marker genes found in var_names. Skipping.")
+        print("  No marker genes found in var_names. Skipping.")
         return
-
     print(f"  Using {len(available_markers)} marker genes")
 
-    # Normalize for visualization
-    sc.pp.normalize_total(observed_ad, target_sum=1e4)
-    sc.pp.log1p(observed_ad)
-    sc.pp.normalize_total(imputed_ad, target_sum=1e4)
-    sc.pp.log1p(imputed_ad)
+    sc.pp.normalize_total(observed_ad, target_sum=1e4); sc.pp.log1p(observed_ad)
+    sc.pp.normalize_total(imputed_ad, target_sum=1e4); sc.pp.log1p(imputed_ad)
 
-    # Find cell type column
-    ct_col = None
-    for candidate in [cell_type_key, f"rna:{cell_type_key}", "celltypist_prediction"]:
+    # ---- Observed panel groupby: RNA cell_type ----
+    observed_col = None
+    for candidate in (cell_type_key, f"rna:{cell_type_key}", "celltypist_prediction"):
         if candidate in observed_ad.obs.columns:
-            ct_col = candidate
+            observed_col = candidate
             break
+    if observed_col is None:
+        print("  No RNA cell type column for observed panel. Skipping dot plots.")
+        return
+    observed_fixed, n_obs_groups = _sanitize_groupby_column(observed_ad, observed_col)
 
-    if ct_col is None:
-        print("  No cell type column for dot plot grouping. Skipping.")
+    # ---- Imputed panel groupby: hybrid (scATAnno primary, NN-transfer fallback) ----
+    # Persist both candidate labels on imputed_ad for inspection.
+    atac_candidates = ("atac:cell_type", "atac_cell_type", "atac:celltypist_prediction")
+    imputed_scatanno_raw = None
+    for candidate in atac_candidates:
+        if candidate in imputed_ad.obs.columns:
+            s = imputed_ad.obs[candidate].astype(object).where(
+                imputed_ad.obs[candidate].astype(object) != "nan", np.nan
+            )
+            if s.notna().sum() > 0:
+                imputed_scatanno_raw = (candidate, s.values)
+                break
+    if imputed_scatanno_raw is not None:
+        imputed_ad.obs["groupby_scatanno"] = imputed_scatanno_raw[1]
+
+    # NN-transfer labels (always computed when X_MultiVI is available, for comparison).
+    paired_labels_raw = pd.Series(
+        gap_mdata.obs[observed_col].astype(object).values
+        if observed_col in gap_mdata.obs.columns
+        else gap_mdata.mod["rna"].obs[observed_col].astype(object).values,
+        index=gap_mdata.obs_names,
+    )
+    paired_labels_raw = paired_labels_raw.where(paired_labels_raw != "nan", np.nan)
+    paired_labels = paired_labels_raw.values[paired_mask]
+    nn_labels = _nn_transfer_labels(gap_mdata, paired_mask, atac_only_mask, paired_labels, k=10)
+    imputed_ad.obs["groupby_nn_transfer"] = nn_labels
+
+    # Primary = scATAnno; fallback = NN-transfer when scATAnno gives <2 groups.
+    imputed_col = None
+    imputed_label_source = None
+    if "groupby_scatanno" in imputed_ad.obs.columns:
+        s = imputed_ad.obs["groupby_scatanno"].dropna()
+        if s.nunique() >= 2:
+            imputed_col = "groupby_scatanno"
+            imputed_label_source = imputed_scatanno_raw[0]
+    if imputed_col is None:
+        s = pd.Series(nn_labels).dropna()
+        if s.nunique() >= 2:
+            imputed_col = "groupby_nn_transfer"
+            imputed_label_source = f"NN-transfer from {observed_col}"
+    imputed_fixed, n_imp_groups = (imputed_ad, 0)
+    if imputed_col is not None:
+        imputed_fixed, n_imp_groups = _sanitize_groupby_column(imputed_ad, imputed_col)
+    print(f"  observed groupby='{observed_col}' n={observed_fixed.n_obs} groups={n_obs_groups}")
+    print(f"  imputed  groupby='{imputed_col}' (source='{imputed_label_source}') "
+          f"n={imputed_fixed.n_obs} groups={n_imp_groups}")
+
+    plot_observed = observed_fixed.n_obs > 0 and n_obs_groups >= 2
+    plot_imputed = imputed_fixed.n_obs > 0 and n_imp_groups >= 2
+    if not plot_observed and not plot_imputed:
+        print("  Neither panel has >=2 groups after sanitation. Skipping dotplot.")
         return
 
-    fig, axes = plt.subplots(2, 1, figsize=(max(12, len(available_markers) * 0.8), 10))
-
-    sc.pl.dotplot(observed_ad, var_names=available_markers, groupby=ct_col,
-                  ax=axes[0], show=False, title="Observed RNA")
-    sc.pl.dotplot(imputed_ad, var_names=available_markers, groupby=ct_col,
-                  ax=axes[1], show=False, title="Imputed RNA (ATAC-only cells)")
+    n_panels = int(plot_observed) + int(plot_imputed)
+    fig, axes = plt.subplots(n_panels, 1, figsize=(max(12, len(available_markers) * 0.8), 5 * n_panels))
+    if n_panels == 1:
+        axes = [axes]
+    i = 0
+    if plot_observed:
+        sc.pl.dotplot(observed_fixed, var_names=available_markers, groupby=observed_col,
+                      ax=axes[i], show=False, title=f"Observed RNA (groupby={observed_col})")
+        i += 1
+    if plot_imputed:
+        sc.pl.dotplot(imputed_fixed, var_names=available_markers, groupby=imputed_col,
+                      ax=axes[i], show=False,
+                      title=f"Imputed RNA (ATAC-only; groupby={imputed_col}, source={imputed_label_source})")
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "validation_marker_dotplots.pdf"), dpi=150)

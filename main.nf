@@ -949,7 +949,7 @@ workflow RNA {
     }
 
     emit:
-    integrated_rna = RUN_CELLTYPIST.out.annotated_h5ad
+    integrated_rna = PLOT_POST_SCANVI.out.annotated_updated
     qc_h5ads = RNA_QC.out.filtered_h5ad
     pre_qc_plots = CONCAT_BATCHES.out.plots
     post_qc_plots = PLOT_POST_SCANVI.out.plots

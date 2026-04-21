@@ -46,8 +46,12 @@ def _sanitize_mudata_obs_for_h5py(mdata):
     pd.concat of bool + NaN (from build_expanded_mudata gap-cell rows) yields
     object dtype; h5py then tries vlen-string serialization and fails on
     non-string scalars (e.g. 'rna:predicted_doublets' from rna_qc scrublet).
-    For each object-dtype column: if all non-null values are bool, cast to
-    bool with NaN→False; otherwise cast to str with NaN→'nan'.
+    Coercion preserves NaN:
+      - All-bool non-null → bool with NaN→False.
+      - Otherwise → pd.Categorical with NaN as code -1 (h5py serializes
+        categorical as int codes + categories array; no vlen-string failure
+        and downstream readers see pd.NA / NaN for missing, not the literal
+        string 'nan' which would pollute groupby operations.
     """
     def _fix(obs_df):
         for col in list(obs_df.columns):
@@ -57,7 +61,10 @@ def _sanitize_mudata_obs_for_h5py(mdata):
                 if len(nn) > 0 and nn.map(lambda x: isinstance(x, (bool, np.bool_))).all():
                     obs_df[col] = s.fillna(False).astype(bool)
                 else:
-                    obs_df[col] = s.where(s.notna(), "nan").astype(str)
+                    # Stringify non-null values only; NaN stays NaN so that
+                    # pd.Categorical assigns code -1 (serialized/read as NaN).
+                    str_vals = [None if pd.isna(x) else str(x) for x in s]
+                    obs_df[col] = pd.Categorical(str_vals)
 
     _fix(mdata.obs)
     if hasattr(mdata, "mod"):
