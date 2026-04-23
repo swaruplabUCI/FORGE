@@ -151,11 +151,14 @@ def normalize_peak_barcode(bc: str) -> str:
 
 
 def tail_only(bc: str) -> str:
-    """Strip sample prefix, keeping only the cell barcode portion."""
-    if "_" in bc:
-        return bc.split("_", 1)[-1]
+    """Strip sample prefix, keeping only the cell barcode portion.
+    Check colon first — our pipeline uses sample_id:barcode format,
+    and sample_id itself may contain underscores (e.g. Mouse_Kidney_BD).
+    """
     if ":" in bc:
         return bc.split(":", 1)[-1]
+    if "_" in bc:
+        return bc.split("_", 1)[-1]
     return bc
 
 
