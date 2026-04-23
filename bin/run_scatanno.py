@@ -148,7 +148,7 @@ def main():
 
     # Handle both AnnDataSet (.h5ads) and individual h5ad
     if args.query.endswith('.h5ads'):
-        query_snap = snap.read_dataset(args.query)
+        query_snap = snap.read_dataset(args.query, mode='r')
     else:
         query_snap = snap.read(args.query, backed='r')
 

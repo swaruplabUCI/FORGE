@@ -239,6 +239,16 @@ def main():
         print(f"[SKIP] Gene '{gene}' not found in track manifest (likely JASPAR "
               f"composite/ortholog name with no human gene match). Available: "
               f"{list(gene_regions.keys())[:10]}")
+        # Write stub summary: Nextflow declares `summary` non-optional, so a
+        # graceful skip with no file is treated as a missing output and fails the run.
+        stub = {
+            'gene': gene_original,
+            'tf': tf_name,
+            'skipped': True,
+            'reason': 'gene_not_in_track_manifest',
+        }
+        with open(os.path.join(args.outdir, f'summary_{gene_original}_{tf_name}.json'), 'w') as f:
+            json.dump(stub, f, indent=2)
         sys.exit(0)
 
     ini_path = gene_info['ini']

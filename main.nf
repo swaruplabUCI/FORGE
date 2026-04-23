@@ -32,6 +32,7 @@ include { PREPARE_REFERENCE } from './modules/integration/prepare_reference'
 include { TRAIN_SCVI } from './modules/integration/scvi'
 include { TRAIN_SCANVI } from './modules/integration/scanvi'
 include { RUN_CELLTYPIST } from './modules/cellannotator/celltypist'
+include { RUN_MARKER_ANNOTATION } from './modules/cellannotator/marker_annotation'
 
 // ============================================================================
 // VISUALIZATION MODULES
@@ -77,8 +78,14 @@ include { SNAPATAC_DIFFERENTIAL } from './modules/atac/snapatac_diff'
 // Cicero modules
 include { CICERO_TRIPLETS } from './modules/cicero/cicero_triplets'
 include { CICERO_ESTIMATE_DP } from './modules/cicero/cicero_estimate_dp'
+include { CICERO_ESTIMATE_DP as CICERO_ESTIMATE_DP_CTRL } from './modules/cicero/cicero_estimate_dp'
+include { CICERO_ESTIMATE_DP as CICERO_ESTIMATE_DP_TRT  } from './modules/cicero/cicero_estimate_dp'
 include { CICERO_FULL_CHROM  } from './modules/cicero/cicero_full_chrom'
+include { CICERO_FULL_CHROM as CICERO_FULL_CHROM_CTRL } from './modules/cicero/cicero_full_chrom'
+include { CICERO_FULL_CHROM as CICERO_FULL_CHROM_TRT  } from './modules/cicero/cicero_full_chrom'
 include { CICERO_JOIN        } from './modules/cicero/cicero_join'
+include { CICERO_JOIN as CICERO_JOIN_CTRL } from './modules/cicero/cicero_join'
+include { CICERO_JOIN as CICERO_JOIN_TRT  } from './modules/cicero/cicero_join'
 include { CICERO_TARGET_PLOTS } from './modules/cicero/cicero_target_plots'
 
 // ChromVAR modules
@@ -86,6 +93,17 @@ include { GPU_CHROMVAR } from './modules/chromvar/gpu_chromvar'
 include { VIS_CHROMVAR } from './modules/chromvar/vischromvar'
 include { EXTRACT_CHROMVAR_MOTIFS } from './modules/chromvar/extract_motifs'
 include { MAP_TF_TO_TARGET_GENES } from './modules/chromvar/map_tf_targets'
+// Shi et al. TF accessibility tester (differential or descriptive mode)
+include { DIFFERENTIAL_TF_ACCESSIBILITY } from './modules/chromvar/differential_tf_accessibility'
+
+// Shi et al. stratified Cicero + co-accessibility comparison (absorbed from SDas)
+// Stratified legs reuse the per-chromosome path via CICERO_ESTIMATE_DP_CTRL/TRT
+// + CICERO_FULL_CHROM_CTRL/TRT + CICERO_JOIN_CTRL/TRT (aliased above).
+// The monolithic CICERO_FULL_STRATIFIED process in cicero_stratified.nf is
+// intentionally NOT included; kept as dead code for backward reference.
+include { CICERO_TRIPLETS_STRATIFIED } from './modules/cicero/cicero_stratified'
+include { CICERO_TRIPLETS_STRATIFIED as CICERO_TRIPLETS_STRATIFIED_TRT } from './modules/cicero/cicero_stratified'
+include { COMPARE_COACCESSIBILITY } from './modules/cicero/cicero_stratified'
 
 // scPRINT modules
 include { SCPRINTER_BARCODES } from './modules/scprint/barcodes'
@@ -140,6 +158,10 @@ include { SCPRINTER_DORC       } from './modules/multiome/scprinter_dorc'
 include { EXTRACT_CCAN_ENHANCERS } from './modules/scprint/extract_ccan_enhancers'
 include { MOTIF_SCAN_ENHANCERS   } from './modules/scprint/motif_scan_enhancers'
 include { ENHANCER_FOOTPRINTING  } from './modules/scprint/enhancer_footprinting'
+// Phase 3: ATAC-only TF-gene regulatory network (Shi et al. TF_Net equivalent,
+// continuous scPrinter binding × Cicero co-accessibility). Absorbed from SDas.
+include { BUILD_TF_GENE_NETWORK } from './modules/scprint/build_tf_gene_network'
+include { PLOT_TF_GENE_NETWORK  } from './modules/scprint/plot_tf_gene_network'
 
 // Phase 2: Multiome Integration (Recipe B)
 include { EXTRACT_EREGULON_REGIONS } from './modules/multiome/extract_eregulon_regions'
@@ -164,7 +186,11 @@ def has_reference = (params.species == 'human' && params.ref_dir_human_integrate
 // 'cell_type' by precedence (scanvi > celltypist > marker) and stamp provenance
 // in 'cell_type_source'. Downstream modules use this single key regardless of
 // which annotation tool ran.
-def cell_type_key = 'cell_type'
+//
+// PLOT_POST_SCANVI runs BEFORE BUILD_MUDATA unifies, so the key it receives
+// reflects the column the current annotation tool wrote on the h5ad.
+def cell_type_key = (params.rna?.annotation_method == 'markers')
+    ? 'cell_type_marker' : 'cell_type'
 
 // ATAC cell type column: depends on annotation mode
 // marker_file → 'cell_type', scATAnno → 'cell_type_prediction', CellTypist → 'celltypist_prediction'
@@ -813,11 +839,24 @@ workflow RNA {
             TRAIN_SCVI.out.scvi_model_dir
         )
 
-        log.info "Step 6b: Running CellTypist annotation..."
-        RUN_CELLTYPIST(TRAIN_SCANVI.out.annotated)
+        if (params.rna.annotation_method == 'markers') {
+            if (!params.rna.marker_file) {
+                error "params.rna.annotation_method='markers' requires params.rna.marker_file"
+            }
+            log.info "Step 6b: Running marker-gene annotation..."
+            RUN_MARKER_ANNOTATION(
+                TRAIN_SCANVI.out.annotated,
+                Channel.value(file(params.rna.marker_file))
+            )
+            log.info "Step 7: Generating post-integration visualizations..."
+            PLOT_POST_SCANVI(RUN_MARKER_ANNOTATION.out.annotated_h5ad, cell_type_key)
+        } else {
+            log.info "Step 6b: Running CellTypist annotation..."
+            RUN_CELLTYPIST(TRAIN_SCANVI.out.annotated)
 
-        log.info "Step 7: Generating post-integration visualizations..."
-        PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad, cell_type_key)
+            log.info "Step 7: Generating post-integration visualizations..."
+            PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad, cell_type_key)
+        }
 
     } else {
         // ============================================================
@@ -825,11 +864,24 @@ workflow RNA {
         // ============================================================
         log.info "No reference atlas provided -- using CellTypist (direct) path"
 
-        log.info "Step 5-alt: Running CellTypist annotation..."
-        RUN_CELLTYPIST(CONCAT_BATCHES.out.concatenated)
+        if (params.rna.annotation_method == 'markers') {
+            if (!params.rna.marker_file) {
+                error "params.rna.annotation_method='markers' requires params.rna.marker_file"
+            }
+            log.info "Step 5-alt: Running marker-gene annotation..."
+            RUN_MARKER_ANNOTATION(
+                CONCAT_BATCHES.out.concatenated,
+                Channel.value(file(params.rna.marker_file))
+            )
+            log.info "Step 7: Generating post-integration visualizations..."
+            PLOT_POST_SCANVI(RUN_MARKER_ANNOTATION.out.annotated_h5ad, cell_type_key)
+        } else {
+            log.info "Step 5-alt: Running CellTypist annotation..."
+            RUN_CELLTYPIST(CONCAT_BATCHES.out.concatenated)
 
-        log.info "Step 7: Generating post-integration visualizations..."
-        PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad, cell_type_key)
+            log.info "Step 7: Generating post-integration visualizations..."
+            PLOT_POST_SCANVI(RUN_CELLTYPIST.out.annotated_h5ad, cell_type_key)
+        }
     }
 
     // Debug: View what was emitted
@@ -1314,7 +1366,8 @@ workflow REGULATORY_ANALYSIS {
         CICERO_JOIN(
             CICERO_FULL_CHROM.out.chrom_conns.map { it[1] }.collect(),
             CICERO_ESTIMATE_DP.out.ordered_cds,
-            params.cicero.gtf_full
+            params.cicero.gtf_full,
+            ""
         )
 
         if (!use_chromvar_for_cicero && params.cicero.target_genes && !params.cicero.target_genes.isEmpty()) {
@@ -1601,6 +1654,101 @@ workflow REGULATORY_ANALYSIS {
     }
 
     // ================================================================
+    // SHI-STYLE TF ACCESSIBILITY TESTING (differential or descriptive)
+    //   Absorbed from SDas. Gated by params.differential_tf.run.
+    //   mode='differential' — per (cell_type, trt, ctrl); needs 2+ conditions
+    //   mode='descriptive'  — per cell_type vs rest-of-cells (single-cond OK)
+    // ================================================================
+    if ((params.differential_tf?.run ?: false) && params.chromvar.run) {
+        def tf_mode = params.differential_tf.mode ?: 'descriptive'
+        def tf_cts  = params.differential_tf?.cell_types ?: []
+        if (!tf_cts) {
+            error "params.differential_tf.cell_types must be non-empty when differential_tf.run=true"
+        }
+        def tf_tasks = []
+        if (tf_mode == 'differential') {
+            def cmps = params.differential_tf?.comparisons ?: []
+            if (!cmps) {
+                error "differential_tf.mode='differential' requires differential_tf.comparisons=[[trt,ctrl], ...]"
+            }
+            tf_cts.each { ct -> cmps.each { c -> tf_tasks << tuple(ct as String, c[0] as String, c[1] as String) } }
+        } else {
+            // descriptive — 3rd tuple value is an unused placeholder (module ignores it)
+            def filters = params.differential_tf?.conditions ?: [null]
+            tf_cts.each { ct -> filters.each { f -> tf_tasks << tuple(ct as String, (f ?: 'all') as String, 'rest' as String) } }
+        }
+        log.info "TF accessibility (mode=${tf_mode}): ${tf_tasks.size()} tasks"
+        def ch_tf_tasks = Channel.from(tf_tasks)
+        DIFFERENTIAL_TF_ACCESSIBILITY(
+            GPU_CHROMVAR.out.chromvar_dev,
+            peak_matrix,
+            ch_tf_tasks
+        )
+    }
+
+    // ================================================================
+    // SHI-STYLE STRATIFIED CICERO + CO-ACCESSIBILITY COMPARISON
+    //   Absorbed from SDas. Runs Cicero SEPARATELY per condition and
+    //   compares the two co-accessibility maps. Gated by
+    //   params.cicero.stratified=true with 2 condition labels declared.
+    //   Runs IN ADDITION TO the default global Cicero (both useful).
+    // ================================================================
+    if ((params.cicero?.stratified ?: false) && params.cicero.run) {
+        def strat_ctrl = params.cicero?.control_condition ?:
+                         params.differential?.control_condition
+        def strat_trt  = params.cicero?.treatment_condition ?:
+                         params.differential?.treatment_condition
+        def strat_key  = params.cicero?.condition_key ?:
+                         (params.differential?.condition_key ?: 'condition')
+        if (!strat_ctrl || !strat_trt) {
+            error "cicero.stratified=true requires cicero.control_condition and cicero.treatment_condition (or params.differential fallbacks)"
+        }
+        log.info "Stratified Cicero: ${strat_ctrl} vs ${strat_trt} (condition_key=${strat_key}) — per-chromosome fan-out per leg"
+
+        def cicero_chroms_strat = (params.species == 'mouse' ? (1..19) : (1..22))
+                                      .collect { "chr${it}" } + ['chrX', 'chrY', 'chrM']
+
+        // --- Control leg: triplets → estimate_dp → per-chrom → join ---
+        CICERO_TRIPLETS_STRATIFIED(peak_matrix, strat_key, strat_ctrl)
+        CICERO_ESTIMATE_DP_CTRL(CICERO_TRIPLETS_STRATIFIED.out.triplets)
+        CICERO_FULL_CHROM_CTRL(
+            Channel.fromList(cicero_chroms_strat)
+                .combine(CICERO_ESTIMATE_DP_CTRL.out.cicero_cds)
+                .combine(CICERO_ESTIMATE_DP_CTRL.out.gene_ann)
+                .combine(CICERO_ESTIMATE_DP_CTRL.out.dp)
+        )
+        CICERO_JOIN_CTRL(
+            CICERO_FULL_CHROM_CTRL.out.chrom_conns.map { it[1] }.collect(),
+            CICERO_ESTIMATE_DP_CTRL.out.ordered_cds,
+            params.cicero.gtf_full,
+            "stratified/${strat_ctrl}"
+        )
+
+        // --- Treatment leg: symmetric ---
+        CICERO_TRIPLETS_STRATIFIED_TRT(peak_matrix, strat_key, strat_trt)
+        CICERO_ESTIMATE_DP_TRT(CICERO_TRIPLETS_STRATIFIED_TRT.out.triplets)
+        CICERO_FULL_CHROM_TRT(
+            Channel.fromList(cicero_chroms_strat)
+                .combine(CICERO_ESTIMATE_DP_TRT.out.cicero_cds)
+                .combine(CICERO_ESTIMATE_DP_TRT.out.gene_ann)
+                .combine(CICERO_ESTIMATE_DP_TRT.out.dp)
+        )
+        CICERO_JOIN_TRT(
+            CICERO_FULL_CHROM_TRT.out.chrom_conns.map { it[1] }.collect(),
+            CICERO_ESTIMATE_DP_TRT.out.ordered_cds,
+            params.cicero.gtf_full,
+            "stratified/${strat_trt}"
+        )
+
+        COMPARE_COACCESSIBILITY(
+            CICERO_JOIN_CTRL.out.connections,
+            CICERO_JOIN_TRT.out.connections,
+            strat_ctrl,
+            strat_trt
+        )
+    }
+
+    // ================================================================
     // EMIT
     // ================================================================
     emit:
@@ -1615,6 +1763,9 @@ workflow REGULATORY_ANALYSIS {
         SCPRINTER_FOOTPRINTING.out.footprints : Channel.empty()
     scprinter_diff       = (has_da_peaks && params.scprinter.run) ?
         SCPRINTER_FOOTPRINTING_DIFF.out.footprints : Channel.empty()
+    // tf_target_genes.json — input for BUILD_TF_GENE_NETWORK (Phase 3, ATAC-only GRN)
+    tf_targets           = (is_discovery_mode && params.chromvar.run) ?
+        MAP_TF_TO_TARGET_GENES.out.tf_targets : Channel.empty()
 }
 
 // ============================================================================
@@ -1931,6 +2082,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     cellchat_csv_ch
     pseudobulk_bigwigs_ch
     cell_type_col             // FIX-43: obs column name for cell types
+    tf_targets_ch             // tf_target_genes.json from MAP_TF_TO_TARGET_GENES (Phase 3)
 
     main:
 
@@ -1977,6 +2129,25 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')),
         cell_type_col
     )
+
+    // ================================================================
+    // PHASE 3: TF-Gene Regulatory Network (ATAC-only, Shi et al. TF_Net equivalent)
+    //   Uses continuous scPrinter binding scores × Cicero co-accessibility.
+    //   Absorbed from SDas_nf. No RNA dependency.
+    // ================================================================
+    if (params.enhancer_footprinting.build_network ?: false) {
+        log.info "ENHANCER FOOTPRINTING RECIPES: Phase 3 (TF-gene regulatory network)"
+        def tf_gtf = params.species == 'human' ?
+            params.scprinter.gtf_human : params.scprinter.gtf_mouse
+        BUILD_TF_GENE_NETWORK(
+            tf_targets_ch,
+            EXTRACT_CCAN_ENHANCERS.out.gene_links,
+            cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')).first(),
+            ENHANCER_FOOTPRINTING.out.summary.collect(),
+            tf_gtf
+        )
+        PLOT_TF_GENE_NETWORK(BUILD_TF_GENE_NETWORK.out.adjacency)
+    }
 
     // ================================================================
     // PHASE 2: Multiome Integration (Recipe B)
@@ -2486,7 +2657,8 @@ workflow {
             rna_ch,
             cellchat_csv_ch,
             bigwigs_ch,
-            atac_cell_type_key
+            atac_cell_type_key,
+            REGULATORY_ANALYSIS.out.tf_targets
         )
     }
 }
