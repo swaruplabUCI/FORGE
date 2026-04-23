@@ -1491,13 +1491,19 @@ workflow REGULATORY_ANALYSIS {
             if (has_da_peaks) {
                 log.info "DISCOVERY differential footprinting per cell type..."
 
+                // Skip DIFF for cell types with no target genes — the script
+                // exits 0 without producing footprints_*.h5ad (required output),
+                // and the 780 MB printer copy in .command.sh is wasted. Non-DIFF
+                // SCPRINTER_FOOTPRINTING above is intentionally left unfiltered.
+                ch_fp_diff = ch_fp.filter { t -> t[1] && t[1].size() > 0 }
+
                 SCPRINTER_FOOTPRINTING_DIFF(
                     peak_matrix,
                     metadata,
                     SCPRINTER_BUILD_PRINTER.out.printer,
-                    ch_fp.map { it[0] },
-                    ch_fp.map { it[1] },
-                    ch_fp.map { it[2] },
+                    ch_fp_diff.map { it[0] },
+                    ch_fp_diff.map { it[1] },
+                    ch_fp_diff.map { it[2] },
                     params.differential.control_condition,
                     params.differential.treatment_condition,
                     MAP_TF_TO_TARGET_GENES.out.tf_targets,
@@ -1510,7 +1516,7 @@ workflow REGULATORY_ANALYSIS {
                     peak_matrix,
                     da_peaks_optional.collect(),
                     SCPRINTER_BUILD_PRINTER.out.printer,
-                    ch_fp.map { it[0] },
+                    ch_fp_diff.map { it[0] },
                     SCPRINTER_FOOTPRINTING_DIFF.out.footprints.collect()
                 )
             }

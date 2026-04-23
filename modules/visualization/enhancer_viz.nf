@@ -10,7 +10,7 @@ process PREPARE_ENHANCER_VIZ_TRACKS {
 
     tag "enhancer_viz_tracks"
     label 'process_low'
-    errorStrategy 'ignore'
+    errorStrategy 'terminate'
     publishDir "${params.outdir}/enhancer_viz/tracks", mode: 'copy'
 
     input:
@@ -48,7 +48,7 @@ process COMPOSITE_ENHANCER_VIZ {
     tag "${gene}_${tf_name}"
     label 'process_high'
     maxForks 7
-    errorStrategy 'ignore'
+    errorStrategy 'terminate'
     publishDir "${params.outdir}/enhancer_viz/composites/${gene}/${tf_name}", mode: 'copy'
 
     input:
@@ -67,6 +67,8 @@ process COMPOSITE_ENHANCER_VIZ {
 
     script:
     // FIX-97: Removed printer/peak_matrix inputs (caused 4h hang loading 1.9GB h5ad)
+    // FIX-B-2026-04-22: Panel height floor/cap + aspect='auto' in composite_enhancer_viz.py.
+    // Comment bump forces cache re-hash so prior compressed composites regenerate on -resume.
     """
     python ${projectDir}/bin/composite_enhancer_viz.py \\
         --track-manifest '${track_manifest}' \\

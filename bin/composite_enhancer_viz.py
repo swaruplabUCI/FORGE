@@ -154,26 +154,33 @@ def assemble_composite_figure(
         print("[WARN] No panels available — cannot assemble composite figure")
         return None
 
-    # Determine layout — compute height ratios from actual image aspect ratios
+    # Determine layout. Floor + cap each panel height so multi-panel stacks
+    # (e.g. browser + 5 footprint cell types) do not squeeze each panel to
+    # ~3 in, and single-panel browser-only cases do not blow up to ~78 in.
+    # aspect='auto' lets each imshow fill its row cleanly at the allocated
+    # height; source PNGs carry their own labels so mild aspect distortion
+    # is preferable to letterboxing or cramming.
     n_panels = len(panel_imgs)
     has_motif = motif_pwm is not None
     fig_width = 24
-    # Compute the natural height each panel image needs at fig_width
+    MIN_PANEL_HEIGHT = 3.0
+    MAX_PANEL_HEIGHT = 6.0
     panel_heights = []
     for img in panel_imgs:
         h, w = img.shape[:2]
-        panel_heights.append(fig_width * (h / w))
-    motif_height = 2.0  # inches for motif logo
+        natural = fig_width * (h / w)
+        panel_heights.append(max(MIN_PANEL_HEIGHT, min(MAX_PANEL_HEIGHT, natural)))
+    motif_height = 2.0
     total_height = sum(panel_heights) + (motif_height if has_motif else 0)
     height_ratios = panel_heights + ([motif_height] if has_motif else [])
     n_rows = n_panels + (1 if has_motif else 0)
 
-    fig = plt.figure(figsize=(fig_width, total_height), constrained_layout=True)
-    gs = gridspec.GridSpec(n_rows, 1, figure=fig, height_ratios=height_ratios)
+    fig = plt.figure(figsize=(fig_width, total_height))
+    gs = gridspec.GridSpec(n_rows, 1, figure=fig, height_ratios=height_ratios, hspace=0.3)
 
     for row, (img, label) in enumerate(zip(panel_imgs, panel_labels)):
         ax = fig.add_subplot(gs[row])
-        ax.imshow(img, aspect='equal')
+        ax.imshow(img, aspect='auto')
         ax.axis('off')
         ax.set_title(label, fontsize=14, fontweight='bold', loc='left')
 
