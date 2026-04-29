@@ -176,6 +176,14 @@ include { SIGNAL_CHAIN_CORRELATION  } from './modules/cellchat/signal_chain_corr
 include { PREPARE_ENHANCER_VIZ_TRACKS } from './modules/visualization/enhancer_viz'
 include { COMPOSITE_ENHANCER_VIZ      } from './modules/visualization/enhancer_viz'
 
+// D1b: B-tier modules absorbed from SDas_nf
+include { POST_QC_REPORT               } from './modules/atac/post_qc_report'
+include { ATAC_DESCRIPTIVE_REPORT      } from './modules/atac/descriptive_report'
+include { ENHANCER_FOOTPRINTING_PER_CT } from './modules/scprint/enhancer_footprinting_per_ct'
+include { BUILD_VIZ_CANDIDATES         } from './modules/visualization/build_viz_candidates'
+include { AGGREGATE_FP_STATS           } from './modules/visualization/aggregate_fp_stats'
+include { EXPORT_ATAC_BIGWIGS          } from './modules/visualization/export_atac_bigwigs'
+
 
 // ============================================================================
 // GLOBAL: Compute cell_type_key ONCE
@@ -2084,6 +2092,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     pseudobulk_bigwigs_ch
     cell_type_col             // FIX-43: obs column name for cell types
     tf_targets_ch             // tf_target_genes.json from MAP_TF_TO_TARGET_GENES (Phase 3)
+    anndataset_ch             // D1b: ATAC AnnDataSet for EXPORT_ATAC_BIGWIGS
 
     main:
 
@@ -2107,34 +2116,92 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         chromvar_motifs_ch
     )
 
-    ch_enhancer_tasks = MOTIF_SCAN_ENHANCERS.out.manifest
-        .flatMap { manifest_file ->
-            def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
-            data.region_sets.collect { entry ->
-                tuple(entry.cell_type, entry.tf, entry.bed_file)
+    // D1b: condition-aware control/treatment from differential params.
+    // Replaces D1a empty-string placeholders.
+    def enh_ctrl = (params.differential?.run ?: false) ?
+        (params.differential.control_condition   ?: '') : ''
+    def enh_trt  = (params.differential?.run ?: false) ?
+        (params.differential.treatment_condition ?: '') : ''
+
+    // D1b: per-CT vs sharded toggle. Both paths emit the same
+    // {summary, footprints, binding_scores, global_plots} structure;
+    // bind enh_fp_* references so downstream wiring is arch-agnostic.
+    def enh_use_per_ct = params.enhancer_footprinting.use_per_ct ?: false
+    def enh_fp_summary
+    def enh_fp_footprints
+    def enh_fp_binding_scores
+    def enh_fp_global_plots
+
+    if (enh_use_per_ct) {
+        // Per-CT fan-out: one task per ct loads printer/peak matrix once
+        // and iterates all TFs. Cuts task count ~657 → ~10/33.
+        def per_ct_manifest_dir = file("${workflow.workDir}/per_ct_manifests")
+        per_ct_manifest_dir.mkdirs()
+
+        def ch_per_ct_input = MOTIF_SCAN_ENHANCERS.out.manifest
+            .flatMap { manifest_file ->
+                def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                data.region_sets.collect { entry ->
+                    tuple(entry.cell_type, [tf: entry.tf, bed_file: entry.bed_file])
+                }
             }
-        }
+            .groupTuple()
+            .combine(MOTIF_SCAN_ENHANCERS.out.region_sets)
+            .map { ct, entries, region_sets_dir ->
+                def safe_ct = ct.replaceAll(/[\/\s\(\)]+/, '_')
+                def manifest_path = file("${per_ct_manifest_dir}/manifest_${safe_ct}.json")
+                manifest_path.text = groovy.json.JsonOutput.toJson(entries)
+                def beds = entries.collect { e -> file("${region_sets_dir}/${e.bed_file}") }
+                tuple(ct, manifest_path, beds)
+            }
 
-    ch_enhancer_fp = ch_enhancer_tasks
-        .combine(MOTIF_SCAN_ENHANCERS.out.region_sets)
-        .map { ct, tf, bed_fname, region_sets_dir ->
-            tuple(file("${region_sets_dir}/${bed_fname}"), ct, tf)
-        }
+        ENHANCER_FOOTPRINTING_PER_CT(
+            ch_per_ct_input,
+            printer,
+            peak_matrix,
+            cell_type_col,
+            enh_ctrl,
+            enh_trt
+        )
 
-    // C2: enhancer_footprinting.nf gained val control_condition / val treatment_condition
-    // (Viz overhaul §3b). Empty strings disable the differential branch — D1b will
-    // wire these conditionally on params.differential.run.
-    ENHANCER_FOOTPRINTING(
-        ch_enhancer_fp.map { it[0] },
-        printer,
-        peak_matrix,
-        ch_enhancer_fp.map { it[1] },
-        ch_enhancer_fp.map { it[2] },
-        cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')),
-        cell_type_col,
-        '',  // control_condition (D1a placeholder; D1b wires from params.differential)
-        ''   // treatment_condition
-    )
+        enh_fp_summary        = ENHANCER_FOOTPRINTING_PER_CT.out.summary
+        enh_fp_footprints     = ENHANCER_FOOTPRINTING_PER_CT.out.footprints
+        enh_fp_binding_scores = ENHANCER_FOOTPRINTING_PER_CT.out.binding_scores
+        enh_fp_global_plots   = ENHANCER_FOOTPRINTING_PER_CT.out.global_plots
+
+    } else {
+        // Sharded fan-out: one task per (cell_type, TF) pair (legacy).
+        ch_enhancer_tasks = MOTIF_SCAN_ENHANCERS.out.manifest
+            .flatMap { manifest_file ->
+                def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                data.region_sets.collect { entry ->
+                    tuple(entry.cell_type, entry.tf, entry.bed_file)
+                }
+            }
+
+        ch_enhancer_fp = ch_enhancer_tasks
+            .combine(MOTIF_SCAN_ENHANCERS.out.region_sets)
+            .map { ct, tf, bed_fname, region_sets_dir ->
+                tuple(file("${region_sets_dir}/${bed_fname}"), ct, tf)
+            }
+
+        ENHANCER_FOOTPRINTING(
+            ch_enhancer_fp.map { it[0] },
+            printer,
+            peak_matrix,
+            ch_enhancer_fp.map { it[1] },
+            ch_enhancer_fp.map { it[2] },
+            cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')),
+            cell_type_col,
+            enh_ctrl,
+            enh_trt
+        )
+
+        enh_fp_summary        = ENHANCER_FOOTPRINTING.out.summary
+        enh_fp_footprints     = ENHANCER_FOOTPRINTING.out.footprints
+        enh_fp_binding_scores = ENHANCER_FOOTPRINTING.out.binding_scores
+        enh_fp_global_plots   = ENHANCER_FOOTPRINTING.out.global_plots
+    }
 
     // ================================================================
     // PHASE 3: TF-Gene Regulatory Network (ATAC-only, Shi et al. TF_Net equivalent)
@@ -2149,7 +2216,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             tf_targets_ch,
             EXTRACT_CCAN_ENHANCERS.out.gene_links,
             cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')).first(),
-            ENHANCER_FOOTPRINTING.out.summary.collect(),
+            enh_fp_summary.collect(),
             tf_gtf
         )
         PLOT_TF_GENE_NETWORK(BUILD_TF_GENE_NETWORK.out.adjacency)
@@ -2174,7 +2241,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         )
 
         CROSS_MODAL_VALIDATION(
-            ENHANCER_FOOTPRINTING.out.footprints.collect(),
+            enh_fp_footprints.collect(),
             rna_h5ad_ch,
             EXTRACT_EREGULON_REGIONS.out.target_genes
         )
@@ -2231,7 +2298,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         )
 
         SIGNAL_CHAIN_CORRELATION(
-            ENHANCER_FOOTPRINTING.out.footprints.collect(),
+            enh_fp_footprints.collect(),
             rna_h5ad_ch,
             EXTRACT_SIGNALING_TARGETS.out.metadata
         )
@@ -2243,9 +2310,23 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     if (params.enhancer_viz.run) {
         log.info "ENHANCER FOOTPRINTING RECIPES: Phase 4 (Composite Visualization)"
 
-        def bigwig_dir_ch = pseudobulk_bigwigs_ch
-            .ifEmpty(file('NO_BIGWIGS'))
-            .collect()
+        def viz_cell_type_col = params.enhancer_viz.cell_type_col ?: cell_type_col
+        def viz_min_cells     = params.enhancer_viz.min_cells     ?: 100
+
+        // D1b: ATAC-only pseudobulk bigWigs via snap.ex.export_coverage when
+        // SCENIC+ multiome path isn't producing pycistopic bigwigs.
+        def bigwig_dir_ch
+        if (has_scenic) {
+            bigwig_dir_ch = pseudobulk_bigwigs_ch.ifEmpty(file('NO_BIGWIGS')).collect()
+        } else {
+            EXPORT_ATAC_BIGWIGS(
+                anndataset_ch,
+                peak_matrix,
+                viz_cell_type_col,
+                viz_min_cells
+            )
+            bigwig_dir_ch = EXPORT_ATAC_BIGWIGS.out.bigwigs.collect()
+        }
 
         PREPARE_ENHANCER_VIZ_TRACKS(
             cicero_conns_ch,
@@ -2256,56 +2337,71 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             MOTIF_SCAN_ENHANCERS.out.manifest
         )
 
-        ch_viz_tasks = MOTIF_SCAN_ENHANCERS.out.manifest
-            .flatMap { manifest_file ->
-                def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
-                def seen = new HashSet()
-                data.region_sets.collect { entry ->
-                    def key = "${entry.cell_type}_${entry.tf}"
-                    if (!seen.contains(key)) {
-                        seen.add(key)
-                        tuple(entry.tf, entry.tf)
-                    } else {
-                        null
-                    }
-                }.findAll { it != null }
-            }
+        // D1b: Swarup-chain (gene, TF, ct) candidate filter. Replaces the old
+        // genes × TFs cartesian fan-out for COMPOSITE_ENHANCER_VIZ.
+        def diff_csvs_ch = (params.differential?.run ?: false) ?
+            DIFFERENTIAL_TF_ACCESSIBILITY.out.tf_diff.collect().ifEmpty([]) :
+            Channel.value([])
 
-        if (params.enhancer_viz.target_genes && !params.enhancer_viz.target_genes.isEmpty()) {
-            ch_viz_tasks = MOTIF_SCAN_ENHANCERS.out.manifest
-                .flatMap { manifest_file ->
-                    def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
-                    def tfs = data.region_sets.collect { it.tf }.unique()
-                    def genes = params.enhancer_viz.target_genes
-                    def pairs = []
-                    genes.each { gene ->
-                        tfs.each { tf ->
-                            pairs.add(tuple(gene, tf))
-                        }
-                    }
-                    pairs
-                }
+        BUILD_VIZ_CANDIDATES(
+            PREPARE_ENHANCER_VIZ_TRACKS.out.track_manifest,
+            MOTIF_SCAN_ENHANCERS.out.manifest,
+            MOTIF_SCAN_ENHANCERS.out.region_sets,
+            diff_csvs_ch
+        )
+
+        // D1b: per-(ct, TF) scalar metric rollup; gated on build_network so
+        // BUILD_TF_GENE_NETWORK.out.adjacency is available.
+        if (params.enhancer_footprinting.build_network ?: false) {
+            def promoter_fp_dir_ch = SCPRINTER_FOOTPRINTING.out.footprints
+                .collect()
+                .map { _files -> file("${params.outdir}/scprinter/footprints") }
+                .first()
+
+            AGGREGATE_FP_STATS(
+                enh_fp_footprints.collect(),
+                enh_fp_binding_scores.collect(),
+                diff_csvs_ch,
+                BUILD_TF_GENE_NETWORK.out.adjacency,
+                MOTIF_SCAN_ENHANCERS.out.region_sets,
+                MOTIF_SCAN_ENHANCERS.out.manifest,
+                PREPARE_ENHANCER_VIZ_TRACKS.out.track_manifest,
+                promoter_fp_dir_ch
+            )
         }
 
-        // C2: ENHANCER_FOOTPRINTING.out.plots was split into global_plots /
-        // per_condition_plots / differential_plots. Use global_plots as the
-        // closest analog of the old single-emit. D1b will switch to the
-        // dir-symlink staging trick (avoids .collect()'ing 1971 PNGs).
-        def fp_pngs_ch = ENHANCER_FOOTPRINTING.out.global_plots.collect().ifEmpty([])
+        // D1b: per-(gene, TF, ct) fan-out replaces D1a placeholders that
+        // passed '' for cell_type and NO_FILE for promoter dir.
+        def ch_viz_tasks = BUILD_VIZ_CANDIDATES.out.candidates
+            .splitCsv(header: true)
+            .map { row -> tuple(row.gene as String, row.tf as String, row.cell_type as String) }
 
-        // C5: COMPOSITE_ENHANCER_VIZ gained val cell_type + path scprinter_promoter_dir.
-        // D1a placeholder: pass '' for cell_type (composite_enhancer_viz.py falls back
-        // to multi-ct stack on empty) and NO_FILE for promoter dir. Per-ct fan-out
-        // via BUILD_VIZ_CANDIDATES is D1b territory.
+        // D1b: collapse fp PNG inputs to a single dir symlink. .collect() acts
+        // as the synchronization barrier; per-ct architecture publishes to a
+        // different root, so pick by use_per_ct.
+        def fp_root = enh_use_per_ct ?
+            file("${params.outdir}/enhancer_footprinting_per_ct") :
+            file("${params.outdir}/enhancer_footprinting/footprints")
+        def fp_dir_ch = enh_fp_global_plots
+            .collect()
+            .map { _files -> fp_root }
+            .first()
+
+        // D1b: Tier-1 promoter MSFP staging — same dir-symlink trick.
+        def promoter_dir_ch = SCPRINTER_FOOTPRINTING.out.footprints
+            .collect()
+            .map { _files -> file("${params.outdir}/scprinter/footprints") }
+            .first()
+
         COMPOSITE_ENHANCER_VIZ(
-            PREPARE_ENHANCER_VIZ_TRACKS.out.track_manifest,
+            PREPARE_ENHANCER_VIZ_TRACKS.out.track_manifest.first(),
             PREPARE_ENHANCER_VIZ_TRACKS.out.track_inis.collect(),
-            MOTIF_SCAN_ENHANCERS.out.motif_scan,
+            MOTIF_SCAN_ENHANCERS.out.manifest.first(),
             ch_viz_tasks.map { it[0] },
             ch_viz_tasks.map { it[1] },
-            '',
-            fp_pngs_ch,
-            file('NO_FILE')
+            ch_viz_tasks.map { it[2] },
+            fp_dir_ch,
+            promoter_dir_ch
         )
     }
 
@@ -2313,7 +2409,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     enhancer_peaks     = EXTRACT_CCAN_ENHANCERS.out.enhancer_peaks
     motif_scan         = MOTIF_SCAN_ENHANCERS.out.motif_scan
     region_sets        = MOTIF_SCAN_ENHANCERS.out.region_sets
-    enhancer_fps       = ENHANCER_FOOTPRINTING.out.footprints
+    enhancer_fps       = enh_fp_footprints
     cross_modal        = has_scenic ? CROSS_MODAL_VALIDATION.out.validation_table : Channel.empty()
     evidence_tiers     = params.enhancer_recipe_c.run ? SIGNAL_CHAIN_CORRELATION.out.evidence_tiers : Channel.empty()
     enhancer_viz       = (params.enhancer_viz.run ?: false) ? COMPOSITE_ENHANCER_VIZ.out.composite_png : Channel.empty()
@@ -2401,6 +2497,29 @@ workflow {
         ch_atac_peak_matrix = ATAC_FINAL.out.peak_matrix
         atac_completed = true
         atac_from_onramp = false
+
+        // ====================================================================
+        // ATAC Descriptive Report (always-on after ATAC_FINAL)
+        // D1b: SDas_nf line 214 — unconditional cell-count summaries
+        // ====================================================================
+        ATAC_DESCRIPTIVE_REPORT(
+            ATAC_FINAL.out.peak_matrix,
+            file(params.atac.sample_metadata)
+        )
+
+        // ====================================================================
+        // ATAC Post-hoc QC Report (opt-in via params.qc.post_hoc_report)
+        // D1b: re-renders FORGE-style TSSE marginal scatter from per-sample
+        // ATAC_INITIAL_QC outputs. Only valid in non-onramp ATAC mode.
+        // ====================================================================
+        if (params.qc?.post_hoc_report ?: false) {
+            POST_QC_REPORT(
+                ATAC_INITIAL.out.individual_samples.collect(),
+                params.atac.min_tsse        ?: params.atac.initial_min_tsse   ?: 6,
+                params.atac.min_counts      ?: params.atac.initial_min_counts ?: 5000,
+                params.atac.max_counts      ?: params.atac.initial_max_counts ?: 100000
+            )
+        }
 
         // Differential ATAC Analysis (requires condition_key)
         if (params.differential.run && params.differential.condition_key) {
@@ -2673,7 +2792,8 @@ workflow {
             cellchat_csv_ch,
             bigwigs_ch,
             atac_cell_type_key,
-            REGULATORY_ANALYSIS.out.tf_targets
+            REGULATORY_ANALYSIS.out.tf_targets,
+            ATAC_FINAL.out.anndataset            // D1b
         )
     }
 }
