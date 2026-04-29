@@ -11,10 +11,7 @@ process CICERO_JOIN {
     tag "${variant ?: 'plain'}"
     label 'process_medium'
     errorStrategy 'terminate'
-    publishDir { variant
-                    ? "${params.cicero.outdir}/${variant}"
-                    : "${params.cicero.outdir}/full_ConnsCoAccPseudoTAcc" },
-               mode: 'copy'
+    publishDir "${params.cicero.outdir}/${variant ?: 'full_ConnsCoAccPseudoTAcc'}", mode: 'copy'
 
     input:
     path chrom_conns  // collected list of conns_*.tsv.gz from CICERO_FULL_CHROM
