@@ -1698,11 +1698,26 @@ workflow REGULATORY_ANALYSIS {
     // ================================================================
     // SHI-STYLE STRATIFIED CICERO + CO-ACCESSIBILITY COMPARISON
     //   Absorbed from SDas. Runs Cicero SEPARATELY per condition and
-    //   compares the two co-accessibility maps. Gated by
-    //   params.cicero.stratified=true with 2 condition labels declared.
-    //   Runs IN ADDITION TO the default global Cicero (both useful).
+    //   compares the two co-accessibility maps. Runs IN ADDITION TO
+    //   the default global Cicero (both useful).
+    //
+    //   D3: gate now auto-activates whenever differential.run=true AND a
+    //   condition_key is declared (the disease axis is intrinsically
+    //   tied to differential mode). params.cicero.stratified=true remains
+    //   a manual override for non-differential workflows that still want
+    //   per-condition Cicero.
+    //
+    //   TODO (separate effort): per-cell-type Cicero fan-out as the
+    //   default architecture (always-on; orthogonal to disease axis).
+    //   That's a new architecture not present in SDas — needs design
+    //   doc + emit-shape rewrite + downstream consumer updates in
+    //   ENHANCER_FOOTPRINTING_RECIPES. Not part of the SDas absorption
+    //   series.
     // ================================================================
-    if ((params.cicero?.stratified ?: false) && params.cicero.run) {
+    def cicero_strat_auto   = (params.differential?.run ?: false) &&
+                              params.differential?.condition_key
+    def cicero_strat_manual = params.cicero?.stratified ?: false
+    if ((cicero_strat_auto || cicero_strat_manual) && params.cicero.run) {
         def strat_ctrl = params.cicero?.control_condition ?:
                          params.differential?.control_condition
         def strat_trt  = params.cicero?.treatment_condition ?:
@@ -1710,7 +1725,7 @@ workflow REGULATORY_ANALYSIS {
         def strat_key  = params.cicero?.condition_key ?:
                          (params.differential?.condition_key ?: 'condition')
         if (!strat_ctrl || !strat_trt) {
-            error "cicero.stratified=true requires cicero.control_condition and cicero.treatment_condition (or params.differential fallbacks)"
+            error "Stratified Cicero requires control_condition and treatment_condition (set params.cicero.{control,treatment}_condition or params.differential.{control,treatment}_condition)"
         }
         log.info "Stratified Cicero: ${strat_ctrl} vs ${strat_trt} (condition_key=${strat_key}) — per-chromosome fan-out per leg"
 
