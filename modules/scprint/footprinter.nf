@@ -33,6 +33,9 @@ process SCPRINTER_FOOTPRINTING {
     maxForks 7
 
     // FIX-43: Sanitize cell_type — slashes/spaces/parens in names break filesystem paths
+    // Viz overhaul §3a: plots are routed by mode at write time into the
+    // global/, per_condition/, differential/ subdirs — publishDir copies
+    // recursively, preserving the structure under the per-cell-type leaf.
     publishDir "${params.outdir}/scprinter/footprints/${cell_type.replaceAll(/[\/\s\(\)]+/, '_')}", mode: 'copy'
 
     input:
@@ -54,7 +57,11 @@ process SCPRINTER_FOOTPRINTING {
     path "footprints_*.h5ad", emit: footprints
     path "tfbs_*.h5ad", emit: tfbs, optional: true                           // FIX-38
     path "enhancer_footprints_*.h5ad", emit: enhancer_footprints, optional: true
-    path "plots/*.png", emit: plots, optional: true
+    // Viz overhaul §3a: split plots by mode. Each subdir is optional because
+    // global mode produces only global/, differential mode produces all three.
+    path "global/*",         emit: global_plots,        optional: true
+    path "per_condition/*",  emit: per_condition_plots, optional: true
+    path "differential/*",   emit: differential_plots,  optional: true
     path "footprint_summary.csv", emit: summary
     path "enhancer_footprint_summary.csv", emit: enhancer_summary, optional: true
 

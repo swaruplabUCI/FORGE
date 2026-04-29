@@ -53,7 +53,8 @@ def parse_args():
     p.add_argument(
         "--da-peaks",
         required=True,
-        help="Path to DA peaks CSV for this cell type (e.g. DA_peaks_<cell_type>.csv)",
+        nargs="+",
+        help="Path(s) to DA peaks CSV files (one or more, e.g. DA_peaks_<cell_type>.csv)",
     )
     p.add_argument(
         "--cell-type",
@@ -210,7 +211,7 @@ def main():
     # Load DA peaks and filter by FDR
     # -------------------------------------------------------------------------
     print(f"Loading DA peaks from {args.da_peaks}")
-    da_df = pd.read_csv(args.da_peaks)
+    da_df = pd.concat([pd.read_csv(f) for f in args.da_peaks], ignore_index=True)
 
     if "padj" not in da_df.columns:
         raise ValueError("DA peaks file does not contain 'padj' column")
@@ -257,7 +258,14 @@ def main():
         raise ValueError("No valid regions could be parsed from peaks")
 
     regions_df = pd.DataFrame(regions)
-    print(f"Parsed {len(regions_df)} regions from significant peaks")
+    # FIX-46: Deduplicate regions — same peak can appear in multiple cell-type
+    # DA-peak files. Duplicate region identifiers cause h5py create_dataset to
+    # fail with "name already exists" in backed mode.
+    n_before = len(regions_df)
+    regions_df = regions_df.drop_duplicates(subset=["Chromosome", "Start", "End"]).reset_index(drop=True)
+    if len(regions_df) < n_before:
+        print(f"  FIX-46: Removed {n_before - len(regions_df)} duplicate regions")
+    print(f"Parsed {len(regions_df)} unique regions from significant peaks")
 
     # -------------------------------------------------------------------------
     # Load peak matrix and build cell-type-specific groups
@@ -272,7 +280,11 @@ def main():
         print(f"✓ Mapped '{ct_key}' → 'cell_type'")
 
     if "cell_type" not in adata.obs.columns:
-        raise ValueError(f"adata.obs does not contain '{ct_key}' column")
+        raise ValueError(
+            f"adata.obs does not contain a 'cell_type' column "
+            f"(--cell-type-key='{ct_key}' also absent). "
+            f"Available: {list(adata.obs.columns)}"
+        )
 
     adata_ct = adata[adata.obs["cell_type"] == args.cell_type].copy()
     n_cells = adata_ct.n_obs

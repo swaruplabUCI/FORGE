@@ -17,7 +17,7 @@ process SCPRINTER_BUILD_PRINTER {
 
     output:
     // Printer file written in the working directory with this name
-    path "human_multiome_scprinter.h5ad", emit: printer
+    path "${params.scprinter.printer_name}", emit: printer
 
     script:
     // Extract sample names from barcode file names
@@ -70,7 +70,7 @@ process SCPRINTER_BUILD_PRINTER {
 
     build_scprinter_printer.py \\
       --cache-dir '${params.scprinter.cache_dir}' \\
-      --output 'human_multiome_scprinter.h5ad' \\
+      --output '${params.scprinter.printer_name}' \\
       --genome '${params.scprinter.genome}' \\
       --fragment-files ${frag_list} \\
       --barcode-lists ${barcode_list} \\

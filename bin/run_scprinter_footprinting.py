@@ -260,6 +260,35 @@ def _get_tss(region: Dict) -> int:
     return (int(region["start"]) + int(region["end"])) // 2
 
 
+def _obsm_keys(ad) -> list:
+    """FIX-47: Version-safe obsm key listing for both python anndata
+    (anndata._core.anndata.AnnData with .obsm_keys()) and the rust-backed
+    AnnData wrapper exposed by scprinter's printer.footprintsadata —
+    the latter does NOT have .obsm_keys() but does expose .obsm as a
+    dict-like."""
+    obsm = getattr(ad, "obsm", None)
+    if obsm is None:
+        return []
+    try:
+        return list(obsm.keys())
+    except Exception:
+        try:
+            return list(obsm)
+        except Exception:
+            return []
+
+
+def _obs_names_str(ad) -> list:
+    """FIX-47: Version-safe obs_names → list[str]. Python anndata returns
+    a pandas Index (has .astype); the rust-backed wrapper returns a plain
+    Python list (no .astype). Both work with str()."""
+    on = ad.obs_names
+    try:
+        return list(on.astype(str))
+    except AttributeError:
+        return [str(x) for x in on]
+
+
 def _format_msfp_axes(ax, region: Dict, gene: str, modes=None,
                       xlabel=True, ylabel=True):
     """FIX-41/42/44b: Post-process multiscale footprint heatmap axes.
@@ -773,7 +802,10 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
             print(f"  [WARN] Could not load TFBS model: {e}")
             print("  Continuing without TFBS binding scores")
 
-    plots_dir = Path("plots")
+    # Viz overhaul §3a: route plots into 'global/' subdir; differential mode
+    # writes to 'differential/' and per_condition/'. Module's output globs and
+    # publishDir are updated to match.
+    plots_dir = Path("global")
     plots_dir.mkdir(exist_ok=True)
     promoter_results = []
 
@@ -1265,8 +1297,12 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
         except Exception as e:
             print(f"  [WARN] Could not load TFBS model: {e}")
 
-    plots_dir = Path("plots")
+    # Viz overhaul §3a: differential mode now writes diff plots to 'differential/'
+    # and per-condition individual plots (viridis, shared scale) to 'per_condition/'.
+    plots_dir = Path("differential")
     plots_dir.mkdir(exist_ok=True)
+    per_condition_dir = Path("per_condition")
+    per_condition_dir.mkdir(exist_ok=True)
     promoter_results = []
 
     # FIX-39: Pre-initialize uns tracking dicts (same as global mode)
@@ -1368,7 +1404,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                 # "chr:start-end"
                 region_key = None
                 if hasattr(fp_data, 'obsm') and fp_data.obsm is not None:
-                    for k in fp_data.obsm_keys():
+                    for k in _obsm_keys(fp_data):
                         if region['chr'] in str(k):
                             region_key = k
                             break
@@ -1377,7 +1413,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                     M = np.array(fp_data.obsm[region_key])
                     # M shape: (n_groups, n_modes, n_positions) or (n_groups, n_modes * n_positions)
                     # obs_names should be [control_label, treatment_label]
-                    obs_names = list(fp_data.obs_names.astype(str))
+                    obs_names = _obs_names_str(fp_data)
                     i_ctrl = obs_names.index(control_label) if control_label in obs_names else 0
                     i_trt = obs_names.index(treatment_label) if treatment_label in obs_names else 1
 
@@ -1446,14 +1482,14 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                 fp_data = printer.footprintsadata[fp_key]
                 region_key = None
                 if hasattr(fp_data, 'obsm') and fp_data.obsm is not None:
-                    for k in fp_data.obsm_keys():
+                    for k in _obsm_keys(fp_data):
                         if region['chr'] in str(k):
                             region_key = k
                             break
 
                 if region_key is not None:
                     M = np.array(fp_data.obsm[region_key])
-                    obs_names = list(fp_data.obs_names.astype(str))
+                    obs_names = _obs_names_str(fp_data)
                     i_ctrl = obs_names.index(control_label) if control_label in obs_names else 0
                     i_trt = obs_names.index(treatment_label) if treatment_label in obs_names else 1
 
@@ -1523,7 +1559,7 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                 if bs_matrix.ndim == 1:
                     bs_matrix = bs_matrix.reshape(1, -1)
 
-                obs_names_bs = list(bs_adata.obs_names.astype(str))
+                obs_names_bs = _obs_names_str(bs_adata)
                 i_ctrl_bs = obs_names_bs.index(control_label) if control_label in obs_names_bs else 0
                 i_trt_bs = obs_names_bs.index(treatment_label) if treatment_label in obs_names_bs else 1
 
@@ -1573,6 +1609,130 @@ def run_differential_mode(args, printer, genome_obj, gene_regions, target_genes)
                     print(f"  [INFO] TFBS matrix has <2 groups; skipping differential TFBS plot")
             except Exception as e:
                 print(f"  [WARN] Differential TFBS plot failed for {gene}: {e}")
+                plt.close("all")
+
+        # =====================================================================
+        # PLOT 4 (Viz overhaul §3a): Per-condition individual heatmaps with
+        # shared color scale (viridis). Same M[i_ctrl,:,:] / M[i_trt,:,:]
+        # already extracted above for the differential plot — reuse to render
+        # absolute per-condition tracks for direct visual comparison.
+        # =====================================================================
+        if fp_ok:
+            try:
+                fp_data = printer.footprintsadata[fp_key]
+                region_key = None
+                if hasattr(fp_data, 'obsm') and fp_data.obsm is not None:
+                    for k in _obsm_keys(fp_data):
+                        if region['chr'] in str(k):
+                            region_key = k
+                            break
+
+                if region_key is not None:
+                    M = np.array(fp_data.obsm[region_key])
+                    obs_names = _obs_names_str(fp_data)
+                    i_ctrl = obs_names.index(control_label) if control_label in obs_names else 0
+                    i_trt  = obs_names.index(treatment_label) if treatment_label in obs_names else 1
+
+                    if M.ndim == 3:
+                        m_ctrl = M[i_ctrl, :, :]
+                        m_trt  = M[i_trt,  :, :]
+                    elif M.ndim == 2:
+                        n_modes = len(modes)
+                        n_pos = M.shape[1] // n_modes
+                        M_3d = M.reshape(M.shape[0], n_modes, n_pos)
+                        m_ctrl = M_3d[i_ctrl, :, :]
+                        m_trt  = M_3d[i_trt,  :, :]
+                    else:
+                        raise ValueError(f"Unexpected footprint matrix shape: {M.shape}")
+
+                    # Shared color scale across conditions (viridis); 2nd-98th pct
+                    # joint percentile clip so outliers don't dominate the LUT.
+                    joint = np.concatenate([m_ctrl.ravel(), m_trt.ravel()])
+                    vmin_pc = float(np.nanpercentile(joint, 2))
+                    vmax_pc = float(np.nanpercentile(joint, 98))
+                    if vmin_pc == vmax_pc:
+                        vmax_pc = vmin_pc + 1.0
+
+                    for cond_label, m_cond in [(control_label, m_ctrl),
+                                                (treatment_label, m_trt)]:
+                        safe_cond = re.sub(r"[^A-Za-z0-9._-]+", "_", str(cond_label))
+                        fig_pc, ax_pc = plt.subplots(1, 1, figsize=(12, 6))
+                        im_pc = ax_pc.imshow(
+                            m_cond, aspect="auto", cmap="viridis",
+                            vmin=vmin_pc, vmax=vmax_pc, origin="lower",
+                            extent=[int(region["start"]), int(region["end"]),
+                                    0, m_cond.shape[0]],
+                        )
+                        plt.colorbar(im_pc, ax=ax_pc, label="Footprint Score",
+                                     shrink=0.7)
+                        ax_pc.axvline(x=tss, color="black", linewidth=1.5,
+                                      linestyle="--", alpha=0.7)
+                        ax_pc.set_title(
+                            f"{gene} — {label} — Footprint ({cond_label})",
+                            fontsize=11
+                        )
+                        _format_msfp_axes(ax_pc, region, gene, modes=modes)
+                        plt.tight_layout()
+                        pc_path = per_condition_dir / f"{safe_label}_{gene}_msfp_{safe_cond}.pdf"
+                        plt.savefig(pc_path, dpi=200, bbox_inches="tight")
+                        plt.close()
+                        print(f"  [OK] Per-condition msfp ({cond_label}): {pc_path}")
+
+                    # Persist both per-condition matrices on the obsm so
+                    # downstream tooling can re-derive without recomputing.
+                    try:
+                        fp_data.obsm[f"msfp_{control_label}"]   = m_ctrl
+                        fp_data.obsm[f"msfp_{treatment_label}"] = m_trt
+                    except Exception as ee:
+                        print(f"  [INFO] obsm write skipped: {ee}")
+            except Exception as e:
+                print(f"  [WARN] Per-condition msfp failed for {gene}: {e}")
+                plt.close("all")
+
+        # =====================================================================
+        # PLOT 5 (Viz overhaul §3a): Per-condition TFBS line plot — both
+        # absolute tracks on a shared y-axis, distinct from PLOT 3 (delta).
+        # =====================================================================
+        if bs_ok:
+            try:
+                bs_adata = printer.bindingscoreadata[bs_key]
+                import scipy.sparse as sp_pc
+                bs_matrix_pc = bs_adata.X.toarray() if sp_pc.issparse(bs_adata.X) else np.asarray(bs_adata.X)
+                if bs_matrix_pc.ndim == 1:
+                    bs_matrix_pc = bs_matrix_pc.reshape(1, -1)
+                obs_names_pc = _obs_names_str(bs_adata)
+                if bs_matrix_pc.shape[0] >= 2:
+                    i_c = obs_names_pc.index(control_label) if control_label in obs_names_pc else 0
+                    i_t = obs_names_pc.index(treatment_label) if treatment_label in obs_names_pc else 1
+                    profile_c = bs_matrix_pc[i_c, :]
+                    profile_t = bs_matrix_pc[i_t, :]
+                    x_pos = np.linspace(int(region["start"]), int(region["end"]), len(profile_c))
+                    x_rel = x_pos - tss
+
+                    fig_tl, ax_tl = plt.subplots(1, 1, figsize=(12, 4))
+                    ax_tl.plot(x_rel, profile_c, color="steelblue", linewidth=1.4,
+                               label=control_label, alpha=0.9)
+                    ax_tl.plot(x_rel, profile_t, color="indianred", linewidth=1.4,
+                               label=treatment_label, alpha=0.9)
+                    ax_tl.axvline(x=0, color="black", linewidth=1, linestyle="--",
+                                  alpha=0.5, label="TSS")
+                    ax_tl.legend(fontsize=9, loc="upper right")
+                    ax_tl.set_title(
+                        f"{gene} — {label} — TF Binding Score (per condition)",
+                        fontsize=11
+                    )
+                    ax_tl.set_xlabel(
+                        f"Position relative to TSS (bp) — {gene} ({region['chr']})",
+                        fontsize=9
+                    )
+                    ax_tl.set_ylabel("TF Binding Score", fontsize=9)
+                    plt.tight_layout()
+                    tl_path = per_condition_dir / f"{safe_label}_{gene}_tfbs_per_condition.pdf"
+                    plt.savefig(tl_path, dpi=200, bbox_inches="tight")
+                    plt.close()
+                    print(f"  [OK] Per-condition TFBS line: {tl_path}")
+            except Exception as e:
+                print(f"  [WARN] Per-condition TFBS line failed for {gene}: {e}")
                 plt.close("all")
 
         promoter_results.append({

@@ -20,12 +20,19 @@ process ENHANCER_FOOTPRINTING {
     val tf_name               // TF name label
     path cicero_connections   // Cicero connections TSV (gzipped)
     val cell_type_col         // FIX-43: obs column name for cell types
+    // Viz overhaul §3b: explicit conditions for per-condition + differential plots.
+    // Empty strings disable the differential branch.
+    val control_condition
+    val treatment_condition
 
     output:
     // FIX-43: Sanitize cell_type/tf_name for filenames — '/' → '_'
     path "enhancer_footprints_*.h5ad",  emit: footprints, optional: true
     path "enhancer_tfbs_*.h5ad",        emit: binding_scores, optional: true
-    path "enhancer_plots/*.png",                               emit: plots, optional: true
+    // Viz overhaul §3b: split plots by mode under per-cell-type/per-tf leaf.
+    path "enhancer_global/*",        emit: global_plots,        optional: true
+    path "enhancer_per_condition/*", emit: per_condition_plots, optional: true
+    path "enhancer_differential/*",  emit: differential_plots,  optional: true
     path "enhancer_fp_summary.csv",                            emit: summary
 
     script:
@@ -70,6 +77,8 @@ process ENHANCER_FOOTPRINTING {
         --pfm-path '${params.scprinter.pfms}' \\
         --gtf '${params.species == "mouse" ? params.scprinter.gtf_mouse : params.scprinter.gtf_human}' \\
         --cicero-connections '${cicero_connections}' \\
-        --cell-type-col '${cell_type_col}'
+        --cell-type-col '${cell_type_col}' \\
+        --control-condition '${control_condition}' \\
+        --treatment-condition '${treatment_condition}'
     """
 }

@@ -21,6 +21,7 @@ Outputs:
 import argparse
 import builtins
 import os
+import re
 from pathlib import Path
 from typing import Dict
 
@@ -1029,8 +1030,16 @@ def main():
     global scp
     scp = init_scprinter(args.cache_dir)
 
-    plots_dir = Path("enhancer_plots")
+    # Viz overhaul §3b: split plots into three mode dirs.
+    # global    — aggregate MSFP, insertion example, composite
+    # per_condition — viridis individual heatmaps with shared scale (NEW)
+    # differential  — RdBu_r delta heatmap PDF (NEW)
+    plots_dir = Path("enhancer_global")
     plots_dir.mkdir(exist_ok=True)
+    per_condition_dir = Path("enhancer_per_condition")
+    per_condition_dir.mkdir(exist_ok=True)
+    differential_dir = Path("enhancer_differential")
+    differential_dir.mkdir(exist_ok=True)
 
     ct = args.cell_type
     tf = args.tf_name
@@ -1587,6 +1596,76 @@ def main():
                         if diff_msfp is not None:
                             has_differential = True
                             print(f"    Differential MSFP computed successfully")
+
+                            # Viz overhaul §3b — per-condition individual
+                            # heatmaps (viridis, shared 2nd-98th pct scale)
+                            # plus a standalone differential PDF (RdBu_r),
+                            # routed into enhancer_per_condition/ and
+                            # enhancer_differential/ respectively.
+                            try:
+                                ctrl_agg_pc = extract_aggregate_msfp(
+                                    printer, f"enh_fp_diff_{ct}_{tf}",
+                                    args.control_condition, None,
+                                    np.arange(2, 101))
+                                trt_agg_pc = extract_aggregate_msfp(
+                                    printer, f"enh_fp_diff_{ct}_{tf}",
+                                    args.treatment_condition, None,
+                                    np.arange(2, 101))
+                                if ctrl_agg_pc is not None and trt_agg_pc is not None:
+                                    n_rows = min(ctrl_agg_pc.shape[0], trt_agg_pc.shape[0])
+                                    n_cols = min(ctrl_agg_pc.shape[1], trt_agg_pc.shape[1])
+                                    m_ctrl_e = ctrl_agg_pc[:n_rows, :n_cols]
+                                    m_trt_e  = trt_agg_pc[:n_rows, :n_cols]
+
+                                    joint_e = np.concatenate([m_ctrl_e.ravel(), m_trt_e.ravel()])
+                                    vmin_e = float(np.nanpercentile(joint_e, 2))
+                                    vmax_e = float(np.nanpercentile(joint_e, 98))
+                                    if vmin_e == vmax_e:
+                                        vmax_e = vmin_e + 1.0
+
+                                    for cond_lbl, m_cond_e in [
+                                            (args.control_condition,   m_ctrl_e),
+                                            (args.treatment_condition, m_trt_e)]:
+                                        safe_cond_e = re.sub(r"[^A-Za-z0-9._-]+", "_", str(cond_lbl))
+                                        fig_pc_e, ax_pc_e = plt.subplots(figsize=(10, 5))
+                                        im_pc_e = ax_pc_e.imshow(
+                                            m_cond_e, aspect='auto', cmap='viridis',
+                                            vmin=vmin_e, vmax=vmax_e, origin='lower')
+                                        plt.colorbar(im_pc_e, ax=ax_pc_e,
+                                                     label='Footprint Score', shrink=0.7)
+                                        center_x_e = m_cond_e.shape[1] // 2
+                                        ax_pc_e.axvline(center_x_e, color='black',
+                                                        linestyle='--', linewidth=0.8, alpha=0.7)
+                                        ax_pc_e.set_ylabel('Footprint Scale (bp)', fontsize=9)
+                                        ax_pc_e.set_xlabel('Position relative to region center', fontsize=9)
+                                        ax_pc_e.set_title(
+                                            f"{tf} — {ct} — Enhancer MSFP ({cond_lbl})",
+                                            fontsize=11)
+                                        plt.tight_layout()
+                                        pc_path_e = per_condition_dir / f"{safe_ct}_{safe_tf}_msfp_{safe_cond_e}.pdf"
+                                        plt.savefig(pc_path_e, dpi=200, bbox_inches='tight')
+                                        plt.close()
+                                        print(f"    [OK] Per-condition enhancer MSFP ({cond_lbl}): {pc_path_e}")
+
+                                # Standalone differential PDF (delta), separate
+                                # from the composite panel L below.
+                                fig_diff_e, ax_diff_e = plt.subplots(figsize=(10, 5))
+                                plot_differential_msfp(
+                                    diff_msfp, tf, ct,
+                                    args.control_condition, args.treatment_condition,
+                                    ax_diff_e)
+                                ax_diff_e.set_title(
+                                    f"{tf} — {ct} — Differential Enhancer MSFP "
+                                    f"({args.treatment_condition} − {args.control_condition})",
+                                    fontsize=11)
+                                plt.tight_layout()
+                                diff_path_e = differential_dir / f"{safe_ct}_{safe_tf}_msfp_differential.pdf"
+                                plt.savefig(diff_path_e, dpi=200, bbox_inches='tight')
+                                plt.close()
+                                print(f"    [OK] Differential enhancer MSFP: {diff_path_e}")
+                            except Exception as ee:
+                                print(f"    [WARN] Per-condition / differential plots failed: {ee}")
+                                plt.close('all')
                     else:
                         print(f"    Insufficient cells for differential analysis")
                 del adata_ct
