@@ -119,6 +119,83 @@ def parse_tss_from_gtf(gtf_path):
     return tss_map
 
 
+def index_intervals_by_chrom(path, chrom_idx, start_idx, end_idx,
+                              gz=False, header_prefixes=('#',)):
+    """One-pass scan: return {chrom: [(start, end, raw_line)]} from a tab-delimited file.
+
+    Used for GTF (chrom_idx=0, start_idx=3, end_idx=4) and BEDPE-of-arcs
+    (we lift the wider envelope, see filter_links_by_window for details).
+    Lines starting with any header_prefixes are kept verbatim under chrom='__header__'.
+    """
+    from collections import defaultdict
+    by_chrom = defaultdict(list)
+    headers = []
+    opener = gzip.open if gz or path.endswith('.gz') else open
+    with opener(path, 'rt') as f:
+        for line in f:
+            if not line:
+                continue
+            if any(line.startswith(p) for p in header_prefixes):
+                headers.append(line)
+                continue
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) <= max(chrom_idx, start_idx, end_idx):
+                continue
+            try:
+                s = int(parts[start_idx])
+                e = int(parts[end_idx])
+            except (ValueError, IndexError):
+                continue
+            by_chrom[parts[chrom_idx]].append((s, e, line))
+    return by_chrom, headers
+
+
+def filter_intervals_to_window(by_chrom, headers, chrom, win_s, win_e, out_path):
+    """Write all intervals overlapping [win_s, win_e) on `chrom` to `out_path`.
+
+    Returns the number of records written. Headers (if any) are written first.
+    """
+    n = 0
+    with open(out_path, 'w') as f:
+        for h in headers:
+            f.write(h)
+        for s, e, raw in by_chrom.get(chrom, []):
+            if e > win_s and s < win_e:
+                f.write(raw)
+                n += 1
+    return n
+
+
+def filter_links_by_window(links_path, chrom, win_s, win_e, out_path):
+    """Filter a BEDPE file to arcs whose either anchor overlaps the window.
+
+    BEDPE format: chrom1 start1 end1 chrom2 start2 end2 [name score strand1 strand2 ...]
+    For Cicero CCAN arcs, both anchors share the same chrom in our pipeline,
+    so we simplify the test to "any anchor overlaps window on the matching
+    chrom". Returns the number of records written.
+    """
+    n = 0
+    with open(links_path) as f, open(out_path, 'w') as out:
+        for line in f:
+            if not line.strip() or line.startswith('#'):
+                out.write(line)
+                continue
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) < 6:
+                continue
+            try:
+                c1, s1, e1 = parts[0], int(parts[1]), int(parts[2])
+                c2, s2, e2 = parts[3], int(parts[4]), int(parts[5])
+            except ValueError:
+                continue
+            anchor1_in = (c1 == chrom and e1 > win_s and s1 < win_e)
+            anchor2_in = (c2 == chrom and e2 > win_s and s2 < win_e)
+            if anchor1_in or anchor2_in:
+                out.write(line)
+                n += 1
+    return n
+
+
 def write_pygenometracks_ini(
     config_path, gene_gtf, bigwig_files, links_file,
     enhancer_bed, links_label='CCANs', colors=None,
@@ -262,47 +339,101 @@ def main():
               "Writing a single global tracks.ini.")
         genes = ['_global']
 
-    # Step D2: Write per-gene INI configs
+    # Step D2-pre: Index GTF + cicero links by chrom ONCE, so per-gene filter
+    # is O(window_size) not O(file_size). Without this, pyGenomeTracks would
+    # re-parse the entire 800MB GTF + 20MB BEDPE for every COMPOSITE task —
+    # ~14 min/panel just on file load. Per-gene pre-filtered slices are <1MB
+    # each and load in seconds.
+    gene_window_dir = os.path.join(args.outdir, 'gene_windows')
+    os.makedirs(gene_window_dir, exist_ok=True)
+
+    print("[D2-pre] Indexing GTF by chrom for per-gene window pre-filter...")
+    gtf_by_chrom, gtf_headers = index_intervals_by_chrom(
+        args.gtf, chrom_idx=0, start_idx=3, end_idx=4,
+        gz=args.gtf.endswith('.gz'), header_prefixes=('#',),
+    )
+    print(f"        GTF indexed: {sum(len(v) for v in gtf_by_chrom.values())} records "
+          f"across {len(gtf_by_chrom)} chroms")
+
+    # Step D2: Write per-gene INI configs (with per-gene-prefiltered GTF + links)
     gene_regions = {}
+    bw_map_abs = {k: os.path.abspath(v) for k, v in bw_map.items()}
+    abs_enhancer_bed = os.path.abspath(enhancer_bed) if enhancer_bed else enhancer_bed
+    abs_links_global = os.path.abspath(links_file) if links_file else None
+    window = args.window_kb * 1000
+
     for gene in genes:
         if gene == '_global':
             ini_path = os.path.join(args.outdir, 'tracks_global.ini')
         else:
-            ini_path = os.path.join(args.outdir, f'tracks_{gene}.ini')
+            safe_gene = gene.replace('/', '_').replace('\\', '_')
+            ini_path = os.path.join(args.outdir, f'tracks_{safe_gene}.ini')
 
-        # FIX-95: Use absolute paths in INI so it works from any Nextflow work dir
-        bw_map_abs = {k: os.path.abspath(v) for k, v in bw_map.items()}
-        write_pygenometracks_ini(
-            config_path=ini_path,
-            gene_gtf=os.path.abspath(args.gtf),
-            bigwig_files=bw_map_abs,
-            links_file=os.path.abspath(links_file) if links_file else links_file,
-            enhancer_bed=os.path.abspath(enhancer_bed) if enhancer_bed else enhancer_bed,
-            links_label='Cicero CCANs',
-        )
-
-        # Compute region string for this gene (case-insensitive GTF lookup)
-        # Normalize gene name to GTF case (e.g. Atf3 -> ATF3)
+        # Resolve gene → (chrom, tss, strand) via case-insensitive GTF lookup.
+        # JASPAR TF names may differ in case from GTF gene names (e.g. Atf3 vs ATF3).
         gene_gtf = tss_map_upper.get(gene.upper())
         if gene_gtf and gene != gene_gtf:
             print(f"[D2] Normalized '{gene}' -> '{gene_gtf}' (GTF case)")
             gene = gene_gtf
+
+        # Build the per-gene GTF + links files (when we know the window)
+        per_gene_gtf = os.path.abspath(args.gtf)  # default to global
+        per_gene_links = abs_links_global
+
         if gene in tss_map:
             chrom, tss, strand = tss_map[gene]
-            window = args.window_kb * 1000
-            region_str = f"{chrom}:{max(0, tss - window)}-{tss + window}"
+            win_s = max(0, tss - window)
+            win_e = tss + window
+            region_str = f"{chrom}:{win_s}-{win_e}"
+
+            safe_gene = gene.replace('/', '_').replace('\\', '_')
+
+            # Per-gene GTF slice (just records overlapping the gene window)
+            sub_gtf = os.path.join(gene_window_dir, f'genes_{safe_gene}.gtf')
+            n_gtf = filter_intervals_to_window(
+                gtf_by_chrom, gtf_headers, chrom, win_s, win_e, sub_gtf,
+            )
+            if n_gtf > 0:
+                per_gene_gtf = os.path.abspath(sub_gtf)
+
+            # Per-gene cicero links slice
+            if links_file and os.path.exists(links_file):
+                sub_links = os.path.join(gene_window_dir, f'links_{safe_gene}.bedpe')
+                n_links = filter_links_by_window(
+                    links_file, chrom, win_s, win_e, sub_links,
+                )
+                if n_links > 0:
+                    per_gene_links = os.path.abspath(sub_links)
+                else:
+                    # Empty per-gene file — still pass it; pyGenomeTracks tolerates
+                    # zero arcs and skips the panel cleanly.
+                    per_gene_links = os.path.abspath(sub_links)
+                    print(f"[D2] {gene}: 0 cicero links in window {region_str}")
+
             gene_regions[gene] = {
                 'ini': ini_path,
                 'region': region_str,
                 'chrom': chrom,
                 'tss': tss,
                 'strand': strand,
+                'per_gene_gtf': per_gene_gtf,
+                'per_gene_links': per_gene_links,
             }
         elif gene != '_global':
             print(f"[WARN] Gene '{gene}' not found in GTF — skipping region targeting")
             continue
         else:
             gene_regions[gene] = {'ini': ini_path, 'region': '', 'chrom': '', 'tss': 0, 'strand': '+'}
+
+        # Write the per-gene .ini referencing its per-gene-filtered files
+        write_pygenometracks_ini(
+            config_path=ini_path,
+            gene_gtf=per_gene_gtf,
+            bigwig_files=bw_map_abs,
+            links_file=per_gene_links,
+            enhancer_bed=abs_enhancer_bed,
+            links_label='Cicero CCANs',
+        )
 
     # Write manifest JSON for downstream composite_enhancer_viz.py
     manifest = {
