@@ -2,8 +2,10 @@
 //
 // Cicero Phase 3 — step 2 of 3: per-chromosome generate_cicero_models +
 // assemble_connections using the pinned global distance_parameter from step 1.
-// Fan-out across chromosomes provides the ~4x speedup validated in
-// tests/cicero_parallel_test/global_dp_20260418_023059/ (rho=1.0 vs baseline).
+// Fan-out across chromosomes provides the ~4x speedup validated by FORGE
+// (rho=1.0 vs monolithic baseline).
+// Ported from src_FORGE 2026-04-23; used verbatim for plain + stratified legs
+// via include-as aliasing in main.nf.
 
 process CICERO_FULL_CHROM {
     tag "${chrom}"

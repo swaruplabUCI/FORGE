@@ -3,6 +3,8 @@
 // Cicero Phase 3 — step 1 of 3: build shared cicero CDS + estimate global
 // distance_parameter. Replaces the single-threaded run_cicero() bottleneck
 // in the old CICERO_FULL. Downstream fan-out is CICERO_FULL_CHROM.
+// Ported from src_FORGE 2026-04-23; used verbatim for plain + stratified legs
+// via include-as aliasing in main.nf.
 
 process CICERO_ESTIMATE_DP {
     label 'process_medium'
