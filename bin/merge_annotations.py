@@ -17,6 +17,24 @@ import pandas as pd
 import numpy as np
 import json
 
+
+def build_palette(cats):
+    """{category: hex} covering any N without silent gray overflow.
+
+    N <= 102 → scanpy default_102 (hand-tuned contrast).
+    N  > 102 → evenly sampled gist_ncar (full hue+value range).
+    """
+    import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
+    import scanpy as sc
+    n = len(cats)
+    if n <= 102:
+        colors = list(sc.pl.palettes.default_102[:n])
+    else:
+        cmap = plt.get_cmap("gist_ncar")
+        colors = [mcolors.to_hex(cmap(i / max(n - 1, 1))) for i in range(n)]
+    return dict(zip(cats, colors))
+
 # Allow import of celltypist_broad_map.py from the same bin/ directory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -265,6 +283,21 @@ def apply_scatanno_annotations(peak_matrix, scatanno_h5ad_path):
                     series = series.cat.add_categories('Unknown')
             peak_matrix.obs[col] = series.fillna('Unknown')
 
+    # Broad-class coarsening via Allen subclass -> class map (parallels the
+    # CELLTYPIST_BROAD_MAP pattern on the RNA side). Keep the fine
+    # 'cell_type_prediction' AND add coarse 'cell_type_broad' (~35 classes).
+    try:
+        from scatanno_broad_map import SCATANNO_BROAD_MAP
+        fine = peak_matrix.obs['cell_type_prediction'].astype(str)
+        broad = fine.map(SCATANNO_BROAD_MAP).fillna('Unknown')
+        peak_matrix.obs['cell_type_broad'] = broad.astype('category')
+        unmapped = sorted(set(fine) - set(SCATANNO_BROAD_MAP.keys()) - {'Unknown'})
+        if unmapped:
+            print(f"  WARNING: {len(unmapped)} fine labels have no Allen broad mapping "
+                  f"(first 5: {unmapped[:5]}) — flagged as 'Unknown'")
+    except Exception as e:
+        print(f"  WARNING: scatanno_broad_map unavailable ({e}); cell_type_broad not populated")
+
     # Report
     print(f"\n  Cell type predictions (cell_type_prediction):")
     ct_counts = peak_matrix.obs['cell_type_prediction'].value_counts()
@@ -272,6 +305,11 @@ def apply_scatanno_annotations(peak_matrix, scatanno_h5ad_path):
         print(f"    {ct}: {ct_counts[ct]}")
     if len(ct_counts) > 15:
         print(f"    ... and {len(ct_counts) - 15} more types")
+
+    if 'cell_type_broad' in peak_matrix.obs.columns:
+        print(f"\n  Broad classes (cell_type_broad):")
+        for ct, n in peak_matrix.obs['cell_type_broad'].value_counts().items():
+            print(f"    {ct}: {n}")
 
     n_unknown = (peak_matrix.obs['cell_type_prediction'].str.lower() == 'unknown').sum()
     print(f"\n  Unknown fraction: {n_unknown}/{peak_matrix.n_obs} ({100*n_unknown/peak_matrix.n_obs:.1f}%)")
@@ -393,6 +431,11 @@ def generate_celltype_plots(celltypist_h5ad_path, peak_matrix, plot_dir):
             ].index.tolist()
             gm_plot = gene_matrix[gene_matrix.obs[plot_col].isin(valid_types)].copy()
             n_plot_types = len(valid_types)
+            categories = sorted([str(c) for c in valid_types])
+            gm_plot.obs[plot_col] = pd.Categorical(
+                gm_plot.obs[plot_col].astype(str), categories=categories, ordered=False,
+            )
+            palette = build_palette(categories)
             print(f"  UMAP: plotting {n_plot_types} cell types (>= {min_cells_plot} cells) using '{plot_col}'")
 
             try:
@@ -400,21 +443,19 @@ def generate_celltype_plots(celltypist_h5ad_path, peak_matrix, plot_dir):
                     fig_width = max(12, 10 + (n_plot_types * 0.3))
                     fig, ax = plt.subplots(figsize=(fig_width, 8))
                     sc.pl.umap(
-                        gm_plot, color=plot_col, ax=ax, show=False,
+                        gm_plot, color=plot_col, ax=ax, show=False, palette=palette,
                         frameon=False, legend_loc='right margin', legend_fontsize=7,
                         title=f'ATAC Cell Types ({plot_col}, >= {min_cells_plot} cells)',
                     )
                 else:
                     fig, ax = plt.subplots(figsize=(12, 10))
                     sc.pl.umap(
-                        gm_plot, color=plot_col, ax=ax, show=False,
+                        gm_plot, color=plot_col, ax=ax, show=False, palette=palette,
                         frameon=False, legend_loc='none',
                         title=f'ATAC Cell Types ({plot_col}, >= {min_cells_plot} cells)',
                     )
-                    categories = sorted(gm_plot.obs[plot_col].unique())
-                    palette = dict(zip(categories, sc.pl.palettes.default_102[:len(categories)]))
                     handles = [plt.Line2D([0], [0], marker='o', color='w',
-                               markerfacecolor=palette.get(c, '#888888'), markersize=6, label=c)
+                               markerfacecolor=palette[c], markersize=6, label=c)
                                for c in categories]
                     ncol = max(3, len(categories) // 15 + 1)
                     ax.legend(handles, categories, loc='upper center',
@@ -468,6 +509,11 @@ def generate_scatanno_plots(peak_matrix, plot_dir):
 
     pm_plot = peak_matrix[peak_matrix.obs[plot_col].isin(valid_types)].copy()
     n_plot_types = len(valid_types)
+    categories = sorted([str(c) for c in valid_types])
+    pm_plot.obs[plot_col] = pd.Categorical(
+        pm_plot.obs[plot_col].astype(str), categories=categories, ordered=False,
+    )
+    palette = build_palette(categories)
     print(f"  UMAP: plotting {n_plot_types} cell types (>= {min_cells_plot} cells)")
 
     try:
@@ -475,21 +521,19 @@ def generate_scatanno_plots(peak_matrix, plot_dir):
             fig_width = max(12, 10 + (n_plot_types * 0.3))
             fig, ax = plt.subplots(figsize=(fig_width, 8))
             sc.pl.umap(
-                pm_plot, color=plot_col, ax=ax, show=False,
+                pm_plot, color=plot_col, ax=ax, show=False, palette=palette,
                 frameon=False, legend_loc='right margin', legend_fontsize=7,
                 title=f'ATAC Cell Types (scATAnno, >= {min_cells_plot} cells)',
             )
         else:
             fig, ax = plt.subplots(figsize=(12, 10))
             sc.pl.umap(
-                pm_plot, color=plot_col, ax=ax, show=False,
+                pm_plot, color=plot_col, ax=ax, show=False, palette=palette,
                 frameon=False, legend_loc='none',
                 title=f'ATAC Cell Types (scATAnno, >= {min_cells_plot} cells)',
             )
-            categories = sorted(pm_plot.obs[plot_col].unique())
-            palette = dict(zip(categories, sc.pl.palettes.default_102[:len(categories)]))
             handles = [plt.Line2D([0], [0], marker='o', color='w',
-                       markerfacecolor=palette.get(c, '#888888'), markersize=6, label=c)
+                       markerfacecolor=palette[c], markersize=6, label=c)
                        for c in categories]
             ncol = max(3, len(categories) // 15 + 1)
             ax.legend(handles, categories, loc='upper center',

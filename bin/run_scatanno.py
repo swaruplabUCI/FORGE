@@ -146,7 +146,9 @@ def main():
     print("STEP 2: Re-counting query fragments against reference peaks")
     print("=" * 60)
 
-    # Handle both AnnDataSet (.h5ads) and individual h5ad
+    # Handle both AnnDataSet (.h5ads) and individual h5ad.
+    # mode='r' keeps the source .h5ads read-only — avoids corrupting the
+    # upstream publishDir copy and permits concurrent tasks to share it.
     if args.query.endswith('.h5ads'):
         query_snap = snap.read_dataset(args.query, mode='r')
     else:

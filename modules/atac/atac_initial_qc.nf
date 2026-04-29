@@ -1,6 +1,6 @@
 process ATAC_INITIAL_QC {
     label 'process_high'
-    publishDir "${params.outdir}/initial_qc", mode: 'copy'
+    publishDir "${params.outdir}/atac/initial_qc", mode: 'copy'
 
     input:
     path fragment_files

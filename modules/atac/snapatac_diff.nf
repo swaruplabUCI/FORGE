@@ -33,8 +33,7 @@ process SNAPATAC_DIFFERENTIAL {
     input:
     path peak_matrix
     path metadata
-    tuple val(treatment), val(control)
-    val cell_type
+    tuple val(cell_type), val(treatment), val(control)
 
     output:
     path "DA_peaks_${safe_ct}__${treatment}_vs_${control}.csv", emit: da_peaks
@@ -42,7 +41,7 @@ process SNAPATAC_DIFFERENTIAL {
 
     script:
     safe_ct = cell_type.replaceAll('[/ ]', '_')
-    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
+    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? (params.atac.cell_type_col ?: 'cell_type_prediction') : 'celltypist_prediction')
     def prefix = "${safe_ct}__${treatment}_vs_${control}"
     """
     mkdir -p "plots_${prefix}"
@@ -52,9 +51,9 @@ process SNAPATAC_DIFFERENTIAL {
         --metadata ${metadata} \\
         --cell_type "${cell_type}" \\
         --cell_type_key ${annotation_key} \\
-        --condition_key ${params.differential.condition_key} \\
-        --control "${control}" \\
-        --treatment "${treatment}" \\
+        --condition_key "${params.differential.condition_key}" \\
+        --control_condition "${control}" \\
+        --treatment_condition "${treatment}" \\
         --min_cells ${params.differential.min_cells} \\
         --fdr ${params.differential.fdr_threshold} \\
         --output_prefix "${prefix}"
