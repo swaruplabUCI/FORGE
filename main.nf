@@ -1297,11 +1297,12 @@ workflow ATAC_DIFFERENTIAL {
     ch_tasks = ch_comparisons
         .combine(ch_cell_types)
 
+    // C4: snapatac_diff.nf now takes a single 3-tuple (cell_type, treatment, control).
+    // ch_tasks emits (treatment, control, cell_type) from ch_comparisons.combine(ch_cell_types).
     SNAPATAC_DIFFERENTIAL(
         peak_matrix,
         metadata,
-        ch_tasks.map { tuple(it[0], it[1]) },
-        ch_tasks.map { it[2] }
+        ch_tasks.map { tuple(it[2], it[0], it[1]) }
     )
 
     emit:
@@ -2120,6 +2121,9 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             tuple(file("${region_sets_dir}/${bed_fname}"), ct, tf)
         }
 
+    // C2: enhancer_footprinting.nf gained val control_condition / val treatment_condition
+    // (Viz overhaul §3b). Empty strings disable the differential branch — D1b will
+    // wire these conditionally on params.differential.run.
     ENHANCER_FOOTPRINTING(
         ch_enhancer_fp.map { it[0] },
         printer,
@@ -2127,7 +2131,9 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         ch_enhancer_fp.map { it[1] },
         ch_enhancer_fp.map { it[2] },
         cicero_conns_ch.ifEmpty(file('NO_CICERO_CONNS')),
-        cell_type_col
+        cell_type_col,
+        '',  // control_condition (D1a placeholder; D1b wires from params.differential)
+        ''   // treatment_condition
     )
 
     // ================================================================
@@ -2281,16 +2287,25 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
                 }
         }
 
-        // FIX-P0-2: Use channel output instead of reading from publishDir
-        def fp_pngs_ch = ENHANCER_FOOTPRINTING.out.plots.collect().ifEmpty([])
+        // C2: ENHANCER_FOOTPRINTING.out.plots was split into global_plots /
+        // per_condition_plots / differential_plots. Use global_plots as the
+        // closest analog of the old single-emit. D1b will switch to the
+        // dir-symlink staging trick (avoids .collect()'ing 1971 PNGs).
+        def fp_pngs_ch = ENHANCER_FOOTPRINTING.out.global_plots.collect().ifEmpty([])
 
+        // C5: COMPOSITE_ENHANCER_VIZ gained val cell_type + path scprinter_promoter_dir.
+        // D1a placeholder: pass '' for cell_type (composite_enhancer_viz.py falls back
+        // to multi-ct stack on empty) and NO_FILE for promoter dir. Per-ct fan-out
+        // via BUILD_VIZ_CANDIDATES is D1b territory.
         COMPOSITE_ENHANCER_VIZ(
             PREPARE_ENHANCER_VIZ_TRACKS.out.track_manifest,
             PREPARE_ENHANCER_VIZ_TRACKS.out.track_inis.collect(),
             MOTIF_SCAN_ENHANCERS.out.motif_scan,
             ch_viz_tasks.map { it[0] },
             ch_viz_tasks.map { it[1] },
-            fp_pngs_ch
+            '',
+            fp_pngs_ch,
+            file('NO_FILE')
         )
     }
 
