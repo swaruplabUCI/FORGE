@@ -41,7 +41,11 @@ def parse_args():
     p.add_argument("--annotated-peaks", required=True,
                    help="peak_matrix_annotated.h5ad (supplies cell_type + condition obs)")
     p.add_argument("--cell-type", required=True,
-                   help="Cell type label to test (must match obs['cell_type'] or cell_type_prediction)")
+                   help="Cell type label to test (must match the column named by --cell-type-key)")
+    p.add_argument("--cell-type-key", default="",
+                   help="obs key holding cell-type labels. If empty, falls back to "
+                        "cell_type, cell_type_broad, cell_type_prediction, celltypist_prediction, pred_y "
+                        "(in that order).")
     p.add_argument("--mode", choices=["differential", "descriptive"],
                    default="differential",
                    help="'differential' = trt vs ctrl (default); "
@@ -66,13 +70,21 @@ def sanitize(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(s))
 
 
-def _resolve_cell_type_column(obs: pd.DataFrame) -> str:
-    for col in ("cell_type", "cell_type_prediction", "celltypist_prediction", "pred_y"):
+def _resolve_cell_type_column(obs: pd.DataFrame, explicit_key: str = "") -> str:
+    if explicit_key:
+        if explicit_key in obs.columns:
+            return explicit_key
+        raise KeyError(
+            f"--cell-type-key='{explicit_key}' not in annotated_peaks obs "
+            f"(available: {list(obs.columns)})"
+        )
+    for col in ("cell_type", "cell_type_broad", "cell_type_prediction",
+                "celltypist_prediction", "pred_y"):
         if col in obs.columns:
             return col
     raise KeyError(
         "No cell-type column found on annotated peak matrix (looked for: "
-        "cell_type, cell_type_prediction, celltypist_prediction, pred_y)"
+        "cell_type, cell_type_broad, cell_type_prediction, celltypist_prediction, pred_y)"
     )
 
 
@@ -115,9 +127,17 @@ def _run_differential(dev, args):
         "pval_adj":       pd.Series(rg["pvals_adj"][args.treatment]).astype(float),
     })
     if "pts" in rg:
-        df["pct_trt"]  = pd.Series(rg["pts"][args.treatment]).astype(float).values
-        if args.control in rg["pts"].dtype.names if hasattr(rg["pts"], "dtype") else rg["pts"]:
-            df["pct_ctrl"] = pd.Series(rg["pts"][args.control]).astype(float).values
+        pts = rg["pts"]
+        if hasattr(pts, "columns"):
+            pts_keys = list(pts.columns)
+        elif getattr(pts, "dtype", None) is not None and pts.dtype.names is not None:
+            pts_keys = list(pts.dtype.names)
+        else:
+            pts_keys = []
+        if args.treatment in pts_keys:
+            df["pct_trt"]  = pd.Series(pts[args.treatment]).astype(float).values
+        if args.control in pts_keys:
+            df["pct_ctrl"] = pd.Series(pts[args.control]).astype(float).values
     df["cell_type"]  = args.cell_type
     df["mode"]       = "differential"
     df["treatment"]  = args.treatment
@@ -184,8 +204,17 @@ def _run_descriptive(dev, args):
         "pval_adj":       pd.Series(rg["pvals_adj"][args.cell_type]).astype(float),
     })
     if "pts" in rg:
-        df["pct_in"]   = pd.Series(rg["pts"][args.cell_type]).astype(float).values
-        df["pct_rest"] = pd.Series(rg["pts"]["rest"]).astype(float).values
+        pts = rg["pts"]
+        if hasattr(pts, "columns"):
+            pts_keys = list(pts.columns)
+        elif getattr(pts, "dtype", None) is not None and pts.dtype.names is not None:
+            pts_keys = list(pts.dtype.names)
+        else:
+            pts_keys = []
+        if args.cell_type in pts_keys:
+            df["pct_in"]   = pd.Series(pts[args.cell_type]).astype(float).values
+        if "rest" in pts_keys:
+            df["pct_rest"] = pd.Series(pts["rest"]).astype(float).values
     df["cell_type"] = args.cell_type
     df["mode"]      = "descriptive"
     df["condition"] = args.treatment or "all"
@@ -211,7 +240,7 @@ def main():
     dev = ad.read_h5ad(args.chromvar_dev)
     ann = ad.read_h5ad(args.annotated_peaks)
 
-    ct_col = _resolve_cell_type_column(ann.obs)
+    ct_col = _resolve_cell_type_column(ann.obs, args.cell_type_key)
     need_condition = (args.mode == "differential") or (args.treatment is not None)
     if need_condition and args.condition_key not in ann.obs.columns:
         raise KeyError(f"condition_key='{args.condition_key}' not in annotated_peaks obs "
@@ -227,6 +256,10 @@ def main():
         cols.append(args.condition_key)
     labels = ann.obs.loc[common, cols].copy()
     labels.columns = ["cell_type"] + (["condition"] if need_condition else [])
+    # FIX: drop overlapping cols on dev.obs before join to avoid suffix collisions
+    overlap = dev.obs.columns.intersection(labels.columns)
+    if len(overlap):
+        dev.obs = dev.obs.drop(columns=list(overlap))
     dev.obs = dev.obs.join(labels)
 
     if args.mode == "differential":

@@ -15,7 +15,7 @@ process VIS_CHROMVAR {
         path "*.tsv", emit: tables
 
     script:
-    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
+    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? (params.atac.cell_type_col ?: 'cell_type_prediction') : 'celltypist_prediction')
     """
     vis_chromvar_nf.py \
       --dev-h5ad ${chromvar_dev} \

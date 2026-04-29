@@ -37,11 +37,14 @@ process DIFFERENTIAL_TF_ACCESSIBILITY {
     def trt_arg   = (mode == 'descriptive' && (!trt || trt == 'all')) ?
                     '' : "--treatment \"${trt}\""
     def ctrl_arg  = (mode == 'descriptive') ? '' : "--control \"${ctrl}\""
+    // Absorbed from SDas: scATAnno cell_type_col override (fallback chain)
+    def annotation_key = params.atac.marker_file ? 'cell_type' : (params.atac.annotation_method == 'scatanno' ? (params.atac.cell_type_col ?: 'cell_type_prediction') : 'celltypist_prediction')
     """
     python ${projectDir}/bin/differential_tf_accessibility.py \\
         --chromvar-dev ${chromvar_dev} \\
         --annotated-peaks ${peak_matrix_annotated} \\
         --cell-type "${cell_type}" \\
+        --cell-type-key ${annotation_key} \\
         --mode ${mode} \\
         --condition-key ${cond_key} \\
         ${trt_arg} \\
