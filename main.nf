@@ -2799,6 +2799,62 @@ workflow {
 }
 
 // ============================================================================
+// VIZ_ONLY — read-only viz entry workflow
+// D2: absorbed from SDas_nf. Re-renders post-hoc QC + Cicero target-gene plots
+// from already-persisted artifacts under results/. Does NOT re-run upstream
+// compute. Invoke via:
+//
+//   nextflow run main.nf -entry VIZ_ONLY \
+//     --viz_only.peak_matrix_h5ad results/atac/final/peak_matrix_annotated.h5ad \
+//     --viz_only.cicero_connections results/cicero/.../cicero_connections.tsv.gz \
+//     --viz_only.cicero_ccan        results/cicero/.../CCAN_assignments.tsv.gz \
+//     --viz_only.cicero_cds         results/cicero/.../input_cds_ordered.rds \
+//     --viz_only.target_genes 'Hmgb1,Hspa8,Atf6'
+// ============================================================================
+workflow VIZ_ONLY {
+    main:
+
+    if (params.viz_only?.peak_matrix_h5ad) {
+        POST_QC_REPORT(
+            file(params.viz_only.peak_matrix_h5ad),
+            params.atac.min_tsse        ?: params.atac.initial_min_tsse   ?: 6,
+            params.atac.min_counts      ?: params.atac.initial_min_counts ?: 5000,
+            params.atac.max_counts      ?: params.atac.initial_max_counts ?: 100000
+        )
+    } else {
+        log.warn "VIZ_ONLY: --viz_only.peak_matrix_h5ad not provided; skipping POST_QC_REPORT."
+    }
+
+    if (params.viz_only?.cicero_connections &&
+        params.viz_only?.cicero_ccan        &&
+        params.viz_only?.cicero_cds) {
+
+        def viz_genes
+        if (params.viz_only?.target_genes) {
+            viz_genes = (params.viz_only.target_genes instanceof List) ?
+                params.viz_only.target_genes :
+                params.viz_only.target_genes.toString().split(',').collect { it.trim() }.findAll { it }
+        } else {
+            viz_genes = params.cicero.target_genes ?: []
+        }
+
+        if (!viz_genes) {
+            log.warn "VIZ_ONLY: no target genes provided (--viz_only.target_genes or params.cicero.target_genes); skipping CICERO_TARGET_PLOTS."
+        } else {
+            CICERO_TARGET_PLOTS(
+                file(params.viz_only.cicero_connections),
+                file(params.viz_only.cicero_ccan),
+                file(params.viz_only.cicero_cds),
+                params.cicero.gtf_plot,
+                viz_genes
+            )
+        }
+    } else {
+        log.warn "VIZ_ONLY: cicero_connections / cicero_ccan / cicero_cds not all provided; skipping CICERO_TARGET_PLOTS."
+    }
+}
+
+// ============================================================================
 // WORKFLOW COMPLETION HANDLER
 // ============================================================================
 workflow.onComplete {
