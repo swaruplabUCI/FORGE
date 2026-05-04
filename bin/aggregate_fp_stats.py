@@ -231,22 +231,45 @@ def compute_dip_depth(tfbs_h5ad, primary_ct_idx):
 def process_pair(fp_path, tfbs_path, dip_threshold):
     """Extract per-(primary_ct, TF) metrics from one (fp h5ad, tfbs h5ad) pair."""
     fp = ad.read_h5ad(fp_path)
-    primary_ct = str(fp.uns.get('cell_type', ''))
-    tf = str(fp.uns.get('tf', ''))
+    primary_ct = str(fp.uns.get('cell_type') or '')
+    tf = str(fp.uns.get('tf') or '')
+    obs_ix = list(fp.obs.index)
+    # Per-ct module emits h5ads without uns['cell_type']/'tf']. Recover from
+    # filename `enhancer_footprints_<sanitize(ct)>_<TF>.h5ad` by longest-prefix
+    # match against sanitized obs labels (handles ct underscores and TF '__').
+    if (not primary_ct) or (primary_ct not in obs_ix) or (not tf):
+        base = os.path.basename(fp_path)
+        if base.startswith('enhancer_footprints_') and base.endswith('.h5ad'):
+            stem = base[len('enhancer_footprints_'):-len('.h5ad')]
+            best = None
+            for label in obs_ix:
+                pref = _sanitize(label) + '_'
+                if stem.startswith(pref) and (best is None or len(pref) > len(_sanitize(best) + '_')):
+                    best = label
+            if best is not None:
+                primary_ct = best
+                tf = stem[len(_sanitize(best)) + 1:]
     if not primary_ct or not tf:
         return None
-    obs_ix = list(fp.obs.index)
     if primary_ct not in obs_ix:
         return None
     ct_idx = obs_ix.index(primary_ct)
     n_sites = int(fp.shape[1])
 
-    row = np.asarray(fp.X[ct_idx, :]).ravel()
+    X_row = fp.X[ct_idx, :]
+    if hasattr(X_row, 'toarray'):
+        X_row = X_row.toarray()
+    row = np.asarray(X_row).ravel()
     fp_mean = float(row.mean()) if len(row) else 0.0
     fp_p95 = float(np.quantile(row, 0.95)) if len(row) else 0.0
     fp_max = float(row.max()) if len(row) else 0.0
 
-    all_means = np.asarray(fp.X.mean(axis=1)).ravel()
+    X_all = fp.X
+    if hasattr(X_all, 'toarray'):
+        means_obj = X_all.mean(axis=1)
+        all_means = np.asarray(means_obj).ravel()
+    else:
+        all_means = np.asarray(X_all.mean(axis=1)).ravel()
     rank = int(np.argsort(-all_means).tolist().index(ct_idx)) + 1 if len(all_means) else 0
 
     dip_mean = dip_p95 = 0.0

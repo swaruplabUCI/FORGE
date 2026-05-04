@@ -184,6 +184,19 @@ include { BUILD_VIZ_CANDIDATES         } from './modules/visualization/build_viz
 include { AGGREGATE_FP_STATS           } from './modules/visualization/aggregate_fp_stats'
 include { EXPORT_ATAC_BIGWIGS          } from './modules/visualization/export_atac_bigwigs'
 
+// SHI_FIGURES — Shi et al. 2025 figure equivalents (1E, 2B-E, 4B-E, 5A-F)
+// Tier A (single-condition compatible) + Tier B (require >=2 conditions).
+include { ANNOTATE_PEAK_TYPES       } from './modules/visualization/annotate_peak_types'
+include { NMF_ENHANCER_PROGRAMS     } from './modules/visualization/nmf_enhancer_programs'
+include { MARKER_COVERAGE_TRACKS    } from './modules/visualization/marker_coverage'
+include { SELECT_SHI_CANDIDATES     } from './modules/visualization/select_shi_candidates'
+include { COACC_CORRELATION_MATRIX  } from './modules/visualization/coacc_correlation_matrix'
+include { DA_PEAK_BREAKDOWN         } from './modules/visualization/da_peak_breakdown'
+include { DA_LOG2FC_HEATMAPS        } from './modules/visualization/da_log2fc_heatmaps'
+include { TF_DIFFERENTIAL_VOLCANO   } from './modules/visualization/tf_differential_volcano'
+include { CURATED_TF_NETWORKS       } from './modules/visualization/curated_tf_networks'
+include { LOCUS_TF_BINDING          } from './modules/visualization/locus_tf_binding'
+
 
 // ============================================================================
 // GLOBAL: Compute cell_type_key ONCE
@@ -297,6 +310,7 @@ def validateStartupParams() {
     def errors = []
     def warnings = []
     def checks_passed = []
+    def rna_rows_found = false   // MIS-14: set true when manifest contains a lane row with rna_file
 
     // --- P0-7 (A2): sample_type normalization is handled in-line at each
     //     splitCsv filter (see below). Here we warn if non-standard values exist.
@@ -378,11 +392,21 @@ def validateStartupParams() {
                     if (demuxDupes) errors << "Duplicate sample_id in demux rows: ${demuxDupes}"
                 }
 
-                // P0-11 (A4): Require condition_group column if differential analysis is enabled
+                // P0-11 (A4) + MIS-15 (2026-05-04): Require condition_group column for ANY
+                // workflow that consumes a condition axis (ATAC-diff, RNA-diff, TF-diff in
+                // differential mode, stratified Cicero, SHI Tier B, disease-stratified enhancer).
                 def cgIdx = header.findIndexOf { it == 'condition_group' }
-                if (cgIdx < 0 && (params.differential?.run ?: false)) {
-                    errors << "Manifest CSV missing 'condition_group' column but differential analysis is enabled. " +
-                              "All samples will default to 'Control', producing zero DE genes."
+                def needsConditionGroup = (params.differential?.run ?: false) ||
+                    (params.differential_rna?.run ?: false) ||
+                    (params.differential_tf?.run && params.differential_tf?.mode == 'differential') ||
+                    (params.cicero?.stratified ?: false) ||
+                    (params.shi_figures?.enabled && params.shi_figures?.treatment && params.shi_figures?.control) ||
+                    (params.enhancer_footprinting?.disease_stratified ?: false)
+                if (cgIdx < 0 && needsConditionGroup) {
+                    errors << "Manifest CSV missing 'condition_group' column but a condition-aware " +
+                              "workflow is enabled (differential / differential_rna / differential_tf / " +
+                              "cicero.stratified / shi_figures Tier B / disease_stratified). " +
+                              "Add a 'condition_group' column to the manifest or disable these workflows."
                 } else if (cgIdx >= 0) {
                     // Check for empty/missing condition_group values
                     def emptyRows = dataRows.findAll { line ->
@@ -412,6 +436,7 @@ def validateStartupParams() {
                         def batch = (btIdx >= 0 && btIdx < cols.size() && cols[btIdx]) ? cols[btIdx] : null
                         if (!dataDir && batch) dataDir = params.batch_dirs?.get(batch, null)
                         def rnaFname = rfIdx < cols.size() ? cols[rfIdx] : null
+                        if (rnaFname) { rna_rows_found = true }   // MIS-14
                         if (dataDir && rnaFname) {
                             def rnaPath = file("${dataDir}/${rnaFname}")
                             if (!rnaPath.exists()) {
@@ -543,6 +568,16 @@ def validateStartupParams() {
                 warnings << "Could not validate ATAC sample_metadata consistency: ${e.message}"
             }
         }
+    }
+
+    // --- MIS-01 (2026-05-04): species must be explicitly set
+    def allowedSpecies = ['human', 'mouse']
+    if (!params.species) {
+        errors << "params.species is unset. Set to 'human' or 'mouse' in your dataset " +
+                  "config (configs/datasets/<dataset>.config). The silent 'human' default " +
+                  "was removed because it produced misannotated mouse runs."
+    } else if (!(params.species in allowedSpecies)) {
+        errors << "params.species='${params.species}' is invalid. Allowed: ${allowedSpecies}."
     }
 
     // --- P0-6 (B2) + P0-8 (E1/E2): Species consistency
@@ -690,6 +725,32 @@ def validateStartupParams() {
         }
     }
 
+    // MIS-17 (2026-05-04): scATAnno reference atlas must be set + exist when used.
+    // Previously instance configs defaulted reference_atlas to mouse_kidney_*.h5ad,
+    // which silently misannotated other tissues. Validator now requires explicit
+    // path and warns on tissue_type ↔ filename mismatch.
+    if (params.atac?.run && params.atac?.auto_annotate &&
+        params.atac?.annotation_method == 'scatanno' && !params.atac?.marker_file) {
+        def atlas = params.scatanno?.reference_atlas
+        if (!atlas) {
+            errors << "atac.annotation_method='scatanno' requires params.scatanno.reference_atlas " +
+                      "(path to a .h5ad reference). Set this explicitly in your dataset config."
+        } else if (!file(atlas).exists()) {
+            errors << "scATAnno reference atlas not found: ${atlas}"
+        } else {
+            checks_passed << "scATAnno reference atlas (${file(atlas).name})"
+            // Tissue sanity check: warn (don't error) on obvious tissue keyword mismatch.
+            def atlasName = atlas.toString().toLowerCase()
+            def tissue = params.atac?.tissue_type?.toString()?.toLowerCase()
+            def tissueKeywords = ['kidney', 'brain', 'pbmc', 'liver', 'lung', 'heart', 'gut', 'skin']
+            def atlasTissues = tissueKeywords.findAll { atlasName.contains(it) }
+            if (tissue && atlasTissues && !atlasTissues.contains(tissue)) {
+                warnings << "scATAnno atlas filename suggests ${atlasTissues} but " +
+                            "params.atac.tissue_type='${tissue}'. Verify this is the right atlas."
+            }
+        }
+    }
+
     // FIX-E8: Validate mofa.mode against allowed values before compute
     if (params.mofa?.run) {
         def allowedModes = ['high_memory', 'bootstrap']
@@ -747,6 +808,105 @@ def validateStartupParams() {
                       "Expected in singularity_cache/. Run container build/pull first."
         } else {
             checks_passed << "Containers (${uniqueSifs.size()} SIF files)"
+        }
+    }
+
+    // --- MIS-11 / MIS-25 (2026-05-04): resource_tier typo guard.
+    // 'auto' is a documented alias for 'small'; case-sensitive match catches
+    // typos like 'Medium' that previously fell through silently to small.
+    def allowedTiers = ['small', 'medium', 'large', 'auto']
+    if (params.resource_tier && !(params.resource_tier in allowedTiers)) {
+        errors << "params.resource_tier='${params.resource_tier}' is invalid (case-sensitive). " +
+                  "Allowed: ${allowedTiers}. Check for typos like capital letters."
+    } else if (params.resource_tier) {
+        checks_passed << "Resource tier (${params.resource_tier})"
+    }
+
+    // --- MIS-07 (2026-05-04): differential.run=true requires non-empty comparisons
+    if (params.differential?.run) {
+        def cmps = params.differential?.comparisons
+        if (!cmps || (cmps instanceof List && cmps.isEmpty())) {
+            errors << "differential.run=true but differential.comparisons=[]. " +
+                      "Set comparisons to a list of [treatment, control] pairs " +
+                      "(e.g. [['TG','WT']]) or set differential.run=false."
+        }
+    }
+
+    // --- MIS-14 (2026-05-04): rna.run=true requires manifest with at least one RNA row.
+    // rna_rows_found is set during manifest parsing above (lane rows with non-null rna_file).
+    // Skip when no metadata_file is set — that's a different mode (covered by other checks).
+    if (params.rna?.run && params.metadata_file && !rna_rows_found) {
+        errors << "rna.run=true but the manifest contains no rows with a non-null rna_file. " +
+                  "Either populate rna_file in the manifest, or set rna.run=false for ATAC-only runs."
+    }
+
+    // --- MIS-04 (2026-05-04): onramp wiring guard for the 6 forward-declared
+    // keys with no consumer anywhere. After the D2.1 back-port from PBMC,
+    // 14 keys are wired (3 top-level + 10 inside REGULATORY_ANALYSIS + 1 mudata).
+    // The keys below remain placeholders and would silently no-op if set.
+    def neverWiredOnrampKeys = ['cistopic_obj_pkl', 'seurat_rds', 'da_peaks_dir',
+                                'cicero_connections_ctrl', 'cicero_connections_trt',
+                                'cicero_ccan_ctrl', 'cicero_ccan_trt']
+    if (params.onramp) {
+        params.onramp.each { k, v ->
+            if (v && k in neverWiredOnrampKeys) {
+                errors << "params.onramp.${k} is set but is forward-declared only — no " +
+                          "consumer exists in any FORGE main.nf. Unset this key; the " +
+                          "producer step will run regardless."
+            }
+        }
+    }
+
+    // --- MIS-04 partial-set validators on the multi-key bundles.
+    // Cicero global onramp: connections + ccan + cds are an all-or-none triple.
+    def cicero_om_keys = [params.onramp?.cicero_connections,
+                          params.onramp?.cicero_ccan,
+                          params.onramp?.cicero_cds]
+    def cicero_om_set  = cicero_om_keys.count { it }
+    if (cicero_om_set in [1, 2]) {
+        errors << "Cicero onramp is an all-or-none triple: cicero_connections + " +
+                  "cicero_ccan + cicero_cds. Got ${cicero_om_set}/3 set."
+    }
+    // ChromVAR onramp: deviations + raw are a pair.
+    def chromvar_om_keys = [params.onramp?.chromvar_deviations,
+                            params.onramp?.chromvar_raw]
+    def chromvar_om_set = chromvar_om_keys.count { it }
+    if (chromvar_om_set == 1) {
+        errors << "ChromVAR onramp is a pair: chromvar_deviations + chromvar_raw. " +
+                  "Got 1/2 set."
+    }
+    // ATAC onramp side keys must be set when atac_peak_matrix_h5ad is used and
+    // the consuming downstream is enabled.
+    if (params.onramp?.atac_peak_matrix_h5ad) {
+        if (params.scprinter?.run && !params.onramp?.atac_individual_samples_dir) {
+            warnings << "atac_peak_matrix_h5ad onramp set without atac_individual_samples_dir " +
+                       "— scPRINTer cannot build per-sample fragment binding."
+        }
+        if (params.enhancer_footprinting?.run && !params.onramp?.atac_anndataset) {
+            warnings << "atac_peak_matrix_h5ad onramp set without atac_anndataset — " +
+                       "ENHANCER_FOOTPRINTING_RECIPES will be unable to bind snapatac2 anndataset."
+        }
+    }
+    // RNA per-sample dir is required for multiome when rna_integrated is onramped.
+    if (params.onramp?.rna_integrated_h5ad && params.run_multiome_integration &&
+        !params.onramp?.rna_per_sample_h5ads_dir && !params.onramp?.mudata_h5mu) {
+        errors << "rna_integrated_h5ad onramp + run_multiome_integration=true requires " +
+                  "either rna_per_sample_h5ads_dir (for fresh multiome) or mudata_h5mu " +
+                  "(skip multiome). Set one, or set run_multiome_integration=false."
+    }
+
+    // --- MIS-22 (2026-05-04): disease_stratified=true requires resolved condition labels
+    if (params.enhancer_footprinting?.disease_stratified) {
+        def ctrl = params.enhancer_footprinting?.control_condition ?:
+                   params.differential?.control_condition
+        def trt  = params.enhancer_footprinting?.treatment_condition ?:
+                   params.differential?.treatment_condition
+        if (!ctrl || !trt) {
+            errors << "enhancer_footprinting.disease_stratified=true but condition labels " +
+                      "are unset (control='${ctrl}', treatment='${trt}'). Set " +
+                      "enhancer_footprinting.{control,treatment}_condition or fall back to " +
+                      "differential.{control,treatment}_condition. Otherwise, output filenames " +
+                      "would resolve to literal 'null' strings."
         }
     }
 
@@ -1350,77 +1510,114 @@ workflow REGULATORY_ANALYSIS {
 
     // ================================================================
     // PARALLEL LEG A: Cicero Co-Accessibility (genome-wide)
+    // 2026-04-30 onramp (D2.1 back-port 2026-05-04): bind ch_cicero_{connections,
+    // ccan,cds} from either params.onramp.cicero_* triple OR run the per-chrom
+    // fan-out. Downstream consumers (CICERO_TARGET_PLOTS, scPRINTer FP,
+    // MAP_TF_TO_TARGET_GENES, emit) all use the channel variables.
     // ================================================================
+    def cicero_om = (params.onramp?.cicero_connections &&
+                     params.onramp?.cicero_ccan &&
+                     params.onramp?.cicero_cds)
+    def ch_cicero_connections, ch_cicero_ccan, ch_cicero_cds
+
     if (params.cicero.run) {
-        log.info "Running Cicero co-accessibility network analysis (per-chrom fan-out)..."
+        if (cicero_om) {
+            log.info "ON-RAMP: Cicero (connections + CCAN + CDS)"
+            ch_cicero_connections = Channel.value(file(params.onramp.cicero_connections))
+            ch_cicero_ccan        = Channel.value(file(params.onramp.cicero_ccan))
+            ch_cicero_cds         = Channel.value(file(params.onramp.cicero_cds))
+        } else {
+            log.info "Running Cicero co-accessibility network analysis (per-chrom fan-out)..."
 
-        CICERO_TRIPLETS(peak_matrix)
+            CICERO_TRIPLETS(peak_matrix)
 
-        // Phase 3 rewrite: global distance_parameter -> per-chrom run_cicero -> rbind.
-        // Validated rho=1.0 vs single-process baseline in tests/cicero_parallel_test/.
-        CICERO_ESTIMATE_DP(CICERO_TRIPLETS.out.triplets)
+            // Phase 3 rewrite: global distance_parameter -> per-chrom run_cicero -> rbind.
+            // Validated rho=1.0 vs single-process baseline in tests/cicero_parallel_test/.
+            CICERO_ESTIMATE_DP(CICERO_TRIPLETS.out.triplets)
 
-        // Mouse: chr1..19 + X/Y/M; human: chr1..22 + X/Y/M. chrUn_* excluded
-        // upstream in the R scripts.
-        def cicero_chroms = (params.species == 'mouse' ? (1..19) : (1..22))
-                                .collect { "chr${it}" } + ['chrX', 'chrY', 'chrM']
-        chroms_ch = Channel.fromList(cicero_chroms)
+            // Mouse: chr1..19 + X/Y/M; human: chr1..22 + X/Y/M. chrUn_* excluded
+            // upstream in the R scripts.
+            def cicero_chroms = (params.species == 'mouse' ? (1..19) : (1..22))
+                                    .collect { "chr${it}" } + ['chrX', 'chrY', 'chrM']
+            chroms_ch = Channel.fromList(cicero_chroms)
 
-        per_chrom_in = chroms_ch
-            .combine(CICERO_ESTIMATE_DP.out.cicero_cds)
-            .combine(CICERO_ESTIMATE_DP.out.gene_ann)
-            .combine(CICERO_ESTIMATE_DP.out.dp)
-        CICERO_FULL_CHROM(per_chrom_in)
+            per_chrom_in = chroms_ch
+                .combine(CICERO_ESTIMATE_DP.out.cicero_cds)
+                .combine(CICERO_ESTIMATE_DP.out.gene_ann)
+                .combine(CICERO_ESTIMATE_DP.out.dp)
+            CICERO_FULL_CHROM(per_chrom_in)
 
-        CICERO_JOIN(
-            CICERO_FULL_CHROM.out.chrom_conns.map { it[1] }.collect(),
-            CICERO_ESTIMATE_DP.out.ordered_cds,
-            params.cicero.gtf_full,
-            ""
-        )
+            CICERO_JOIN(
+                CICERO_FULL_CHROM.out.chrom_conns.map { it[1] }.collect(),
+                CICERO_ESTIMATE_DP.out.ordered_cds,
+                params.cicero.gtf_full,
+                ""
+            )
+
+            ch_cicero_connections = CICERO_JOIN.out.connections
+            ch_cicero_ccan        = CICERO_JOIN.out.ccan
+            ch_cicero_cds         = CICERO_JOIN.out.cds
+        }
 
         if (!use_chromvar_for_cicero && params.cicero.target_genes && !params.cicero.target_genes.isEmpty()) {
             log.info "Rendering Cicero target plots with static gene list: ${params.cicero.target_genes}"
             CICERO_TARGET_PLOTS(
-                CICERO_JOIN.out.connections,
-                CICERO_JOIN.out.ccan,
-                CICERO_JOIN.out.cds,
+                ch_cicero_connections,
+                ch_cicero_ccan,
+                ch_cicero_cds,
                 params.cicero.gtf_plot,
                 params.cicero.target_genes
             )
         }
+    } else {
+        ch_cicero_connections = Channel.empty()
+        ch_cicero_ccan        = Channel.empty()
+        ch_cicero_cds         = Channel.empty()
     }
 
     // ================================================================
     // PARALLEL LEG B: GPU ChromVAR TF Motif Enrichment
+    // 2026-04-30 onramp (D2.1 back-port 2026-05-04): bind ch_chromvar_dev /
+    // ch_chromvar_raw from either params.onramp.{chromvar_deviations,
+    // chromvar_raw} OR GPU_CHROMVAR output.
     // ================================================================
+    def chromvar_om = (params.onramp?.chromvar_deviations &&
+                       params.onramp?.chromvar_raw)
+    def ch_chromvar_dev, ch_chromvar_raw
+
     if (params.chromvar.run) {
-        log.info "Running GPU-accelerated ChromVAR analysis..."
+        if (chromvar_om) {
+            log.info "ON-RAMP: ChromVAR (deviations + raw)"
+            ch_chromvar_dev = Channel.value(file(params.onramp.chromvar_deviations))
+            ch_chromvar_raw = Channel.value(file(params.onramp.chromvar_raw))
+        } else {
+            log.info "Running GPU-accelerated ChromVAR analysis..."
 
-        def da_peaks_collected = has_da_peaks ?
-            da_peaks_optional.collect() :
-            Channel.value(file('NO_FILE_DA_PEAKS'))
+            def da_peaks_collected = has_da_peaks ?
+                da_peaks_optional.collect() :
+                Channel.value(file('NO_FILE_DA_PEAKS'))
 
-        GPU_CHROMVAR(
-            peak_matrix,
-            Channel.value(file('NO_FILE_METADATA')),
-            params.scprinter.cache_dir,
-            params.scprinter.pfms ?: '',
-            params.scprinter.genome,
-            da_peaks_collected
-        )
+            GPU_CHROMVAR(
+                peak_matrix,
+                Channel.value(file('NO_FILE_METADATA')),
+                params.scprinter.cache_dir,
+                params.scprinter.pfms ?: '',
+                params.scprinter.genome,
+                da_peaks_collected
+            )
+            ch_chromvar_dev = GPU_CHROMVAR.out.chromvar_dev
+            ch_chromvar_raw = GPU_CHROMVAR.out.chromvar_raw
+        }
 
         if (has_da_peaks) {
-            VIS_CHROMVAR(
-                GPU_CHROMVAR.out.chromvar_dev
-            )
+            VIS_CHROMVAR(ch_chromvar_dev)
         } else {
             log.info "Skipping VIS_CHROMVAR (requires differential conditions for permutation tests)"
         }
 
         if (is_discovery_mode && params.scprinter.run) {
             EXTRACT_CHROMVAR_MOTIFS(
-                GPU_CHROMVAR.out.chromvar_dev,
+                ch_chromvar_dev,
                 params.chromvar.top_n_per_celltype,
                 params.chromvar.min_motif_zscore,
                 atac_cell_type_key
@@ -1430,6 +1627,9 @@ workflow REGULATORY_ANALYSIS {
                 "\n==== PER-CELL-TYPE CHROMVAR MOTIFS ====\n${it.text}\n======================================="
             }
         }
+    } else {
+        ch_chromvar_dev = Channel.empty()
+        ch_chromvar_raw = Channel.empty()
     }
 
     // ================================================================
@@ -1444,37 +1644,49 @@ workflow REGULATORY_ANALYSIS {
             }
 
         CICERO_TARGET_PLOTS(
-            CICERO_JOIN.out.connections,
-            CICERO_JOIN.out.ccan,
-            CICERO_JOIN.out.cds,
+            ch_cicero_connections,
+            ch_cicero_ccan,
+            ch_cicero_cds,
             params.cicero.gtf_plot,
             ch_chromvar_target_genes
         )
     }
 
     // ================================================================
-    // STEP 3: scPRINTER TF Footprinting
+    // STEP 3: scPRINTer TF Footprinting
+    // 2026-04-30 onramp (D2.1 back-port 2026-05-04): bind ch_printer from
+    // params.onramp.printer_h5ad OR build it via SCPRINTER_BARCODES + BUILD.
     // ================================================================
+    def printer_om = params.onramp?.printer_h5ad
+    def ch_printer
+
     if (params.scprinter.run) {
-        log.info "Running scPRINT TF footprinting workflow..."
+        if (printer_om) {
+            log.info "ON-RAMP: scPRINTer printer h5ad: ${printer_om}"
+            ch_printer = Channel.value(file(printer_om))
+        } else {
+            log.info "Running scPRINTer TF footprinting workflow (build printer)..."
 
-        // ---- Shared setup: barcodes + printer (both modes) ----
-        ch_samples_with_names = individual_samples.flatten()
-            .map { h5ad_file ->
-                def sample_name = h5ad_file.baseName.replaceAll('.h5ad$', '')
-                tuple(h5ad_file, sample_name)
+            // ---- Shared setup: barcodes + printer (both modes) ----
+            ch_samples_with_names = individual_samples.flatten()
+                .map { h5ad_file ->
+                    def sample_name = h5ad_file.baseName.replaceAll('.h5ad$', '')
+                    tuple(h5ad_file, sample_name)
+            }
+
+            SCPRINTER_BARCODES(
+                ch_samples_with_names.map { it[0] }.collect(),
+                ch_samples_with_names.map { it[1] }.collect()
+            )
+
+            // PBMC-style: fragments come via channel input
+            SCPRINTER_BUILD_PRINTER(
+                SCPRINTER_BARCODES.out.barcodes,
+                fragment_files
+            )
+
+            ch_printer = SCPRINTER_BUILD_PRINTER.out.printer
         }
-
-        SCPRINTER_BARCODES(
-            ch_samples_with_names.map { it[0] }.collect(),
-            ch_samples_with_names.map { it[1] }.collect()
-        )
-
-        // PBMC-style: fragments come via channel input
-        SCPRINTER_BUILD_PRINTER(
-            SCPRINTER_BARCODES.out.barcodes,
-            fragment_files
-        )
 
         // Manual coordinate overrides (both modes)
         def manual_coords = params.scprinter.gene_coordinates ?
@@ -1490,9 +1702,9 @@ workflow REGULATORY_ANALYSIS {
             // FIX-R3-3: Use species-appropriate GTF
             def tf_map_gtf = params.species == 'human' ? params.scprinter.gtf_human : params.scprinter.gtf_mouse
             MAP_TF_TO_TARGET_GENES(
-                GPU_CHROMVAR.out.chromvar_raw,
+                ch_chromvar_raw,
                 EXTRACT_CHROMVAR_MOTIFS.out.motif_list,
-                CICERO_JOIN.out.ccan,
+                ch_cicero_ccan,
                 tf_map_gtf
             )
 
@@ -1529,7 +1741,7 @@ workflow REGULATORY_ANALYSIS {
             log.info "Fan-out footprinting at TF target gene promoters..."
 
             def cicero_conns_for_fp = params.cicero.run ?
-                CICERO_JOIN.out.connections.ifEmpty(file('NO_FILE')) :
+                ch_cicero_connections.ifEmpty(file('NO_FILE')) :
                 Channel.value(file('NO_FILE'))
             def pfm_for_fp = params.scprinter.pfms ?
                 Channel.value(file(params.scprinter.pfms)) :
@@ -1538,7 +1750,7 @@ workflow REGULATORY_ANALYSIS {
             SCPRINTER_FOOTPRINTING(
                 peak_matrix,
                 metadata,
-                SCPRINTER_BUILD_PRINTER.out.printer,
+                ch_printer,
                 ch_fp.map { it[0] },
                 ch_fp.map { it[1] },
                 ch_fp.map { it[2] },
@@ -1562,7 +1774,7 @@ workflow REGULATORY_ANALYSIS {
                 SCPRINTER_FOOTPRINTING_DIFF(
                     peak_matrix,
                     metadata,
-                    SCPRINTER_BUILD_PRINTER.out.printer,
+                    ch_printer,
                     ch_fp_diff.map { it[0] },
                     ch_fp_diff.map { it[1] },
                     ch_fp_diff.map { it[2] },
@@ -1577,7 +1789,7 @@ workflow REGULATORY_ANALYSIS {
                 SCPRINTER_MOTIF_SCAN(
                     peak_matrix,
                     da_peaks_optional.collect(),
-                    SCPRINTER_BUILD_PRINTER.out.printer,
+                    ch_printer,
                     ch_fp_diff.map { it[0] },
                     SCPRINTER_FOOTPRINTING_DIFF.out.footprints.collect()
                 )
@@ -1602,7 +1814,7 @@ workflow REGULATORY_ANALYSIS {
             SCPRINTER_FOOTPRINTING(
                 peak_matrix,
                 metadata,
-                SCPRINTER_BUILD_PRINTER.out.printer,
+                ch_printer,
                 'targeted',
                 Channel.value(params.scprinter.target_genes),
                 RESOLVE_GENE_COORDINATES.out.coordinates,
@@ -1622,7 +1834,7 @@ workflow REGULATORY_ANALYSIS {
                 SCPRINTER_FOOTPRINTING_DIFF(
                     peak_matrix,
                     metadata,
-                    SCPRINTER_BUILD_PRINTER.out.printer,
+                    ch_printer,
                     ch_ct_diff,
                     Channel.value(params.scprinter.target_genes),
                     RESOLVE_GENE_COORDINATES.out.coordinates,
@@ -1637,7 +1849,7 @@ workflow REGULATORY_ANALYSIS {
                 SCPRINTER_MOTIF_SCAN(
                     peak_matrix,
                     da_peaks_optional.collect(),
-                    SCPRINTER_BUILD_PRINTER.out.printer,
+                    ch_printer,
                     ch_ct_diff,
                     SCPRINTER_FOOTPRINTING_DIFF.out.footprints.collect()
                 )
@@ -1689,7 +1901,7 @@ workflow REGULATORY_ANALYSIS {
         log.info "TF accessibility (mode=${tf_mode}): ${tf_tasks.size()} tasks"
         def ch_tf_tasks = Channel.from(tf_tasks)
         DIFFERENTIAL_TF_ACCESSIBILITY(
-            GPU_CHROMVAR.out.chromvar_dev,
+            ch_chromvar_dev,
             peak_matrix,
             ch_tf_tasks
         )
@@ -1776,13 +1988,13 @@ workflow REGULATORY_ANALYSIS {
     // EMIT
     // ================================================================
     emit:
-    cicero_connections   = params.cicero.run ? CICERO_JOIN.out.connections : Channel.empty()
-    cicero_ccan          = params.cicero.run ? CICERO_JOIN.out.ccan : Channel.empty()
-    chromvar_deviations  = params.chromvar.run ? GPU_CHROMVAR.out.chromvar_dev : Channel.empty()
+    cicero_connections   = params.cicero.run ? ch_cicero_connections : Channel.empty()
+    cicero_ccan          = params.cicero.run ? ch_cicero_ccan : Channel.empty()
+    chromvar_deviations  = params.chromvar.run ? ch_chromvar_dev : Channel.empty()
     chromvar_per_ct      = (is_discovery_mode && params.chromvar.run && params.scprinter.run) ?
         EXTRACT_CHROMVAR_MOTIFS.out.motif_list : Channel.empty()
     scprinter_printer    = params.scprinter.run ?
-        SCPRINTER_BUILD_PRINTER.out.printer : Channel.empty()
+        ch_printer : Channel.empty()
     scprinter_footprints = params.scprinter.run ?
         SCPRINTER_FOOTPRINTING.out.footprints : Channel.empty()
     scprinter_diff       = (has_da_peaks && params.scprinter.run) ?
@@ -2108,6 +2320,9 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     cell_type_col             // FIX-43: obs column name for cell types
     tf_targets_ch             // tf_target_genes.json from MAP_TF_TO_TARGET_GENES (Phase 3)
     anndataset_ch             // D1b: ATAC AnnDataSet for EXPORT_ATAC_BIGWIGS
+    scprinter_footprints_ch   // 2026-04-30: pass-through sync channel; replaces
+                              //   direct SCPRINTER_FOOTPRINTING.out access (DSL2
+                              //   cross-workflow scope violation fix)
 
     main:
 
@@ -2368,7 +2583,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         // D1b: per-(ct, TF) scalar metric rollup; gated on build_network so
         // BUILD_TF_GENE_NETWORK.out.adjacency is available.
         if (params.enhancer_footprinting.build_network ?: false) {
-            def promoter_fp_dir_ch = SCPRINTER_FOOTPRINTING.out.footprints
+            def promoter_fp_dir_ch = scprinter_footprints_ch
                 .collect()
                 .map { _files -> file("${params.outdir}/scprinter/footprints") }
                 .first()
@@ -2403,7 +2618,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             .first()
 
         // D1b: Tier-1 promoter MSFP staging — same dir-symlink trick.
-        def promoter_dir_ch = SCPRINTER_FOOTPRINTING.out.footprints
+        def promoter_dir_ch = scprinter_footprints_ch
             .collect()
             .map { _files -> file("${params.outdir}/scprinter/footprints") }
             .first()
@@ -2448,32 +2663,66 @@ workflow {
     Metadata:      ${params.metadata_file}
     Cell type key: ${cell_type_key}
 
-    On-ramps:
+    On-ramps (wired in src; D2.1 back-port from PBMC instance is deferred):
       rna_integrated_h5ad:    ${params.onramp?.rna_integrated_h5ad ?: 'none'}
       atac_peak_matrix_h5ad:  ${params.onramp?.atac_peak_matrix_h5ad ?: 'none'}
       mudata_h5mu:            ${params.onramp?.mudata_h5mu ?: 'none'}
-      printer_h5ad:           ${params.onramp?.printer_h5ad ?: 'none'}
-      cicero_connections:     ${params.onramp?.cicero_connections ?: 'none'}
-      chromvar_deviations:    ${params.onramp?.chromvar_deviations ?: 'none'}
 
     """
 
     // ========================================================================
-    // RNA PROCESSING (with on-ramp)
+    // RNA PROCESSING (with granular on-ramps)
+    // 2026-04-30 refactor (D2.1 back-port 2026-05-04): expose ch_rna_qc_h5ads +
+    // ch_rna_cellchat_csv as channel variables so downstream consumers
+    // (MULTIOME_INTEGRATION, ENHANCER_FOOTPRINTING_RECIPES) can pull from
+    // either RNA.out.* or onramp.
     // ========================================================================
+    def ch_integrated_rna
+    def ch_rna_qc_h5ads
+    def ch_rna_cellchat_csv
+
     if (params.onramp?.rna_integrated_h5ad) {
-        log.info "ON-RAMP: Using pre-integrated RNA: ${params.onramp.rna_integrated_h5ad}"
+        log.info "ON-RAMP: Pre-integrated RNA: ${params.onramp.rna_integrated_h5ad}"
         ch_integrated_rna = Channel.value(file(params.onramp.rna_integrated_h5ad))
+
+        // Per-sample QC'd h5ads — required by MULTIOME_INTEGRATION (sample-level join with ATAC)
+        if (params.onramp?.rna_per_sample_h5ads_dir) {
+            log.info "ON-RAMP: RNA per-sample h5ads from: ${params.onramp.rna_per_sample_h5ads_dir}"
+            // Emit (sample_id, file) tuples matching RNA.out.qc_h5ads shape.
+            // Sample id is inferred from basename, stripping common QC suffixes.
+            ch_rna_qc_h5ads = Channel.fromPath("${params.onramp.rna_per_sample_h5ads_dir}/*.h5ad")
+                .map { f ->
+                    def sid = f.baseName.replaceAll(/_filtered_All$/, '')
+                                        .replaceAll(/_filtered$/, '')
+                    tuple(sid, f)
+                }
+        } else {
+            log.warn "RNA integrated onramp set without rna_per_sample_h5ads_dir — MULTIOME_INTEGRATION will be unable to build MuData."
+            ch_rna_qc_h5ads = Channel.empty()
+        }
+
+        // CellChat CSV — optional, only consumed by ENHANCER_FOOTPRINTING_RECIPES Phase 3
+        if (params.onramp?.rna_cellchat_csv) {
+            ch_rna_cellchat_csv = Channel.value(file(params.onramp.rna_cellchat_csv))
+        } else {
+            ch_rna_cellchat_csv = Channel.empty()
+        }
+
         rna_completed = true
         rna_from_onramp = true
     } else if (params.rna.run) {
         log.info "Starting RNA workflow..."
         RNA()
-        ch_integrated_rna = RNA.out.integrated_rna
+        ch_integrated_rna   = RNA.out.integrated_rna
+        ch_rna_qc_h5ads     = RNA.out.qc_h5ads
+        ch_rna_cellchat_csv = RNA.out.cellchat_csv
         rna_completed = true
         rna_from_onramp = false
     } else {
         log.info "Skipping RNA workflow (disabled in config)"
+        ch_integrated_rna   = Channel.empty()
+        ch_rna_qc_h5ads     = Channel.empty()
+        ch_rna_cellchat_csv = Channel.empty()
         rna_completed = false
         rna_from_onramp = false
     }
@@ -2493,13 +2742,41 @@ workflow {
     }
 
     // ========================================================================
-    // ATAC PROCESSING (with on-ramp)
+    // ATAC PROCESSING (with granular on-ramps)
+    // 2026-04-30 refactor (D2.1 back-port 2026-05-04): onramp source produces
+    // the same channels as ATAC_INITIAL/ATAC_FINAL so REGULATORY_ANALYSIS,
+    // ENHANCER_FOOTPRINTING, and downstream consumers run identically
+    // regardless of source. Each major artifact is independently onrampable.
     // ========================================================================
+    def ch_atac_peak_matrix
+    def ch_atac_individual_samples
+    def ch_atac_anndataset
+    def da_peaks_ch
+
     if (params.onramp?.atac_peak_matrix_h5ad) {
-        log.info "ON-RAMP: Using pre-computed ATAC peak matrix: ${params.onramp.atac_peak_matrix_h5ad}"
+        log.info "ON-RAMP: ATAC peak matrix: ${params.onramp.atac_peak_matrix_h5ad}"
         ch_atac_peak_matrix = Channel.value(file(params.onramp.atac_peak_matrix_h5ad))
+
+        // Per-sample h5ads — required by SCPRINTER (per-sample fragment binding)
+        if (params.onramp?.atac_individual_samples_dir) {
+            log.info "ON-RAMP: ATAC per-sample h5ads from: ${params.onramp.atac_individual_samples_dir}"
+            ch_atac_individual_samples = Channel.fromPath("${params.onramp.atac_individual_samples_dir}/*.h5ad").collect()
+        } else {
+            log.warn "ATAC peak_matrix onramp set without atac_individual_samples_dir — scPRINTer will be unable to build per-sample fragment binding."
+            ch_atac_individual_samples = Channel.empty()
+        }
+
+        // AnnDataSet (snapatac2 binding object) — required by ENHANCER_FOOTPRINTING_RECIPES
+        if (params.onramp?.atac_anndataset) {
+            log.info "ON-RAMP: ATAC anndataset: ${params.onramp.atac_anndataset}"
+            ch_atac_anndataset = Channel.value(file(params.onramp.atac_anndataset))
+        } else {
+            ch_atac_anndataset = Channel.empty()
+        }
+
         atac_completed = true
         atac_from_onramp = true
+        da_peaks_ch = Channel.empty()  // descriptive + DA only valid in non-onramp ATAC mode
     } else if (params.atac.run && params.atac.run_initial_qc) {
         log.info "Starting ATAC workflow..."
 
@@ -2509,7 +2786,9 @@ workflow {
         // Stage 2: Final QC with sample-specific thresholds
         ATAC_FINAL(ATAC_INITIAL.out.thresholds)
 
-        ch_atac_peak_matrix = ATAC_FINAL.out.peak_matrix
+        ch_atac_peak_matrix         = ATAC_FINAL.out.peak_matrix
+        ch_atac_individual_samples  = ATAC_FINAL.out.individual_samples
+        ch_atac_anndataset          = ATAC_FINAL.out.anndataset
         atac_completed = true
         atac_from_onramp = false
 
@@ -2555,8 +2834,23 @@ workflow {
             log.info "Skipping differential ATAC (no condition_key in metadata)"
             da_peaks_ch = Channel.empty()
         }
+    } else {
+        log.info "Skipping ATAC workflow (disabled in config)"
+        atac_completed = false
+        atac_from_onramp = false
+        ch_atac_peak_matrix         = Channel.empty()
+        ch_atac_individual_samples  = Channel.empty()
+        ch_atac_anndataset          = Channel.empty()
+        da_peaks_ch = Channel.empty()
+    }
 
-        // REGULATORY ANALYSIS (Cicero, ChromVAR, scPRINT)
+    // ========================================================================
+    // REGULATORY ANALYSIS (Cicero, ChromVAR, scPRINTer)
+    // 2026-04-30: Hoisted out of ATAC elif so it runs from onramp branch too.
+    // Per-process onramps (cicero/chromvar/printer) are gated INSIDE the
+    // workflow on params.onramp.{cicero_*, chromvar_*, printer_h5ad}.
+    // ========================================================================
+    if (atac_completed && params.atac.run) {
         log.info "Starting regulatory analysis workflow..."
 
         // Parse fragment files from manifest for SCPRINTER_BUILD_PRINTER
@@ -2572,38 +2866,42 @@ workflow {
             .collect()
 
         REGULATORY_ANALYSIS(
-            ATAC_FINAL.out.peak_matrix,
-            ATAC_FINAL.out.individual_samples,
+            ch_atac_peak_matrix,
+            ch_atac_individual_samples,
             da_peaks_ch,
             file(params.atac.sample_metadata),
             ch_reg_fragments,
             atac_cell_type_key
         )
-
-    } else {
-        log.info "Skipping ATAC workflow (disabled in config)"
-        atac_completed = false
-        atac_from_onramp = false
     }
 
     // ========================================================================
-    // MULTIOME INTEGRATION (requires both RNA and ATAC)
+    // MULTIOME INTEGRATION (requires both RNA and ATAC, OR mudata onramp)
+    // 2026-04-30 refactor (D2.1 back-port 2026-05-04): gate uses can_build_mudata,
+    // allowing onramped RNA per-sample h5ads + onramped ATAC per-sample h5ads
+    // to be joined just like fresh outputs.
     // ========================================================================
+    def can_build_mudata = rna_completed && atac_completed &&
+        (!rna_from_onramp || params.onramp?.rna_per_sample_h5ads_dir) &&
+        (!atac_from_onramp || params.onramp?.atac_individual_samples_dir)
+    def mudata_from_onramp = false
+
     if (params.onramp?.mudata_h5mu) {
         log.info "ON-RAMP: Using pre-computed MuData: ${params.onramp.mudata_h5mu}"
+        mudata_from_onramp = true
         // Skip MULTIOME_INTEGRATION entirely -- downstream GRN workflows
         // should read from the on-ramp mudata directly.
-    } else if (params.run_multiome_integration && rna_completed && atac_completed && !atac_from_onramp && !rna_from_onramp) {
+    } else if (params.run_multiome_integration && can_build_mudata) {
         log.info """
         MULTIOME INTEGRATION
         Waiting for RNA and ATAC workflows to complete...
         """
 
-        // Explicit dependency: wait for ATAC_FINAL to complete
-        ATAC_FINAL.out.individual_samples
+        // Explicit dependency: wait for ATAC samples to materialize (fresh or onramp)
+        ch_atac_individual_samples
             .collect()
             .subscribe { atac_files ->
-                log.info "ATAC processing complete: ${atac_files.size()} samples"
+                log.info "ATAC samples ready: ${atac_files.size()} files"
             }
 
         // ========================================================================
@@ -2628,7 +2926,7 @@ workflow {
         // Map flat RNA outputs back to tuples with keys
         // For single-file (non-demux) lanes, use lane_sample_id directly.
         // For demux (BD brain): reconstruct donor + batch from filename.
-        ch_rna_mapped = RNA.out.qc_h5ads
+        ch_rna_mapped = ch_rna_qc_h5ads
             .flatMap { sample_id, files ->
                 def file_list = files instanceof List ? files : [files]
                 if (file_list.size() == 1) {
@@ -2649,7 +2947,7 @@ workflow {
                               'atac_celltypist_annotations', 'scatanno_annotations',
                               'peak_matrix_annotated',
                               'cluster_avg_gene_scores'] as Set
-        ch_atac_mapped = ATAC_FINAL.out.individual_samples
+        ch_atac_mapped = ch_atac_individual_samples
             .flatMap { it instanceof List ? it : [it] }
             .filter { file -> !atac_auxiliary.contains(file.baseName) }
             .map { file ->
@@ -2744,17 +3042,22 @@ workflow {
 
     // ========================================================================
     // MULTIOME GRN (pycistopic + SCENIC+ + DORC)
+    // 2026-04-30 (D2.1 back-port 2026-05-04): can_run_multiome_grn replaces
+    // ad-hoc onramp gates; MULTIOME_INTEGRATION.out is only available when
+    // multiome was actually built (not when mudata_from_onramp).
     // ========================================================================
-    if (rna_completed && atac_completed && !atac_from_onramp && !rna_from_onramp &&
-        params.run_multiome_integration && !params.onramp?.mudata_h5mu &&
-        (params.pycistopic.run || params.scenicplus.run || params.dorc.run)) {
+    def can_run_multiome_grn = can_build_mudata && !mudata_from_onramp &&
+                               params.run_multiome_integration &&
+                               (params.pycistopic.run || params.scenicplus.run || params.dorc.run)
+
+    if (can_run_multiome_grn) {
         log.info """
         MULTIOME GRN ANALYSIS
         Running pycisTopic, SCENIC+ and/or DORC as requested in config
         """
         MULTIOME_GRN(
             ch_integrated_rna,
-            ATAC_FINAL.out.peak_matrix,
+            ch_atac_peak_matrix,
             file(params.metadata_file),
             MULTIOME_INTEGRATION.out.rna_for_dorc,
             MULTIOME_INTEGRATION.out.stats,
@@ -2765,9 +3068,11 @@ workflow {
 
     // ========================================================================
     // ENHANCER FOOTPRINTING RECIPES (A/B/C/D)
-    // Requires: ATAC completed + REGULATORY_ANALYSIS (Cicero, ChromVAR, scPRINTER)
+    // Requires: ATAC completed + REGULATORY_ANALYSIS (Cicero, ChromVAR, scPRINTer).
+    // 2026-04-30 (D2.1 back-port 2026-05-04): atac_from_onramp gate removed —
+    // EFR now runs from onramp branches when atac side keys are populated.
     // ========================================================================
-    if (params.enhancer_footprinting.run && atac_completed && !atac_from_onramp &&
+    if (params.enhancer_footprinting.run && atac_completed &&
         params.cicero.run && params.chromvar.run && params.scprinter.run) {
         log.info """
         ENHANCER FOOTPRINTING RECIPES
@@ -2777,9 +3082,7 @@ workflow {
         Phase 4 (Visualization): ${(params.enhancer_viz.run ?: false) ? 'enabled' : 'disabled'}
         """
 
-        def has_grn = rna_completed && atac_completed && !atac_from_onramp && !rna_from_onramp &&
-                      params.run_multiome_integration && !params.onramp?.mudata_h5mu &&
-                      (params.pycistopic.run || params.scenicplus.run || params.dorc.run)
+        def has_grn = can_run_multiome_grn
 
         def ereg_direct_ch = (has_grn && params.scenicplus.run && params.pycistopic.run) ?
             MULTIOME_GRN.out.scplus_ereg_direct : Channel.empty()
@@ -2788,13 +3091,15 @@ workflow {
         def dorc_sig_ch = (has_grn && params.dorc.run) ?
             MULTIOME_GRN.out.dorc_sig : Channel.empty()
         def rna_ch = rna_completed ? ch_integrated_rna : Channel.empty()
-        def cellchat_csv_ch = (rna_completed && !rna_from_onramp && params.cellchat.run) ?
-            RNA.out.cellchat_csv : Channel.empty()
+        // CellChat CSV: ch_rna_cellchat_csv is populated when RNA ran fresh
+        // OR when params.onramp.rna_cellchat_csv was supplied; otherwise empty.
+        def cellchat_csv_ch = (rna_completed && params.cellchat.run) ?
+            ch_rna_cellchat_csv : Channel.empty()
         def bigwigs_ch = (has_grn && params.pycistopic.run) ?
             MULTIOME_GRN.out.pseudobulk_bigwigs : Channel.empty()
 
         ENHANCER_FOOTPRINTING_RECIPES(
-            ATAC_FINAL.out.peak_matrix,
+            ch_atac_peak_matrix,
             REGULATORY_ANALYSIS.out.scprinter_printer,
             REGULATORY_ANALYSIS.out.chromvar_deviations,
             REGULATORY_ANALYSIS.out.chromvar_per_ct,
@@ -2808,8 +3113,16 @@ workflow {
             bigwigs_ch,
             atac_cell_type_key,
             REGULATORY_ANALYSIS.out.tf_targets,
-            ATAC_FINAL.out.anndataset            // D1b
+            ch_atac_anndataset,                            // D1b
+            REGULATORY_ANALYSIS.out.scprinter_footprints   // 2026-04-30: pass-through (no cross-workflow access)
         )
+    }
+
+    // SHI_FIGURES — Shi et al. 2025 figure equivalents (Tier A always; Tier B
+    // gates on existence of differential outputs, so single-condition runs
+    // produce 1E/2B/2D-foundation only).
+    if (params.shi_figures?.enabled == true) {
+        SHI_FIGURES()
     }
 }
 
@@ -2866,6 +3179,194 @@ workflow VIZ_ONLY {
         }
     } else {
         log.warn "VIZ_ONLY: cicero_connections / cicero_ccan / cicero_cds not all provided; skipping CICERO_TARGET_PLOTS."
+    }
+}
+
+// ============================================================================
+// SHI_FIGURES — Shi et al. 2025 figure-equivalents from persisted artifacts.
+// D3: absorbed from SDas_nf 2026-05-03. Tier A modules (ANNOTATE_PEAK_TYPES,
+// MARKER_COVERAGE_TRACKS) run unconditionally; Tier B (NMF_ENHANCER_PROGRAMS,
+// DA/TF differential plots, curated networks, locus bars) auto-skip on
+// single-condition runs.
+// ENG-24 (2026-05-04): NMF moved to Tier B because nmf_enhancer_programs.py
+//   requires obs[condition_key] which is only guaranteed under >=2 conditions.
+//
+// Path defaults assume the FORGE outdir layout (different from SDas_nf):
+//   peak_matrix     — ${outdir}/atac/final/peak_matrix.h5ad
+//   diff DA peaks   — ${outdir}/differential/DA_peaks_*.csv
+//   diff TF csvs    — ${outdir}/differential_tf/tf_differential_*.csv
+//   ccan gene links — ${outdir}/enhancer_footprinting/ccan_enhancers/
+//   tf adjacency    — ${outdir}/enhancer_footprinting/network/tf_gene_adjacency.tsv
+//   bigwig manifest — ${outdir}/enhancer_viz/bigwigs/bigwigs/manifest.json
+// Override any with --shi_figures.<key> on the CLI.
+// ============================================================================
+workflow SHI_FIGURES {
+
+    main:
+
+    // FIX ENG-13/MIS-08: use canonical params (gtf_human_full / gtf_mouse_full)
+    // matching the resolution used elsewhere (main.nf:574, 643). Fall back to
+    // params.cicero.gtf_full if set. Hard-fail rather than pass null downstream.
+    def gtf = (params.species == 'human' ? params.gtf_human_full : params.gtf_mouse_full) ?:
+              params.cicero?.gtf_full
+    if (!gtf || !file(gtf).exists()) {
+        log.warn "SHI_FIGURES: GTF not found (params.gtf_${params.species}_full=${gtf}); skipping all GTF-dependent panels (ANNOTATE_PEAK_TYPES, MARKER_COVERAGE_TRACKS)."
+        gtf = null
+    }
+    def trt_label  = params.shi_figures?.treatment ?: ''
+    def ctrl_label = params.shi_figures?.control   ?: ''
+
+    def conn_ctrl_path = params.shi_figures?.connections_ctrl ?:
+        "${params.outdir}/cicero/stratified/${ctrl_label}/cicero_connections.tsv.gz"
+    def conn_trt_path  = params.shi_figures?.connections_trt ?:
+        "${params.outdir}/cicero/stratified/${trt_label}/cicero_connections.tsv.gz"
+    def gene_links_ctrl_path = params.shi_figures?.gene_links_ctrl ?:
+        "${params.outdir}/enhancer_footprinting/ccan_enhancers/ccan_enhancer_gene_links_${ctrl_label}.tsv"
+    def gene_links_trt_path  = params.shi_figures?.gene_links_trt ?:
+        "${params.outdir}/enhancer_footprinting/ccan_enhancers/ccan_enhancer_gene_links_${trt_label}.tsv"
+    def gene_links_global    = params.shi_figures?.gene_links_global ?:
+        "${params.outdir}/enhancer_footprinting/ccan_enhancers/ccan_enhancer_gene_links.tsv"
+    def enh_bed_path  = params.shi_figures?.enhancer_bed ?:
+        "${params.outdir}/enhancer_footprinting/ccan_enhancers/ccan_enhancer_peaks.bed.gz"
+    def adjacency_path = params.shi_figures?.adjacency ?:
+        "${params.outdir}/enhancer_footprinting/network/tf_gene_adjacency.tsv"
+    def peak_matrix_path = params.shi_figures?.peak_matrix ?:
+        "${params.outdir}/atac/final/peak_matrix.h5ad"
+    // FIX ENG-01 / ENG-19 (2026-05-04): differential CSV probes moved into
+    // Tier B body where trt/ctrl labels are required, so the strict (label-
+    // anchored) globs can be used uniformly.
+    def have_two_cond = (trt_label && ctrl_label)
+
+    // ----- Tier A — single-condition compatible -----
+
+    // Foundation: peak biotype classification (Promoter / Exonic / Intronic / Distal)
+    if (file(peak_matrix_path).exists()) {
+        ANNOTATE_PEAK_TYPES(file(peak_matrix_path), file(gtf))
+    } else {
+        log.warn "SHI_FIGURES: peak matrix not found at ${peak_matrix_path}; skipping Tier A peak annotation."
+    }
+
+    // 1E — broad-class bigWigs + marker coverage tracks
+    def bw_manifest_path = params.shi_figures?.bigwig_manifest ?:
+        "${params.outdir}/enhancer_viz/bigwigs/bigwigs/manifest.json"
+    def bw_dir = params.shi_figures?.bigwig_dir ?:
+        "${params.outdir}/enhancer_viz/bigwigs/bigwigs"
+    if (file(bw_manifest_path).exists()) {
+        MARKER_COVERAGE_TRACKS(
+            file(bw_manifest_path),
+            Channel.fromPath("${bw_dir}/*.bw").collect(),
+            file(gtf),
+        )
+    } else {
+        log.warn "SHI_FIGURES: bigwig manifest not found at ${bw_manifest_path}; skipping MARKER_COVERAGE_TRACKS (1E)."
+    }
+
+    // ----- Tier B — require >=2 conditions; auto-skip otherwise -----
+
+    if (!have_two_cond) {
+        log.info "SHI_FIGURES: shi_figures.treatment / .control not both set; skipping " +
+                 "Tier B (single-condition mode), including NMF_ENHANCER_PROGRAMS."
+        return
+    }
+
+    // ENG-19 (2026-05-04): tighten globs by current trt/ctrl labels so stale
+    // CSVs from a prior comparison label can't be silently consumed. Filenames
+    // emitted by snapatac_diff.nf are DA_peaks_<ct>__<trt>_vs_<ctrl>.csv and
+    // by differential_tf_accessibility.py are tf_differential_<ct>_<trt>_vs_<ctrl>.csv.
+    def diff_glob_strict    = "${params.outdir}/differential/DA_peaks_*__${trt_label}_vs_${ctrl_label}.csv"
+    def diff_tf_glob_strict = "${params.outdir}/differential_tf/tf_differential_*_${trt_label}_vs_${ctrl_label}.csv"
+    def have_diff_da_strict = !file(diff_glob_strict).isEmpty()
+    def have_diff_tf_strict = !file(diff_tf_glob_strict).isEmpty()
+
+    // ENG-02 (2026-05-04): when params.differential.run=false but Tier B is
+    // consuming pre-existing CSVs, log each filename + mtime so the user can
+    // see what's being re-rendered against. Does not block — re-rendering from
+    // a prior differential run is a legitimate use case.
+    if (!params.differential?.run && (have_diff_da_strict || have_diff_tf_strict)) {
+        def staleFiles = []
+        if (have_diff_da_strict) staleFiles.addAll(file(diff_glob_strict))
+        if (have_diff_tf_strict) staleFiles.addAll(file(diff_tf_glob_strict))
+        log.warn "SHI_FIGURES: differential.run=false but Tier B is consuming " +
+                 "${staleFiles.size()} pre-existing CSV(s) from a prior run:"
+        def mtfmt = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss')
+        staleFiles.each { f ->
+            log.warn "  - ${f.name} (mtime: ${mtfmt.format(new Date(f.lastModified()))})"
+        }
+        log.warn "  Verify these reflect your current parameters; otherwise re-run differential."
+    }
+
+    Channel.fromPath(diff_tf_glob_strict).collect().set { ch_diff_tf }
+    Channel.fromPath(diff_glob_strict).collect().set    { ch_diff }
+
+    // 2B — NMF on enhancer × pseudobulk (ENG-24: moved from Tier A; needs condition_key)
+    if (file(peak_matrix_path).exists() && file(enh_bed_path).exists()) {
+        NMF_ENHANCER_PROGRAMS(file(peak_matrix_path), file(enh_bed_path))
+    } else if (file(peak_matrix_path).exists()) {
+        log.warn "SHI_FIGURES: enhancer BED not found at ${enh_bed_path}; skipping NMF_ENHANCER_PROGRAMS (2B)."
+    }
+
+    // 2D — differential peak biotype breakdown (depends on DA peaks + peak annotation)
+    if (have_diff_da_strict && file(peak_matrix_path).exists()) {
+        DA_PEAK_BREAKDOWN(ch_diff, ANNOTATE_PEAK_TYPES.out.tsv)
+        // 2E — per-celltype log2FC heatmaps
+        if (file(gene_links_global).exists()) {
+            DA_LOG2FC_HEATMAPS(ch_diff, ANNOTATE_PEAK_TYPES.out.tsv, file(gene_links_global))
+        } else {
+            log.warn "SHI_FIGURES: gene links global not found at ${gene_links_global}; skipping DA_LOG2FC_HEATMAPS (2E)."
+        }
+    } else {
+        log.info "SHI_FIGURES: no DA-peak CSVs at ${diff_glob_strict}; skipping 2D/2E."
+    }
+
+    // 2C — co-accessibility correlation (requires both stratified Cicero outputs)
+    if (file(conn_ctrl_path).exists() && file(conn_trt_path).exists() && file(peak_matrix_path).exists()) {
+        COACC_CORRELATION_MATRIX(
+            file(conn_ctrl_path),
+            file(conn_trt_path),
+            ANNOTATE_PEAK_TYPES.out.tsv,
+        )
+    } else {
+        log.info "SHI_FIGURES: stratified Cicero connections not found for both conditions; skipping COACC_CORRELATION_MATRIX (2C)."
+    }
+
+    // 4B/5A/5C/5E — TF differential volcano (depends on diff_tf CSVs)
+    if (have_diff_tf_strict) {
+        TF_DIFFERENTIAL_VOLCANO(ch_diff_tf)
+    } else {
+        log.info "SHI_FIGURES: no TF-diff CSVs at ${diff_tf_glob_strict}; skipping TF_DIFFERENTIAL_VOLCANO (4B/5A/5C/5E)."
+    }
+
+    // Curated panels — gate on Cicero stratified + ccan gene links + adjacency + diff_tf
+    def have_curated_inputs = have_diff_tf_strict &&
+        file(conn_ctrl_path).exists() && file(conn_trt_path).exists() &&
+        file(gene_links_ctrl_path).exists() && file(gene_links_trt_path).exists() &&
+        file(adjacency_path).exists()
+
+    if (have_curated_inputs) {
+        SELECT_SHI_CANDIDATES(
+            ch_diff_tf,
+            file(conn_ctrl_path),
+            file(conn_trt_path),
+            file(gene_links_ctrl_path),
+            file(gene_links_trt_path),
+            file(adjacency_path),
+        )
+
+        // 4C/5B/5D/5F — curated TF→target subgraphs
+        CURATED_TF_NETWORKS(
+            file(adjacency_path),
+            SELECT_SHI_CANDIDATES.out.candidates,
+            ch_diff_tf,
+        )
+
+        // 4E — locus-restricted TF binding bars
+        LOCUS_TF_BINDING(
+            file(adjacency_path),
+            ch_diff_tf,
+            SELECT_SHI_CANDIDATES.out.candidates,
+        )
+    } else {
+        log.info "SHI_FIGURES: candidate-selector inputs incomplete; skipping SELECT_SHI_CANDIDATES + CURATED_TF_NETWORKS + LOCUS_TF_BINDING."
     }
 }
 

@@ -1,12 +1,15 @@
 // modules/scprint/enhancer_footprinting_per_ct.nf
 //
-// V5 PER-CT ARCHITECTURE — REFERENCE IMPLEMENTATION (NOT WIRED).
+// V5 PER-CT ARCHITECTURE — toggleable via params.enhancer_footprinting.use_per_ct.
 //
 // Drop-in replacement for ENHANCER_FOOTPRINTING that processes one cell type
 // per task with all its TFs in a single Python session. Loads printer + models
 // + peak matrix + barcode grouping ONCE per ct (not 20× as in the sharded
 // version) and amortizes the ~3-5 min setup across all (ct, TF) pairs in that
 // cell type. Cuts SLURM task count from 657 → 33 for typical mouse-brain runs.
+//
+// Wired in main.nf via the ENHANCER_FOOTPRINTING_RECIPES workflow; toggled by
+// params.enhancer_footprinting.use_per_ct (default false → legacy sharded path).
 //
 // Architecture trade-offs and validation status: see the docstring of
 // `bin/run_enhancer_footprinting_per_ct.py` (companion script).
@@ -76,6 +79,10 @@ process ENHANCER_FOOTPRINTING_PER_CT {
     """
     # Same scratch-copy pattern as ENHANCER_FOOTPRINTING (sharded) — printer
     # h5ad needs RW for the rust-AnnData backend.
+    # cache-bust 2026-05-03: backed=True restored at 3 footprint sites + module-level
+    # monkey-patch on scp.tl.get_footprint_score with retry-3x then re-raise on
+    # rust-anndata snap.read panic. Per-TF except now catches BaseException with
+    # KI/SE/GE allowlist so PanicException is properly isolated.
     export HDF5_USE_FILE_LOCKING=FALSE
     _XDG="\${XDG_CACHE_HOME:-/tmp/cache}"
     mkdir -p "\${_XDG}"

@@ -355,6 +355,75 @@ def load_motif_pwm(tf_name, motif_scan_path, jaspar_pfms_path=''):
     return freq_df
 
 
+def _crop_inner_whitespace(img, top_search_frac=0.30, blank_thresh=2.0,
+                           keep_pad_px=24):
+    """ITER-v4: collapse the long blank-row band baked into the source
+    enhancer-footprint PNG between its header lines and the first sub-panel.
+
+    The source PNG (from ENHANCER_FOOTPRINTING) is ~9500 px tall with a few
+    text-header rows at top, then ~400 px of pure white, then the first
+    heatmap. matplotlib's imshow can't address that gap because it's
+    embedded in the pixels themselves. We scan for the longest run of
+    near-white rows in the upper `top_search_frac` of the image and excise
+    it (keeping `keep_pad_px` rows of margin on each side so the header
+    isn't pressed against the heatmap).
+
+    Args:
+        img: ndarray HxWx{3,4} as returned by mpimg.imread (float in [0,1]).
+        top_search_frac: only look in the top fraction of the image so we
+            don't accidentally collapse legitimate gaps lower down.
+        blank_thresh: per-row darkness threshold (in 0-255 scale) below
+            which a row is treated as blank. Default 2.0 = ~99.2% white.
+        keep_pad_px: rows of blank margin to preserve at each side of the
+            removed band.
+
+    Returns the (possibly cropped) image. Falls through to original image
+    on any failure to keep the pipeline robust.
+    """
+    try:
+        if img.ndim < 2:
+            return img
+        h, w = img.shape[:2]
+        if h < 200:
+            return img
+
+        rgb = img[..., :3] if img.shape[-1] >= 3 else img
+        scale = 255.0 if rgb.dtype.kind == 'f' else 1.0
+        # Per-row darkness = 255 - mean luminance. Larger = more content.
+        row_dark = 255.0 - rgb.mean(axis=(1, 2)) * scale
+
+        upper = int(h * top_search_frac)
+        is_blank = row_dark[:upper] < blank_thresh
+
+        # Find longest run of blank rows in upper band.
+        best_start, best_len = 0, 0
+        cur_start, cur_len = 0, 0
+        for i, b in enumerate(is_blank):
+            if b:
+                if cur_len == 0:
+                    cur_start = i
+                cur_len += 1
+                if cur_len > best_len:
+                    best_start, best_len = cur_start, cur_len
+            else:
+                cur_len = 0
+
+        # Only excise if the gap is meaningful (>~0.5" at 200 dpi).
+        if best_len < 100:
+            return img
+
+        cut_start = best_start + keep_pad_px
+        cut_end = best_start + best_len - keep_pad_px
+        if cut_end <= cut_start:
+            return img
+
+        kept = np.concatenate([img[:cut_start], img[cut_end:]], axis=0)
+        return kept
+    except Exception as e:
+        print(f"[ITER-v4] _crop_inner_whitespace skipped ({e}); using raw image")
+        return img
+
+
 def assemble_composite_figure(
     browser_png, footprint_pngs, motif_pwm, tf_name, gene,
     title='', save_path=None, dpi=200, promoter_pngs=None,
@@ -393,12 +462,17 @@ def assemble_composite_figure(
                 panel_labels.append(f'{letter}. {ct} — {gene} Promoter MSFP (any-TF binding)')
 
     # Next panels: pre-computed enhancer-TF footprint composites
+    # ITER-v4: collapse the inner whitespace gap baked into the source PNG
+    # (between its header lines and the first sub-panel).
     base_offset = len(panel_imgs)
     for i, (ct, png_path) in enumerate(sorted(footprint_pngs.items())):
         if os.path.exists(png_path):
-            panel_imgs.append(mpimg.imread(png_path))
-            letter = chr(ord('A') + base_offset + i)
-            panel_labels.append(f'{letter}. {ct} — {tf_name} Enhancer Footprint')
+            img = _crop_inner_whitespace(mpimg.imread(png_path))
+            panel_imgs.append(img)
+            # ITER-v4: source PNG carries its own internal heading
+            # ("OPC-Oligo - TF SOX10 Enhancer Footprinting | ..."), so the
+            # matplotlib panel title was redundant. Suppress with empty label.
+            panel_labels.append('')
 
     if not panel_imgs:
         print("[WARN] No panels available — cannot assemble composite figure")
@@ -412,9 +486,12 @@ def assemble_composite_figure(
     # is preferable to letterboxing or cramming.
     n_panels = len(panel_imgs)
     has_motif = motif_pwm is not None
-    fig_width = 24
+    # ITER-v1: vertical expansion. fig_width 24 -> 16 (less squat) and
+    # MAX_PANEL_HEIGHT 6 -> 60 so the 9527px-tall enhancer footprint
+    # composite (aspect 0.21) renders close to its natural height.
+    fig_width = 16
     MIN_PANEL_HEIGHT = 3.0
-    MAX_PANEL_HEIGHT = 6.0
+    MAX_PANEL_HEIGHT = 60.0
     panel_heights = []
     for img in panel_imgs:
         h, w = img.shape[:2]
@@ -425,25 +502,35 @@ def assemble_composite_figure(
     height_ratios = panel_heights + ([motif_height] if has_motif else [])
     n_rows = n_panels + (1 if has_motif else 0)
 
+    # ITER-v3: tighten whitespace.
+    #   - hspace 0.3 -> 0.02 (kill large gridspec inter-panel gap)
+    #   - set_title pad 6 (default) -> 2 (tighten label-to-content)
+    #   - suptitle y 1.01 -> 0.999 + GridSpec top=0.985 to hug header
     fig = plt.figure(figsize=(fig_width, total_height))
-    gs = gridspec.GridSpec(n_rows, 1, figure=fig, height_ratios=height_ratios, hspace=0.3)
+    gs = gridspec.GridSpec(n_rows, 1, figure=fig, height_ratios=height_ratios,
+                            hspace=0.02, top=0.985, bottom=0.005)
 
     for row, (img, label) in enumerate(zip(panel_imgs, panel_labels)):
         ax = fig.add_subplot(gs[row])
         ax.imshow(img, aspect='auto')
         ax.axis('off')
-        ax.set_title(label, fontsize=14, fontweight='bold', loc='left')
+        # ITER-v4: skip set_title when label is empty (source PNG already
+        # carries an internal heading; matplotlib title would duplicate it).
+        if label:
+            ax.set_title(label, fontsize=14, fontweight='bold', loc='left', pad=2)
 
     # Motif logo at bottom
     if has_motif:
         ax_logo = fig.add_subplot(gs[n_panels])
         render_motif_logo(motif_pwm, tf_name, ax=ax_logo)
-        letter = chr(ord('A') + n_panels)
-        ax_logo.set_title(f'{letter}. TF Motif: {tf_name}',
-                         fontsize=14, fontweight='bold', loc='left')
+        # ITER-v4: drop the letter prefix — source PNG already labels its
+        # internal sub-panels A..J, so adding "B. TF Motif" collides
+        # confusingly with that scheme.
+        ax_logo.set_title(f'TF Motif: {tf_name}',
+                         fontsize=14, fontweight='bold', loc='left', pad=2)
 
     if title:
-        fig.suptitle(title, fontsize=18, fontweight='bold', y=1.01)
+        fig.suptitle(title, fontsize=18, fontweight='bold', y=0.999)
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches='tight', facecolor='white')

@@ -38,6 +38,52 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import snapatac2 as snap
+
+
+# scprinter's get_footprint_score(backed=True) closes the rust handle, streams
+# obsm via raw h5py, then reopens with snap.read(). The reopen non-deterministically
+# panics in rust-anndata (anndata-0.4.2 src/container/collection.rs:538: expected
+# array, found Scalar(f64)) — runs 28/29 lost work this way at TF #17 BACH1 / #7
+# FoxK. The on-disk h5ad is valid; only rust's deserializer mis-types one element.
+# Wrap with retry-3x on the snap.read step; on exhaustion, re-raise so the per-TF
+# loop in run_enhancer_footprinting_per_ct.py logs the TF as failed and skips it.
+# pyo3 PanicException inherits BaseException (not Exception), so we catch by name.
+_orig_get_footprint_score = scp.tl.get_footprint_score
+
+def _safe_get_footprint_score(printer, *args, save_key=None, backed=True, **kwargs):
+    try:
+        return _orig_get_footprint_score(
+            printer, *args, save_key=save_key, backed=backed, **kwargs
+        )
+    except BaseException as e:
+        if isinstance(e, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            raise
+        if type(e).__name__ != 'PanicException':
+            raise
+        save_path = os.path.join(printer.file_path, f"{save_key}.h5ad")
+        if not os.path.exists(save_path):
+            print(f"  [PANIC] {save_key}: rust panic but no file at {save_path}; re-raising",
+                  flush=True)
+            raise
+        for attempt in range(1, 4):
+            try:
+                printer.footprintsadata[save_key] = snap.read(save_path)
+                print(f"  [RECOVERED] {save_key}: snap.read succeeded on retry {attempt}/3",
+                      flush=True)
+                return
+            except BaseException as e2:
+                if isinstance(e2, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                    raise
+                if type(e2).__name__ != 'PanicException':
+                    raise
+                print(f"  [RETRY {attempt}/3] {save_key}: snap.read panicked; retrying",
+                      flush=True)
+        print(f"  [SKIPPED] {save_key}: snap.read panicked 3×; no entry written",
+              flush=True)
+        raise
+
+scp.tl.get_footprint_score = _safe_get_footprint_score
 
 
 def init_scprinter(cache_dir):
@@ -1023,24 +1069,90 @@ def plot_cicero_arcs(cicero_conns, best_region_str, regions_df, ax, window_kb=50
     cbar.ax.tick_params(labelsize=7)
 
 
-def main():
-    args = parse_args()
-    os.environ["SCPRINTER_CACHE_DIR"] = args.cache_dir
+def setup_pipeline(args, *, peak_matrix_path=None):
+    """Load printer + peak matrix + barcode grouping + TFBS model.
 
-    global scp
-    scp = init_scprinter(args.cache_dir)
+    Returns dict {printer, grouping, uniq_groups, ct_col, has_tfbs, peak_matrix_path}.
+    Per-ct architecture calls this ONCE per cell type then iterates run_one_pair()
+    over all TFs in the cell type, amortizing the printer/peak/grouping load.
+    Sharded CLI calls this once per pair.
+    """
+    peak_matrix_path = peak_matrix_path or args.peak_matrix
 
-    # Viz overhaul §3b: split plots into three mode dirs.
-    # global    — aggregate MSFP, insertion example, composite
-    # per_condition — viridis individual heatmaps with shared scale (NEW)
-    # differential  — RdBu_r delta heatmap PDF (NEW)
-    plots_dir = Path("enhancer_global")
-    plots_dir.mkdir(exist_ok=True)
-    per_condition_dir = Path("enhancer_per_condition")
-    per_condition_dir.mkdir(exist_ok=True)
-    differential_dir = Path("enhancer_differential")
-    differential_dir.mkdir(exist_ok=True)
+    print(f"  Loading printer from {args.printer_path}")
+    genome_obj = getattr(scp.genome, args.genome)
+    printer = scp.load_printer(args.printer_path, genome_obj)
+    printer.load_disp_model()
 
+    ct_col = args.cell_type_col
+    adata = ad.read_h5ad(peak_matrix_path)
+    if ct_col not in adata.obs.columns:
+        raise ValueError(f"Peak matrix missing '{ct_col}' column. "
+                         f"Available: {list(adata.obs.columns)}")
+
+    printer_bcs = set(map(str, printer.obs_names))
+    peak_bcs = adata.obs_names.astype(str).tolist()
+    strategy = detect_barcode_strategy(peak_bcs, printer_bcs)
+    print(f"  Barcode normalization strategy: {strategy}")
+
+    df = pd.DataFrame({
+        'barcode': [normalize_peak_barcode(b, strategy) for b in peak_bcs],
+        'cell_type': adata.obs[ct_col].astype(str).values,
+    })
+    df = df[df['barcode'].isin(printer_bcs)].copy()
+    if df.empty:
+        raise ValueError(
+            f"No barcodes from peak matrix found in printer (strategy={strategy}). "
+            f"Peak examples: {peak_bcs[:3]}, Printer examples: {list(printer_bcs)[:3]}"
+        )
+    print(f"  Matched {len(df)} barcodes across {df['cell_type'].nunique()} cell types")
+
+    barcodeGroups = df[['barcode', 'cell_type']].copy()
+    grouping, uniq_groups = scp.utils.df2cell_grouping(printer, barcodeGroups)
+    order = np.argsort(uniq_groups)
+    grouping = [grouping[i] for i in order]
+    uniq_groups = uniq_groups[order]
+
+    has_tfbs = False
+    try:
+        print("  Loading TF binding score model...")
+        printer.load_bindingscore_model("TF", scp.datasets.pretrained_TFBS_model)
+        has_tfbs = True
+        print("  [OK] TFBS model loaded")
+    except Exception as e:
+        print(f"  [WARN] Could not load TFBS model: {e}")
+
+    return {
+        'printer': printer, 'grouping': grouping, 'uniq_groups': uniq_groups,
+        'ct_col': ct_col, 'has_tfbs': has_tfbs, 'peak_matrix_path': peak_matrix_path,
+    }
+
+
+def _make_plot_dirs(base=Path(".")):
+    """Create the three plot output dirs. Returns (plots, per_condition, differential)."""
+    plots_dir = Path(base) / "enhancer_global"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    per_condition_dir = Path(base) / "enhancer_per_condition"
+    per_condition_dir.mkdir(parents=True, exist_ok=True)
+    differential_dir = Path(base) / "enhancer_differential"
+    differential_dir.mkdir(parents=True, exist_ok=True)
+    return plots_dir, per_condition_dir, differential_dir
+
+
+def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
+                 ct_col, has_tfbs, plots_dir, per_condition_dir, differential_dir):
+    """Run all enhancer footprinting compute + plot work for one (ct, TF) pair.
+
+    Equivalent to the per-pair body of the legacy CLI main(). Caller passes
+    pre-loaded state (printer/grouping/uniq_groups/has_tfbs/peak_matrix_path)
+    so per-ct mode can amortize setup across all TFs in a cell type.
+
+    args needs: cell_type, tf_name, region_set, gtf, pfm_path,
+    cicero_connections, control_condition, treatment_condition,
+    binding_threshold, cpus.
+
+    Returns the summary row dict (one row of enhancer_fp_summary.csv).
+    """
     ct = args.cell_type
     tf = args.tf_name
     # FIX-43: Sanitize for filesystem — cell types like "Megakaryocytes/platelets" contain '/'
@@ -1155,58 +1267,8 @@ def main():
     else:
         print(f"  FIX-96: No target gene TSS found, computing enhancer regions only")
 
-    # Load printer
-    print(f"  Loading printer from {args.printer_path}")
-    genome_obj = getattr(scp.genome, args.genome)
-    printer = scp.load_printer(args.printer_path, genome_obj)
-    printer.load_disp_model()
-
-    # Load peak matrix for barcode groupings
-    # FIX-43: Use configurable cell type column (was hardcoded 'cell_type')
-    ct_col = args.cell_type_col
-    adata = ad.read_h5ad(args.peak_matrix)
-    if ct_col not in adata.obs.columns:
-        raise ValueError(f"Peak matrix missing '{ct_col}' column. "
-                         f"Available: {list(adata.obs.columns)}")
-
-    # Build barcode -> cell_type table with auto-detected normalization
-    printer_bcs = set(map(str, printer.obs_names))
-    peak_bcs = adata.obs_names.astype(str).tolist()
-    strategy = detect_barcode_strategy(peak_bcs, printer_bcs)
-    print(f"  Barcode normalization strategy: {strategy}")
-
-    df = pd.DataFrame({
-        'barcode': [normalize_peak_barcode(b, strategy) for b in peak_bcs],
-        'cell_type': adata.obs[ct_col].astype(str).values,
-    })
-
-    df = df[df['barcode'].isin(printer_bcs)].copy()
-
-    if df.empty:
-        raise ValueError(
-            f"No barcodes from peak matrix found in printer (strategy={strategy}). "
-            f"Peak examples: {peak_bcs[:3]}, Printer examples: {list(printer_bcs)[:3]}"
-        )
-
-    print(f"  Matched {len(df)} barcodes across {df['cell_type'].nunique()} cell types")
-
-    # Create per-cell-type groupings
-    barcodeGroups = df[['barcode', 'cell_type']].copy()
-    grouping, uniq_groups = scp.utils.df2cell_grouping(printer, barcodeGroups)
-
-    order = np.argsort(uniq_groups)
-    grouping = [grouping[i] for i in order]
-    uniq_groups = uniq_groups[order]
-
-    # Load TFBS binding score model
-    has_tfbs = False
-    try:
-        print("  Loading TF binding score model...")
-        printer.load_bindingscore_model("TF", scp.datasets.pretrained_TFBS_model)
-        has_tfbs = True
-        print("  [OK] TFBS model loaded")
-    except Exception as e:
-        print(f"  [WARN] Could not load TFBS model: {e}")
+    # NOTE: printer + peak_matrix + grouping + TFBS model are caller-provided
+    # via setup_pipeline(). See module docstring on per-ct architecture.
 
     # Compute binding scores
     save_key_bs = f"enhancer_bs_{ct}_{tf}"
@@ -1550,7 +1612,7 @@ def main():
             print(f"  Computing differential MSFP: {args.treatment_condition} - {args.control_condition}")
             try:
                 # Create condition-specific groupings
-                adata_ct = ad.read_h5ad(args.peak_matrix)
+                adata_ct = ad.read_h5ad(peak_matrix_path)
                 _cond_col = next((c for c in ["condition", "condition_group"]
                                   if c in adata_ct.obs.columns), None)
                 if _cond_col is not None:
@@ -1586,7 +1648,7 @@ def main():
                             printer, cond_grouping, cond_groups, regions_df,
                             modes=np.arange(2, 101), n_jobs=args.cpus,
                             save_key=f"enh_fp_diff_{ct}_{tf}",
-                            backed=False, overwrite=True)
+                            backed=True, overwrite=True)
 
                         diff_msfp = compute_differential_msfp(
                             printer, f"enh_fp_diff_{ct}_{tf}",
@@ -2007,8 +2069,38 @@ def main():
     summary.to_csv('enhancer_fp_summary.csv', index=False)
     print(f"\nEnhancer footprinting complete: {ct} / {tf}")
 
-    if hasattr(printer, 'close'):
-        printer.close()
+    return summary.iloc[0].to_dict()
+
+
+def main():
+    """Sharded CLI entrypoint: parse args, load setup, run one (ct, TF) pair."""
+    args = parse_args()
+    os.environ["SCPRINTER_CACHE_DIR"] = args.cache_dir
+
+    global scp
+    scp = init_scprinter(args.cache_dir)
+
+    # Viz overhaul §3b: split plots into three mode dirs.
+    plots_dir, per_condition_dir, differential_dir = _make_plot_dirs(Path("."))
+
+    state = setup_pipeline(args)
+
+    try:
+        run_one_pair(
+            args,
+            printer=state['printer'],
+            peak_matrix_path=state['peak_matrix_path'],
+            grouping=state['grouping'],
+            uniq_groups=state['uniq_groups'],
+            ct_col=state['ct_col'],
+            has_tfbs=state['has_tfbs'],
+            plots_dir=plots_dir,
+            per_condition_dir=per_condition_dir,
+            differential_dir=differential_dir,
+        )
+    finally:
+        if hasattr(state['printer'], 'close'):
+            state['printer'].close()
 
 
 if __name__ == '__main__':

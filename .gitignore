@@ -7,8 +7,9 @@ timeline-*.html
 report-*.html
 dag-*.dot
 
-# Results (large outputs, not code)
+# Results (large outputs, not code) — glob catches results_test/, results_dev/, etc.
 results/
+results*/
 output/
 
 # Singularity containers (large binaries)
@@ -29,6 +30,10 @@ slurm-*.out
 *.tsv.gz
 *.bigWig
 *.bw
+
+# Python cache
+__pycache__/
+*.pyc
 
 # OS/editor
 .DS_Store
