@@ -178,9 +178,14 @@ def main():
                     differential_dir=differential_dir,
                 )
                 tf_elapsed = time.time() - t_tf
-                row.update({'mode': 'computed', 'elapsed_s': tf_elapsed})
+                # If run_one_pair returned but footprint_saved is False, the
+                # multiscale footprint computation hit a non-fatal error
+                # (caught by inner try/except in run_enhancer_footprinting.py).
+                # Reflect that in mode so the summary CSV doesn't claim success.
+                final_mode = 'computed' if row.get('footprint_saved') else 'partial'
+                row.update({'mode': final_mode, 'elapsed_s': tf_elapsed})
                 summary_rows.append(row)
-                print(f"  done in {tf_elapsed:.1f}s", flush=True)
+                print(f"  done in {tf_elapsed:.1f}s (mode={final_mode})", flush=True)
             except BaseException as e:
                 # pyo3 PanicException inherits BaseException (not Exception);
                 # `except Exception` lets it through and kills the whole ct

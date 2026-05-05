@@ -67,87 +67,105 @@ def main():
     ereg_df = pd.read_csv(args.ereg_direct, sep='\t')
     print(f"  Loaded {len(ereg_df)} eRegulon entries")
 
-    # Detect column names — SCENIC+ uses varying conventions
-    tf_col = None
-    region_col = None
-    gene_col = None
-    for col in ereg_df.columns:
-        col_lower = col.lower()
-        if 'tf' in col_lower and tf_col is None:
-            tf_col = col
-        if 'region' in col_lower and region_col is None:
-            region_col = col
-        if 'gene' in col_lower and 'target' in col_lower and gene_col is None:
-            gene_col = col
-        if col_lower == 'gene' and gene_col is None:
-            gene_col = col
+    # SCENIC+ V2 emits eRegulon_direct.tsv with one row per (TF, Region, Gene)
+    # triplet — columns: Region, Gene, TF, importance_R2G, rho_R2G, ... .
+    # The (TF, Region) pairs are already filtered through SCENIC+'s own
+    # quality checks (motif enrichment + region-to-gene importance). We use
+    # ereg_df directly when it carries Region+Gene+TF, and only fall back to
+    # the gene→region join through r2g_df when ereg_df lacks Region.
+    def _resolve(df, predicates, fallback):
+        """Return first column matching one of the predicates, else fallback."""
+        cols = list(df.columns)
+        for pred in predicates:
+            for c in cols:
+                if pred(c):
+                    return c
+        return fallback
 
-    if tf_col is None:
-        tf_col = ereg_df.columns[0]
-    if gene_col is None:
-        # Look for any column with 'gene' in name
-        gene_cols = [c for c in ereg_df.columns if 'gene' in c.lower()]
-        gene_col = gene_cols[0] if gene_cols else ereg_df.columns[-1]
+    tf_col = _resolve(
+        ereg_df,
+        [lambda c: c.lower() == 'tf',
+         lambda c: 'tf' in c.lower() and 'tf2g' not in c.lower()],
+        ereg_df.columns[0],
+    )
+    gene_col = _resolve(
+        ereg_df,
+        [lambda c: c.lower() == 'gene',
+         lambda c: c.lower() == 'target',
+         lambda c: 'target' in c.lower() and 'gene' in c.lower(),
+         lambda c: 'gene' in c.lower() and 'name' not in c.lower() and 'signature' not in c.lower()],
+        ereg_df.columns[-1],
+    )
+    region_col = _resolve(
+        ereg_df,
+        [lambda c: c.lower() == 'region',
+         lambda c: 'region' in c.lower() and 'name' not in c.lower() and 'signature' not in c.lower()],
+        None,
+    )
 
-    print(f"  Detected columns: TF='{tf_col}', gene='{gene_col}'")
+    has_region_in_ereg = region_col is not None and region_col in ereg_df.columns
+    print(f"  Detected columns: TF='{tf_col}', gene='{gene_col}', region='{region_col}'")
 
-    # Load region-to-gene adjacency
-    print(f"Loading region-to-gene adjacency from {args.r2g}")
-    r2g_df = pd.read_csv(args.r2g, sep='\t')
-    print(f"  Loaded {len(r2g_df)} region-to-gene entries")
-
-    # Detect r2g columns
-    r2g_region_col = None
-    r2g_gene_col = None
-    for col in r2g_df.columns:
-        col_lower = col.lower()
-        if 'region' in col_lower and r2g_region_col is None:
-            r2g_region_col = col
-        if 'gene' in col_lower and 'target' in col_lower and r2g_gene_col is None:
-            r2g_gene_col = col
-        if col_lower == 'gene' and r2g_gene_col is None:
-            r2g_gene_col = col
-
-    if r2g_region_col is None:
-        r2g_region_col = r2g_df.columns[0]
-    if r2g_gene_col is None:
-        gene_cols = [c for c in r2g_df.columns if 'gene' in c.lower()]
-        r2g_gene_col = gene_cols[0] if gene_cols else r2g_df.columns[1]
-
-    # Build TF -> regions mapping from r2g + ereg
-    # eRegulon direct gives TF-gene associations
-    # r2g gives region-gene associations
-    # TF -> genes (from eRegulon) + genes -> regions (from r2g) = TF -> regions
+    # tf_genes is built from ereg_df regardless of source.
     tf_genes = {}
     for _, row in ereg_df.iterrows():
         tf = str(row[tf_col]).strip()
         gene = str(row[gene_col]).strip()
         if tf and gene and tf != 'nan' and gene != 'nan':
-            if tf not in tf_genes:
-                tf_genes[tf] = set()
-            tf_genes[tf].add(gene)
-
+            tf_genes.setdefault(tf, set()).add(gene)
     print(f"  Found {len(tf_genes)} TFs with target genes")
 
-    # Build gene -> regions mapping
-    gene_regions = {}
-    for _, row in r2g_df.iterrows():
-        region = str(row[r2g_region_col]).strip()
-        gene = str(row[r2g_gene_col]).strip()
-        if region and gene and region != 'nan' and gene != 'nan':
-            if gene not in gene_regions:
-                gene_regions[gene] = set()
-            gene_regions[gene].add(region)
-
-    # Build TF -> regions (via gene linkage)
+    # tf_regions: prefer ereg_df's Region column directly (SCENIC+ V2 path).
+    # When unavailable, gracefully fall back to the gene→region join via r2g_df.
     tf_regions = {}
-    for tf, genes in tf_genes.items():
-        regions = set()
-        for gene in genes:
-            if gene in gene_regions:
-                regions.update(gene_regions[gene])
-        if regions:
-            tf_regions[tf] = regions
+    if has_region_in_ereg:
+        for _, row in ereg_df.iterrows():
+            tf = str(row[tf_col]).strip()
+            region = str(row[region_col]).strip()
+            if tf and region and tf != 'nan' and region != 'nan':
+                tf_regions.setdefault(tf, set()).add(region)
+        print(f"  Built tf→regions directly from ereg_df.{region_col}")
+    else:
+        print(f"Loading region-to-gene adjacency from {args.r2g}")
+        r2g_df = pd.read_csv(args.r2g, sep='\t')
+        print(f"  Loaded {len(r2g_df)} region-to-gene entries")
+
+        r2g_region_col = _resolve(
+            r2g_df,
+            [lambda c: c.lower() == 'region',
+             lambda c: 'region' in c.lower()],
+            r2g_df.columns[0],
+        )
+        r2g_gene_col = _resolve(
+            r2g_df,
+            [lambda c: c.lower() == 'gene',
+             lambda c: c.lower() == 'target',
+             lambda c: 'target' in c.lower() and 'gene' in c.lower(),
+             lambda c: 'gene' in c.lower()],
+            None,
+        )
+        if r2g_gene_col is None or r2g_gene_col == r2g_region_col:
+            raise SystemExit(
+                f"r2g column auto-detect failed: region={r2g_region_col!r} "
+                f"gene={r2g_gene_col!r}, columns={list(r2g_df.columns)}. "
+                "Cannot derive tf→regions without an unambiguous gene column."
+            )
+        print(f"  r2g columns: region='{r2g_region_col}', gene='{r2g_gene_col}'")
+
+        gene_regions = {}
+        for _, row in r2g_df.iterrows():
+            region = str(row[r2g_region_col]).strip()
+            gene = str(row[r2g_gene_col]).strip()
+            if region and gene and region != 'nan' and gene != 'nan':
+                gene_regions.setdefault(gene, set()).add(region)
+
+        for tf, genes in tf_genes.items():
+            regions = set()
+            for gene in genes:
+                if gene in gene_regions:
+                    regions.update(gene_regions[gene])
+            if regions:
+                tf_regions[tf] = regions
 
     print(f"  TFs with linked regions: {len(tf_regions)}")
 

@@ -344,7 +344,10 @@ dev.off()
 # ============================================================================
 
 print("Computing module eigengenes...")
-if("sample" %in% colnames(seurat_obj@meta.data)) {
+# group.by.vars only works with >=2 levels; passing a single-level factor causes
+# `contrasts can be applied only to factors with 2 or more levels` from the underlying lm().
+if("sample" %in% colnames(seurat_obj@meta.data) &&
+   length(unique(seurat_obj@meta.data$sample)) >= 2) {
     seurat_obj <- ModuleEigengenes(seurat_obj, group.by.vars = "sample", wgcna_name = wgcna_name)
 } else {
     seurat_obj <- ModuleEigengenes(seurat_obj, wgcna_name = wgcna_name)

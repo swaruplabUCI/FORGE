@@ -1134,10 +1134,12 @@ workflow RNA {
         )
 
         // --- Tier 1b: Enrichment + Network Visualization ---
+        // out.seurat_obj emits *_seurat_with_wgcna.rds (a Seurat object).
+        // out.results emits *_complete_results.rds (a list wrapper) — wrong type for downstream R scripts.
         log.info "  Step 9d: Tier 1 -- enrichment & network visualization..."
         HDWGCNA_ENRICHMENT(
-            HDWGCNA_PER_CELLTYPE.out.results.map { ct, rds -> rds },
-            HDWGCNA_PER_CELLTYPE.out.results.map { ct, rds -> ct },
+            HDWGCNA_PER_CELLTYPE.out.seurat_obj.map { ct, rds -> rds },
+            HDWGCNA_PER_CELLTYPE.out.seurat_obj.map { ct, rds -> ct },
             params.species
         )
 
@@ -1153,10 +1155,9 @@ workflow RNA {
 
             def traits_str = params.hdwgcna.traits ? params.hdwgcna.traits.join(',') : ""
 
-            // FIX: .out.results is tuple(val(cell_type), path(rds)) — destructure properly
             HDWGCNA_DIFFERENTIAL(
-                HDWGCNA_PER_CELLTYPE.out.results.map { ct, rds -> rds },
-                HDWGCNA_PER_CELLTYPE.out.results.map { ct, rds -> ct },
+                HDWGCNA_PER_CELLTYPE.out.seurat_obj.map { ct, rds -> rds },
+                HDWGCNA_PER_CELLTYPE.out.seurat_obj.map { ct, rds -> ct },
                 cell_type_key,
                 params.hdwgcna.condition_key,
                 params.hdwgcna.control_condition,

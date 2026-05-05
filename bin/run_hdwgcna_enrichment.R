@@ -31,6 +31,10 @@ suppressPackageStartupMessages({
 
 theme_set(theme_cowplot())
 set.seed(12345)
+# RunModuleUMAP exports per-cell distance matrices via the `future` parallel backend,
+# which trips future.globals.maxSize (default 500 MiB) on cell types with many cells.
+# Bump to 100 GB to match run_hdwgcna_celltype.R.
+options(future.globals.maxSize = 100 * 1024^3)
 
 # --- CLI args ---------------------------------------------------------------
 option_list <- list(
@@ -104,19 +108,26 @@ tryCatch({
 }, error = function(e) cat(sprintf("Module network plots failed: %s\n", e$message)))
 
 # --- Step 3: Combined Hub Gene Network --------------------------------------
+# HubGeneNetworkPlot() prints to the active graphics device and returns invisibly;
+# wrapping with ggsave produces a blank ggplot. Use pdf() / dev.off() instead
+# (the same pattern used by run_hdwgcna_celltype.R).
 cat("Generating combined hub gene network...\n")
 
 tryCatch({
-    p_hub <- HubGeneNetworkPlot(
+    pdf(file.path("network_plots", "hub_gene_network.pdf"), width = 14, height = 12)
+    HubGeneNetworkPlot(
         seurat_obj,
         n_hubs = 3,
         n_other = 5,
         edge_prop = 0.75,
         mods = 'all'
     )
-    ggsave(file.path("network_plots", "hub_gene_network.pdf"), p_hub, width = 14, height = 12)
+    dev.off()
     cat("Hub gene network saved.\n")
-}, error = function(e) cat(sprintf("Hub gene network failed: %s\n", e$message)))
+}, error = function(e) {
+    cat(sprintf("Hub gene network failed: %s\n", e$message))
+    try(dev.off(), silent = TRUE)
+})
 
 # --- Step 4: Co-expression UMAP ---------------------------------------------
 cat("Running co-expression UMAP...\n")

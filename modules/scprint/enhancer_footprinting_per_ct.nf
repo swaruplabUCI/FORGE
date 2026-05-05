@@ -88,7 +88,13 @@ process ENHANCER_FOOTPRINTING_PER_CT {
     mkdir -p "\${_XDG}"
     [ ! -e "\${_XDG}/scprinter" ] && ln -s '${params.scprinter.cache_dir}' "\${_XDG}/scprinter" || true
 
-    SCRATCH="\${TMPDIR:-/tmp}/fp_per_ct_\${SLURM_JOB_ID:-\$\$}"
+    # SCRATCH lives in the per-task work dir (on DFS), not /tmp. Each TF's
+    # multiscale footprint h5ad in printer_local_copy_supp/ is multi-GB; with
+    # 5 TFs × ~40 GB and maxForks tasks landing on the same node, /tmp fills
+    # and HDF5 writes fail silently with errno 28 — the script's tryCatch
+    # marks mode='computed' but footprint_saved=False (7 such cases on the
+    # last PBMC run). DFS is slower than local /tmp but bounded per task.
+    SCRATCH="\${PWD}/scratch_fp_per_ct"
     mkdir -p "\${SCRATCH}"
     trap 'rm -rf "\${SCRATCH}"' EXIT
 
