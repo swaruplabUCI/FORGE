@@ -1823,11 +1823,16 @@ workflow REGULATORY_ANALYSIS {
                 "\n==== GENE COORDINATE RESOLUTION ====\n${it.text}\n===================================="
             }
 
+            // Per-ct fan-out mirrors SCPRINTER_FOOTPRINTING_DIFF below: a literal
+            // 'targeted' as cell_type fails downstream because the python filters
+            // adata.obs[cell_type_col] == 'targeted' and gets 0 cells.
+            ch_ct_global = Channel.from(params.differential.cell_types)
+
             SCPRINTER_FOOTPRINTING(
                 peak_matrix,
                 metadata,
                 ch_printer,
-                'targeted',
+                ch_ct_global,
                 Channel.value(params.scprinter.target_genes),
                 RESOLVE_GENE_COORDINATES.out.coordinates,
                 '',

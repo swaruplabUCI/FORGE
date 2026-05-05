@@ -1271,7 +1271,12 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
     # via setup_pipeline(). See module docstring on per-ct architecture.
 
     # Compute binding scores
-    save_key_bs = f"enhancer_bs_{ct}_{tf}"
+    # Use safe_ct/safe_tf in save_keys: scPrinter materializes these keys as
+    # paths under printer_local_copy_supp/, so a "/" in cell_type (e.g.
+    # 'L2/3 IT CTX Glut') would be interpreted as a subdirectory and break
+    # H5Fcreate. The first failed write also leaves the rust anndata struct
+    # in a state where the next TF panics with `H5Gcreate2: name already exists`.
+    save_key_bs = f"enhancer_bs_{safe_ct}_{safe_tf}"
     print(f"  Computing binding scores (key={save_key_bs})...")
     try:
         # FIX-99: Added model_key="TF" and contextRadius=100 to match
@@ -1303,7 +1308,7 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
         print(f"  WARNING: Binding score computation failed: {e}")
 
     # Compute multiscale footprints
-    save_key_fp = f"enhancer_fp_{ct}_{tf}"
+    save_key_fp = f"enhancer_fp_{safe_ct}_{safe_tf}"
     print(f"  Computing multiscale footprints (key={save_key_fp})...")
     try:
         scp.tl.get_footprint_score(
@@ -1358,8 +1363,8 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
 
     # FIX-96: Compute promoter footprints/binding scores SEPARATELY
     # (different region width than enhancers — scPRINTER requires uniform shapes)
-    save_key_fp_promo = f"promoter_fp_{ct}_{tf}"
-    save_key_bs_promo = f"promoter_bs_{ct}_{tf}"
+    save_key_fp_promo = f"promoter_fp_{safe_ct}_{safe_tf}"
+    save_key_bs_promo = f"promoter_bs_{safe_ct}_{safe_tf}"
     if promoter_df is not None:
         print(f"  Computing promoter binding scores (key={save_key_bs_promo})...")
         try:
@@ -1640,14 +1645,14 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
                         cond_grouping = [ctrl_bcs, trt_bcs]
                         cond_groups = np.array([args.control_condition, args.treatment_condition])
 
-                        save_key_fp_ctrl = f"enh_fp_{ct}_{tf}_ctrl"
-                        save_key_fp_trt = f"enh_fp_{ct}_{tf}_trt"
+                        save_key_fp_ctrl = f"enh_fp_{safe_ct}_{safe_tf}_ctrl"
+                        save_key_fp_trt = f"enh_fp_{safe_ct}_{safe_tf}_trt"
 
                         # Compute footprints for both conditions
                         scp.tl.get_footprint_score(
                             printer, cond_grouping, cond_groups, regions_df,
                             modes=np.arange(2, 101), n_jobs=args.cpus,
-                            save_key=f"enh_fp_diff_{ct}_{tf}",
+                            save_key=f"enh_fp_diff_{safe_ct}_{safe_tf}",
                             backed=True, overwrite=True)
 
                         # Option-3 differential TFBS: same condition-stratified
@@ -1658,7 +1663,7 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
                         # enhancer_tfbs_diff_<ct>_<tf>.h5ad for downstream
                         # BINDetect-style differential analysis.
                         if has_tfbs:
-                            save_key_bs_diff = f"enh_bs_diff_{ct}_{tf}"
+                            save_key_bs_diff = f"enh_bs_diff_{safe_ct}_{safe_tf}"
                             try:
                                 scp.tl.get_binding_score(
                                     printer, cond_grouping, cond_groups, regions_df,
@@ -1681,8 +1686,8 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
                                 print(f"    [WARN] Differential TFBS failed: {bs_e}")
 
                         diff_msfp = compute_differential_msfp(
-                            printer, f"enh_fp_diff_{ct}_{tf}",
-                            f"enh_fp_diff_{ct}_{tf}",
+                            printer, f"enh_fp_diff_{safe_ct}_{safe_tf}",
+                            f"enh_fp_diff_{safe_ct}_{safe_tf}",
                             args.control_condition, args.treatment_condition)
 
                         if diff_msfp is not None:
@@ -1696,11 +1701,11 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
                             # enhancer_differential/ respectively.
                             try:
                                 ctrl_agg_pc = extract_aggregate_msfp(
-                                    printer, f"enh_fp_diff_{ct}_{tf}",
+                                    printer, f"enh_fp_diff_{safe_ct}_{safe_tf}",
                                     args.control_condition, None,
                                     np.arange(2, 101))
                                 trt_agg_pc = extract_aggregate_msfp(
-                                    printer, f"enh_fp_diff_{ct}_{tf}",
+                                    printer, f"enh_fp_diff_{safe_ct}_{safe_tf}",
                                     args.treatment_condition, None,
                                     np.arange(2, 101))
                                 if ctrl_agg_pc is not None and trt_agg_pc is not None:
