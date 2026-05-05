@@ -33,9 +33,13 @@ process ENHANCER_FOOTPRINTING {
     path "enhancer_global/*",        emit: global_plots,        optional: true
     path "enhancer_per_condition/*", emit: per_condition_plots, optional: true
     path "enhancer_differential/*",  emit: differential_plots,  optional: true
-    path "enhancer_fp_summary.csv",                            emit: summary
+    // Rename to (ct,tf)-tagged form so .collect() into BUILD_TF_GENE_NETWORK
+    // doesn't collide on identical basenames across the sharded fan-out.
+    path "enhancer_fp_summary_*.csv",                          emit: summary
 
     script:
+    def safe_ct = cell_type.replaceAll(/[\/\s\(\)]+/, '_')
+    def safe_tf = tf_name.replaceAll(/[\/\s\(\)]+/, '_')
     """
     # v2.9/FIX-82: paired MSFP+TFBS panels, cis-filter, CCAN colorbar
     # Disable HDF5 file locking — multiple tasks read the same printer h5ad
@@ -80,5 +84,9 @@ process ENHANCER_FOOTPRINTING {
         --cell-type-col '${cell_type_col}' \\
         --control-condition '${control_condition}' \\
         --treatment-condition '${treatment_condition}'
+
+    if [ -f enhancer_fp_summary.csv ]; then
+        mv enhancer_fp_summary.csv enhancer_fp_summary_${safe_ct}_${safe_tf}.csv
+    fi
     """
 }

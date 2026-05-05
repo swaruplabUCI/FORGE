@@ -218,6 +218,17 @@ def cell_type_key = (params.rna?.annotation_method == 'markers')
 def atac_cell_type_key = params.atac.marker_file ? 'cell_type' :
     (params.atac.annotation_method == 'scatanno' ? 'cell_type_prediction' : 'celltypist_prediction')
 
+// Broad ATAC cell type column: condensed re-mapping written by MERGE_ANNOTATIONS
+// (bin/merge_annotations.py applies CELLTYPIST_BROAD_MAP / scatanno_broad_map and
+// stores the result under this column on peak_matrix_annotated.h5ad). Consumed by
+// SHI Tier B (NMF_ENHANCER_PROGRAMS) which pseudobulks across broad classes.
+//
+// TODO (QOL refactor): replace with channel-driven contract — have MERGE_ANNOTATIONS
+// emit a sidecar (e.g. cell_type_broad_col.txt) carrying the column name it just
+// wrote, then thread that as a value channel through SHI_FIGURES.take. Producer
+// becomes the single source of truth and atlas/column-name swaps need no Groovy edit.
+def atac_broad_cell_type_key = params.atac?.broad_cell_type_key ?: 'cell_type_broad'
+
 
 // ============================================================================
 // HELPER: Resolve directory for a manifest row using generic batch_dirs map
@@ -2003,6 +2014,12 @@ workflow REGULATORY_ANALYSIS {
     // tf_target_genes.json — input for BUILD_TF_GENE_NETWORK (Phase 3, ATAC-only GRN)
     tf_targets           = (is_discovery_mode && params.chromvar.run) ?
         MAP_TF_TO_TARGET_GENES.out.tf_targets : Channel.empty()
+    // 2026-05-04: tf_differential CSVs from DIFFERENTIAL_TF_ACCESSIBILITY,
+    // piped through to ENHANCER_FOOTPRINTING_RECIPES (DSL2 cross-workflow
+    // scope fix). Empty when differential_tf.run=false; consumers must guard
+    // their compute on .ifEmpty([]) or equivalent.
+    tf_diff              = ((params.differential_tf?.run ?: false) && params.chromvar.run) ?
+        DIFFERENTIAL_TF_ACCESSIBILITY.out.tf_diff : Channel.empty()
 }
 
 // ============================================================================
@@ -2324,6 +2341,10 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     scprinter_footprints_ch   // 2026-04-30: pass-through sync channel; replaces
                               //   direct SCPRINTER_FOOTPRINTING.out access (DSL2
                               //   cross-workflow scope violation fix)
+    tf_diff_ch                // 2026-05-04: pass-through for DIFFERENTIAL_TF_ACCESSIBILITY
+                              //   .out.tf_diff (DSL2 cross-workflow scope fix +
+                              //   correct gate alignment with differential_tf.run).
+                              //   Empty when differential_tf.run=false.
 
     main:
 
@@ -2331,6 +2352,12 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     // PHASE 1: ATAC-Only Enhancer Footprinting (Recipe A)
     // ================================================================
     log.info "ENHANCER FOOTPRINTING RECIPES: Phase 1 (ATAC-only)"
+
+    // SHI Tier A wiring (2026-05-04): declare bigwig channels at workflow
+    // scope so the emit: block can expose them regardless of which Phase 4
+    // branch fires. Populated below inside the EXPORT_ATAC_BIGWIGS branch.
+    def shi_bw_manifest_ch = Channel.empty()
+    def shi_bw_dir_ch      = Channel.empty()
 
     // FIX-R3-3: Use species-appropriate GTF for enhancer extraction
     def enhancer_gtf = params.species == 'human' ? params.scprinter.gtf_human : params.scprinter.gtf_mouse
@@ -2557,6 +2584,9 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
                 viz_min_cells
             )
             bigwig_dir_ch = EXPORT_ATAC_BIGWIGS.out.bigwigs.collect()
+            // SHI Tier A wiring: expose bigwig outputs for SHI_FIGURES.
+            shi_bw_manifest_ch = EXPORT_ATAC_BIGWIGS.out.manifest
+            shi_bw_dir_ch      = EXPORT_ATAC_BIGWIGS.out.bigwigs
         }
 
         PREPARE_ENHANCER_VIZ_TRACKS(
@@ -2570,9 +2600,13 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
 
         // D1b: Swarup-chain (gene, TF, ct) candidate filter. Replaces the old
         // genes × TFs cartesian fan-out for COMPOSITE_ENHANCER_VIZ.
-        def diff_csvs_ch = (params.differential?.run ?: false) ?
-            DIFFERENTIAL_TF_ACCESSIBILITY.out.tf_diff.collect().ifEmpty([]) :
-            Channel.value([])
+        // 2026-05-04: gate aligned to differential_tf.run (the param that
+        // actually invokes DIFFERENTIAL_TF_ACCESSIBILITY at main.nf:1884) and
+        // input piped via REGULATORY_ANALYSIS.out.tf_diff to satisfy DSL2
+        // cross-workflow scope rules. AD's first run hit the prior bug because
+        // differential.run=true triggered the ternary's true branch even
+        // though differential_tf.run=false meant DTA was never invoked.
+        def diff_csvs_ch = tf_diff_ch.collect().ifEmpty([])
 
         BUILD_VIZ_CANDIDATES(
             PREPARE_ENHANCER_VIZ_TRACKS.out.track_manifest,
@@ -2644,6 +2678,8 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     cross_modal        = has_scenic ? CROSS_MODAL_VALIDATION.out.validation_table : Channel.empty()
     evidence_tiers     = params.enhancer_recipe_c.run ? SIGNAL_CHAIN_CORRELATION.out.evidence_tiers : Channel.empty()
     enhancer_viz       = (params.enhancer_viz.run ?: false) ? COMPOSITE_ENHANCER_VIZ.out.composite_png : Channel.empty()
+    shi_bw_manifest    = shi_bw_manifest_ch
+    shi_bw_dir         = shi_bw_dir_ch
 }
 
 // ============================================================================
@@ -3115,15 +3151,26 @@ workflow {
             atac_cell_type_key,
             REGULATORY_ANALYSIS.out.tf_targets,
             ch_atac_anndataset,                            // D1b
-            REGULATORY_ANALYSIS.out.scprinter_footprints   // 2026-04-30: pass-through (no cross-workflow access)
+            REGULATORY_ANALYSIS.out.scprinter_footprints,  // 2026-04-30: pass-through (no cross-workflow access)
+            REGULATORY_ANALYSIS.out.tf_diff                // 2026-05-04: pass-through (DSL2 scope fix; gate-aligned w/ differential_tf.run)
         )
     }
 
     // SHI_FIGURES — Shi et al. 2025 figure equivalents (Tier A always; Tier B
     // gates on existence of differential outputs, so single-condition runs
     // produce 1E/2B/2D-foundation only).
+    // 2026-05-04 refactor: SHI now consumes upstream channels (peak_matrix
+    // from ATAC; bigwig manifest+dir from EFR), so Tier A fires on first run
+    // without requiring a -resume cycle.
     if (params.shi_figures?.enabled == true) {
-        SHI_FIGURES()
+        def shi_bw_manifest_ch = Channel.empty()
+        def shi_bw_dir_ch      = Channel.empty()
+        if (params.enhancer_footprinting.run && atac_completed &&
+            params.cicero.run && params.chromvar.run && params.scprinter.run) {
+            shi_bw_manifest_ch = ENHANCER_FOOTPRINTING_RECIPES.out.shi_bw_manifest
+            shi_bw_dir_ch      = ENHANCER_FOOTPRINTING_RECIPES.out.shi_bw_dir
+        }
+        SHI_FIGURES(ch_atac_peak_matrix, shi_bw_manifest_ch, shi_bw_dir_ch, atac_broad_cell_type_key)
     }
 }
 
@@ -3203,6 +3250,19 @@ workflow VIZ_ONLY {
 // ============================================================================
 workflow SHI_FIGURES {
 
+    take:
+        peak_matrix_ch        // upstream-emitter channel (ATAC consolidated/onramp).
+                              //   Replaces ${outdir}/atac/final/peak_matrix.h5ad
+                              //   path probe so Tier A fires deterministically on
+                              //   first run instead of waiting for a -resume cycle.
+        bw_manifest_ch        // EXPORT_ATAC_BIGWIGS.out.manifest, or Channel.empty()
+                              //   when the scenicplus / no-enhancer-viz path fires.
+        bw_dir_ch             // EXPORT_ATAC_BIGWIGS.out.bigwigs (queue), or empty.
+        cell_type_col         // broad ATAC cell-type obs column on peak_matrix
+                              //   (e.g. 'cell_type_broad'); flows in from
+                              //   atac_broad_cell_type_key at the call site so
+                              //   downstream NMF doesn't read a flat param.
+
     main:
 
     // FIX ENG-13/MIS-08: use canonical params (gtf_human_full / gtf_mouse_full)
@@ -3217,6 +3277,8 @@ workflow SHI_FIGURES {
     def trt_label  = params.shi_figures?.treatment ?: ''
     def ctrl_label = params.shi_figures?.control   ?: ''
 
+    // Tier B file-glob paths still resolve at construction time (ENG-02:
+    // intentionally allows consumption of differential CSVs from prior runs).
     def conn_ctrl_path = params.shi_figures?.connections_ctrl ?:
         "${params.outdir}/cicero/stratified/${ctrl_label}/cicero_connections.tsv.gz"
     def conn_trt_path  = params.shi_figures?.connections_trt ?:
@@ -3231,35 +3293,24 @@ workflow SHI_FIGURES {
         "${params.outdir}/enhancer_footprinting/ccan_enhancers/ccan_enhancer_peaks.bed.gz"
     def adjacency_path = params.shi_figures?.adjacency ?:
         "${params.outdir}/enhancer_footprinting/network/tf_gene_adjacency.tsv"
-    def peak_matrix_path = params.shi_figures?.peak_matrix ?:
-        "${params.outdir}/atac/final/peak_matrix.h5ad"
-    // FIX ENG-01 / ENG-19 (2026-05-04): differential CSV probes moved into
-    // Tier B body where trt/ctrl labels are required, so the strict (label-
-    // anchored) globs can be used uniformly.
     def have_two_cond = (trt_label && ctrl_label)
 
-    // ----- Tier A — single-condition compatible -----
+    // ----- Tier A — single-condition compatible (channel-driven 2026-05-04) -----
 
-    // Foundation: peak biotype classification (Promoter / Exonic / Intronic / Distal)
-    if (file(peak_matrix_path).exists()) {
-        ANNOTATE_PEAK_TYPES(file(peak_matrix_path), file(gtf))
+    // Foundation: peak biotype classification. peak_matrix_ch is empty when
+    // ATAC is disabled or the upstream emitter never fired, so the process
+    // naturally skips (no construction-time path probe).
+    if (gtf) {
+        ANNOTATE_PEAK_TYPES(peak_matrix_ch, file(gtf))
     } else {
-        log.warn "SHI_FIGURES: peak matrix not found at ${peak_matrix_path}; skipping Tier A peak annotation."
+        log.warn "SHI_FIGURES: GTF unresolved; skipping ANNOTATE_PEAK_TYPES."
     }
 
-    // 1E — broad-class bigWigs + marker coverage tracks
-    def bw_manifest_path = params.shi_figures?.bigwig_manifest ?:
-        "${params.outdir}/enhancer_viz/bigwigs/bigwigs/manifest.json"
-    def bw_dir = params.shi_figures?.bigwig_dir ?:
-        "${params.outdir}/enhancer_viz/bigwigs/bigwigs"
-    if (file(bw_manifest_path).exists()) {
-        MARKER_COVERAGE_TRACKS(
-            file(bw_manifest_path),
-            Channel.fromPath("${bw_dir}/*.bw").collect(),
-            file(gtf),
-        )
-    } else {
-        log.warn "SHI_FIGURES: bigwig manifest not found at ${bw_manifest_path}; skipping MARKER_COVERAGE_TRACKS (1E)."
+    // 1E — broad-class bigWigs + marker coverage tracks. bw_manifest_ch is
+    // empty when EXPORT_ATAC_BIGWIGS didn't fire (scenicplus pseudobulk path
+    // or enhancer_viz disabled), so MARKER_COVERAGE_TRACKS naturally skips.
+    if (gtf) {
+        MARKER_COVERAGE_TRACKS(bw_manifest_ch, bw_dir_ch.collect(), file(gtf))
     }
 
     // ----- Tier B — require >=2 conditions; auto-skip otherwise -----
@@ -3299,15 +3350,18 @@ workflow SHI_FIGURES {
     Channel.fromPath(diff_tf_glob_strict).collect().set { ch_diff_tf }
     Channel.fromPath(diff_glob_strict).collect().set    { ch_diff }
 
-    // 2B — NMF on enhancer × pseudobulk (ENG-24: moved from Tier A; needs condition_key)
-    if (file(peak_matrix_path).exists() && file(enh_bed_path).exists()) {
-        NMF_ENHANCER_PROGRAMS(file(peak_matrix_path), file(enh_bed_path))
-    } else if (file(peak_matrix_path).exists()) {
+    // 2B — NMF on enhancer × pseudobulk. peak_matrix_ch upstream-driven; enhancer
+    // BED still file-based since it can come from a prior EFR run. cell_type_col
+    // flows in via take: so the obs column name is decided once at the top-level
+    // call site (atac_broad_cell_type_key) instead of in a per-process params lookup.
+    if (file(enh_bed_path).exists()) {
+        NMF_ENHANCER_PROGRAMS(peak_matrix_ch, file(enh_bed_path), cell_type_col)
+    } else {
         log.warn "SHI_FIGURES: enhancer BED not found at ${enh_bed_path}; skipping NMF_ENHANCER_PROGRAMS (2B)."
     }
 
     // 2D — differential peak biotype breakdown (depends on DA peaks + peak annotation)
-    if (have_diff_da_strict && file(peak_matrix_path).exists()) {
+    if (have_diff_da_strict) {
         DA_PEAK_BREAKDOWN(ch_diff, ANNOTATE_PEAK_TYPES.out.tsv)
         // 2E — per-celltype log2FC heatmaps
         if (file(gene_links_global).exists()) {
@@ -3320,7 +3374,7 @@ workflow SHI_FIGURES {
     }
 
     // 2C — co-accessibility correlation (requires both stratified Cicero outputs)
-    if (file(conn_ctrl_path).exists() && file(conn_trt_path).exists() && file(peak_matrix_path).exists()) {
+    if (file(conn_ctrl_path).exists() && file(conn_trt_path).exists()) {
         COACC_CORRELATION_MATRIX(
             file(conn_ctrl_path),
             file(conn_trt_path),

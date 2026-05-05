@@ -1650,6 +1650,36 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
                             save_key=f"enh_fp_diff_{ct}_{tf}",
                             backed=True, overwrite=True)
 
+                        # Option-3 differential TFBS: same condition-stratified
+                        # grouping fed to the pretrained TF binding-score model.
+                        # Produces a 2-row (ctrl, trt) bindingscoreadata whose
+                        # per-region obsm tensors are the TOBIAS-analogous
+                        # multi-scale binding probability profiles. Persisted as
+                        # enhancer_tfbs_diff_<ct>_<tf>.h5ad for downstream
+                        # BINDetect-style differential analysis.
+                        if has_tfbs:
+                            save_key_bs_diff = f"enh_bs_diff_{ct}_{tf}"
+                            try:
+                                scp.tl.get_binding_score(
+                                    printer, cond_grouping, cond_groups, regions_df,
+                                    model_key="TF", n_jobs=args.cpus,
+                                    contextRadius=100,
+                                    save_key=save_key_bs_diff,
+                                    backed=False, overwrite=True)
+                                if (hasattr(printer, 'bindingscoreadata')
+                                        and save_key_bs_diff in printer.bindingscoreadata):
+                                    bs_diff = printer.bindingscoreadata[save_key_bs_diff]
+                                    bs_diff_h5ad = f"enhancer_tfbs_diff_{safe_ct}_{safe_tf}.h5ad"
+                                    try:
+                                        bs_diff = bs_diff.copy()
+                                    except Exception:
+                                        pass
+                                    bs_diff.write(bs_diff_h5ad)
+                                    print(f"    [OK] Differential TFBS (ctrl,trt) "
+                                          f"saved to {bs_diff_h5ad}")
+                            except Exception as bs_e:
+                                print(f"    [WARN] Differential TFBS failed: {bs_e}")
+
                         diff_msfp = compute_differential_msfp(
                             printer, f"enh_fp_diff_{ct}_{tf}",
                             f"enh_fp_diff_{ct}_{tf}",
