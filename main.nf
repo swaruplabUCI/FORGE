@@ -183,6 +183,8 @@ include { ENHANCER_FOOTPRINTING_PER_CT } from './modules/scprint/enhancer_footpr
 include { BUILD_VIZ_CANDIDATES         } from './modules/visualization/build_viz_candidates'
 include { AGGREGATE_FP_STATS           } from './modules/visualization/aggregate_fp_stats'
 include { EXPORT_ATAC_BIGWIGS          } from './modules/visualization/export_atac_bigwigs'
+include { PROMOTER_MSFP_PER_CT         } from './modules/scprint/promoter_msfp_per_ct'
+include { RENDER_PROMOTER_MSFP_OVERLAY } from './modules/visualization/render_promoter_msfp_overlay'
 
 // SHI_FIGURES — Shi et al. 2025 figure equivalents (1E, 2B-E, 4B-E, 5A-F)
 // Tier A (single-condition compatible) + Tier B (require >=2 conditions).
@@ -2025,6 +2027,13 @@ workflow REGULATORY_ANALYSIS {
     // their compute on .ifEmpty([]) or equivalent.
     tf_diff              = ((params.differential_tf?.run ?: false) && params.chromvar.run) ?
         DIFFERENTIAL_TF_ACCESSIBILITY.out.tf_diff : Channel.empty()
+    // 2026-05-06: gene_coordinates.json from RESOLVE_GENE_COORDINATES — needed
+    // by ENHANCER_FOOTPRINTING_RECIPES.PROMOTER_MSFP_PER_CT (DSL2 cross-workflow
+    // scope fix per feedback_dsl2_xworkflow_scope). Always populated when
+    // scprinter.run=true since RESOLVE_GENE_COORDINATES fires in both discovery
+    // and targeted modes.
+    gene_coordinates     = params.scprinter.run ?
+        RESOLVE_GENE_COORDINATES.out.coordinates : Channel.empty()
 }
 
 // ============================================================================
@@ -2350,6 +2359,10 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
                               //   .out.tf_diff (DSL2 cross-workflow scope fix +
                               //   correct gate alignment with differential_tf.run).
                               //   Empty when differential_tf.run=false.
+    gene_coordinates_ch       // 2026-05-06: pass-through for RESOLVE_GENE_COORDINATES
+                              //   .out.coordinates — feeds PROMOTER_MSFP_PER_CT
+                              //   (DSL2 cross-workflow scope fix). Empty when
+                              //   scprinter.run=false.
 
     main:
 
@@ -2673,6 +2686,91 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             fp_dir_ch,
             promoter_dir_ch
         )
+    }
+
+    // ================================================================
+    // PHASE 5: Promoter MSFP + Motif Overlay (per-condition, TF-binding scale)
+    //   Per-(cell_type, gene) compute -> render PNG with stacked per-condition
+    //   heatmaps at TF-binding scales (<=30 bp by default) above a JASPAR
+    //   motif track for the top-N TFs ranked by AGGREGATE_FP_STATS.out
+    //   .triple_csv ((n_sites_in_gene_window desc, bind_dip_depth_mean desc)).
+    //   Differential-only by gate; single-condition runs auto-skip.
+    //   CT enumeration reuses MOTIF_SCAN_ENHANCERS.out.manifest, which is
+    //   already filtered by the chromvar resolution-floor gate
+    //   (feedback_celltype_resolution_floor).
+    // ================================================================
+    def overlay_enabled = (params.promoter_overlay?.enabled ?: false)
+    def overlay_trt = params.promoter_overlay?.treatment ?:
+        params.differential?.treatment_condition
+    def overlay_ctrl = params.promoter_overlay?.control ?:
+        params.differential?.control_condition
+    def overlay_cond_col = params.promoter_overlay?.condition_col ?:
+        params.differential?.condition_key
+    def overlay_target_genes = params.scprinter?.target_genes ?: []
+    def overlay_top_n = (params.promoter_overlay?.top_n_tfs ?: 4) as Integer
+    def overlay_palette = ['#d62728','#1f77b4','#2ca02c','#9467bd',
+                           '#ff7f0e','#17becf','#8c564b','#e377c2']
+
+    if (overlay_enabled &&
+        overlay_trt && overlay_ctrl &&
+        overlay_target_genes && !overlay_target_genes.isEmpty() &&
+        (params.enhancer_footprinting.build_network ?: false)) {
+        log.info "PROMOTER MSFP OVERLAY: enabled (cts via MOTIF_SCAN_ENHANCERS, " +
+                 "TFs via AGGREGATE_FP_STATS triple_csv, top_n=${overlay_top_n})"
+
+        def overlay_genes_csv = overlay_target_genes.join(',')
+        def overlay_palette_csv = overlay_palette.take(overlay_top_n).join(',')
+
+        def ch_overlay_compute_in = MOTIF_SCAN_ENHANCERS.out.manifest
+            .flatMap { manifest_file ->
+                def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                data.region_sets.collect { it.cell_type }.unique()
+            }
+            .map { ct -> tuple(ct, overlay_genes_csv) }
+
+        PROMOTER_MSFP_PER_CT(
+            ch_overlay_compute_in,
+            printer,
+            peak_matrix,
+            gene_coordinates_ch,
+            cell_type_col,
+            overlay_cond_col,
+            overlay_ctrl,
+            overlay_trt
+        )
+
+        def ch_fp_per_ct_gene = PROMOTER_MSFP_PER_CT.out.fp
+            .transpose()
+            .map { ct, f ->
+                def stem = f.baseName
+                def gene = stem.replaceFirst(/^promoter_fp_/, '').split('__')[0]
+                tuple(ct, gene, f)
+            }
+
+        def ch_tf_per_ct_gene = AGGREGATE_FP_STATS.out.triple_csv
+            .splitCsv(header: true)
+            .filter { row -> row.gene && (row.gene in overlay_target_genes) }
+            .map { row ->
+                def ns = (row.n_sites_in_gene_window ?: '0') as Double
+                def bd = (row.bind_dip_depth_mean    ?: '0') as Double
+                tuple(row.cell_type as String, row.gene as String,
+                      row.tf as String, ns, bd)
+            }
+            .groupTuple(by: [0,1])
+            .map { ct, gene, tfs, ns_list, bd_list ->
+                def ranked = [tfs, ns_list, bd_list].transpose()
+                    .sort { -((it[1] as Double) * 1000.0 + (it[2] as Double)) }
+                    .take(overlay_top_n)
+                tuple(ct, gene, ranked.collect { it[0] }.join(','))
+            }
+
+        def ch_render_in = ch_fp_per_ct_gene
+            .join(ch_tf_per_ct_gene, by: [0,1])
+            .map { ct, gene, f, tfs ->
+                tuple(ct, gene, f, tfs, overlay_palette_csv)
+            }
+
+        RENDER_PROMOTER_MSFP_OVERLAY(ch_render_in)
     }
 
     emit:
@@ -3157,7 +3255,8 @@ workflow {
             REGULATORY_ANALYSIS.out.tf_targets,
             ch_atac_anndataset,                            // D1b
             REGULATORY_ANALYSIS.out.scprinter_footprints,  // 2026-04-30: pass-through (no cross-workflow access)
-            REGULATORY_ANALYSIS.out.tf_diff                // 2026-05-04: pass-through (DSL2 scope fix; gate-aligned w/ differential_tf.run)
+            REGULATORY_ANALYSIS.out.tf_diff,               // 2026-05-04: pass-through (DSL2 scope fix; gate-aligned w/ differential_tf.run)
+            REGULATORY_ANALYSIS.out.gene_coordinates       // 2026-05-06: pass-through for PROMOTER_MSFP_PER_CT
         )
     }
 
