@@ -27,6 +27,7 @@ process EXTRACT_CHROMVAR_MOTIFS {
     output:
     path "per_celltype_motifs.json", emit: motif_list
     path "motif_report.txt",         emit: report
+    path "low_pop_cell_types.csv",   emit: low_pop, optional: true
 
     script:
     """
@@ -86,10 +87,22 @@ process EXTRACT_CHROMVAR_MOTIFS {
     top_n = int(${top_n})
     min_zscore = float(${min_zscore})
 
+    # ---- Resolution floor (params.qc.cell_type_resolution) ----
+    # 2026-05-05: gate fan-out so under-resolution CTs don't spawn
+    # ENHANCER_FOOTPRINTING_PER_CT jobs (worker-pool RAM is CT-independent;
+    # 7-cell ARH-PVi Six6 Dopa-Gaba OOM'd at 192 GB on TF #2).
+    res_min_cells = int(${params.qc.cell_type_resolution.min_cells})
+    res_min_pct   = float(${params.qc.cell_type_resolution.min_pct})
+    total_cells   = int(adata.shape[0])
+    res_threshold = max(res_min_cells, int(res_min_pct * total_cells))
+    print(f"  Resolution floor: n_cells >= max({res_min_cells}, "
+          f"{res_min_pct} * {total_cells}) = {res_threshold}", flush=True)
+
     # ---- Per-cell-type extraction ----
     result = {"cell_types": {}, "all_unique_tfs": [], "params": {}}
     all_tfs_union = set()
     report_lines = []
+    low_pop_rows = []
 
     report_lines.append("ChromVAR Per-Cell-Type Motif Extraction (FIX-23b)")
     report_lines.append("=" * 65)
@@ -105,6 +118,23 @@ process EXTRACT_CHROMVAR_MOTIFS {
 
         if n_cells == 0:
             print(f"  WARNING: No cells for cell_type '{ct}', skipping", flush=True)
+            continue
+
+        if n_cells < res_threshold:
+            pct = round(100.0 * n_cells / total_cells, 3) if total_cells else 0.0
+            reason = (
+                f"n_cells={n_cells} < threshold={res_threshold} "
+                f"(min_cells={res_min_cells}, "
+                f"{res_min_pct*100:.1f}%*{total_cells}={int(res_min_pct*total_cells)})"
+            )
+            low_pop_rows.append({
+                "cell_type":   ct,
+                "n_cells":     n_cells,
+                "pct_of_total": pct,
+                "threshold":   res_threshold,
+                "reason":      reason,
+            })
+            print(f"  SKIP {ct}: {reason}", flush=True)
             continue
 
         # Subset data for this cell type
@@ -180,6 +210,12 @@ process EXTRACT_CHROMVAR_MOTIFS {
 
     with open('motif_report.txt', 'w') as f:
         f.write('\\n'.join(report_lines) + '\\n')
+
+    # Low-pop CSV (only emit if any CT was dropped — output declared optional)
+    if low_pop_rows:
+        pd.DataFrame(low_pop_rows).to_csv('low_pop_cell_types.csv', index=False)
+        print(f"  Dropped {len(low_pop_rows)} CT(s) below resolution floor — see low_pop_cell_types.csv",
+              flush=True)
 
     print(f"FIX-23b: Extraction complete — {len(all_tfs_union)} unique TFs across {len(cell_types)} cell types", flush=True)
     """

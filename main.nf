@@ -104,6 +104,8 @@ include { DIFFERENTIAL_TF_ACCESSIBILITY } from './modules/chromvar/differential_
 include { CICERO_TRIPLETS_STRATIFIED } from './modules/cicero/cicero_stratified'
 include { CICERO_TRIPLETS_STRATIFIED as CICERO_TRIPLETS_STRATIFIED_TRT } from './modules/cicero/cicero_stratified'
 include { COMPARE_COACCESSIBILITY } from './modules/cicero/cicero_stratified'
+include { CICERO_TRIPLETS_PER_CT } from './modules/cicero/cicero_per_ct'
+include { CICERO_FULL_PER_CT     } from './modules/cicero/cicero_per_ct'
 
 // scPRINT modules
 include { SCPRINTER_BARCODES } from './modules/scprint/barcodes'
@@ -185,6 +187,14 @@ include { AGGREGATE_FP_STATS           } from './modules/visualization/aggregate
 include { EXPORT_ATAC_BIGWIGS          } from './modules/visualization/export_atac_bigwigs'
 include { PROMOTER_MSFP_PER_CT         } from './modules/scprint/promoter_msfp_per_ct'
 include { RENDER_PROMOTER_MSFP_OVERLAY } from './modules/visualization/render_promoter_msfp_overlay'
+// Cis-rewiring (2026-05-06) — per-condition stratified CCAN extraction +
+// union-peakset motif scan + per-TF gained-enhancer motif-presence panels.
+include { EXTRACT_CCAN_ENHANCERS as EXTRACT_CCAN_ENHANCERS_CTRL } from './modules/scprint/extract_ccan_enhancers'
+include { EXTRACT_CCAN_ENHANCERS as EXTRACT_CCAN_ENHANCERS_TRT  } from './modules/scprint/extract_ccan_enhancers'
+include { BUILD_UNION_ENHANCER_PEAKS    } from './modules/scprint/build_union_enhancer_peaks'
+include { MOTIF_SCAN_ENHANCERS_UNION    } from './modules/scprint/motif_scan_enhancers_union'
+include { MOTIF_IN_GAINED_CCANS         } from './modules/visualization/motif_in_gained_ccans'
+include { RENDER_CIS_REWIRING_MOTIF_STACK } from './modules/visualization/render_cis_rewiring_motif_stack'
 
 // SHI_FIGURES — Shi et al. 2025 figure equivalents (1E, 2B-E, 4B-E, 5A-F)
 // Tier A (single-condition compatible) + Tier B (require >=2 conditions).
@@ -1948,6 +1958,13 @@ workflow REGULATORY_ANALYSIS {
     def cicero_strat_auto   = (params.differential?.run ?: false) &&
                               params.differential?.condition_key
     def cicero_strat_manual = params.cicero?.stratified ?: false
+    // 2026-05-06: workflow-scope channels for cis-rewiring; populated inside
+    // the stratified-cicero block, default empty so emit gates are well-formed
+    // when stratified Cicero doesn't run.
+    def ch_strat_ctrl_links = Channel.empty()
+    def ch_strat_trt_links  = Channel.empty()
+    def ch_strat_ctrl_peaks = Channel.empty()
+    def ch_strat_trt_peaks  = Channel.empty()
     if ((cicero_strat_auto || cicero_strat_manual) && params.cicero.run) {
         def strat_ctrl = params.cicero?.control_condition ?:
                          params.differential?.control_condition
@@ -2001,6 +2018,28 @@ workflow REGULATORY_ANALYSIS {
             strat_ctrl,
             strat_trt
         )
+
+        // 2026-05-06: per-condition CCAN→gene-link extraction. Powers the
+        // cis-rewiring directionality proxy (gained enhancers per gene) and
+        // fills the SHI-expected gene_links_{ctrl,trt} paths. enhancer_gtf
+        // resolved later in REGULATORY_ANALYSIS — recompute here too.
+        def strat_enhancer_gtf = params.species == 'human' ? params.scprinter.gtf_human : params.scprinter.gtf_mouse
+        EXTRACT_CCAN_ENHANCERS_CTRL(
+            CICERO_JOIN_CTRL.out.connections,
+            CICERO_JOIN_CTRL.out.ccan,
+            strat_enhancer_gtf,
+            strat_ctrl
+        )
+        EXTRACT_CCAN_ENHANCERS_TRT(
+            CICERO_JOIN_TRT.out.connections,
+            CICERO_JOIN_TRT.out.ccan,
+            strat_enhancer_gtf,
+            strat_trt
+        )
+        ch_strat_ctrl_links = EXTRACT_CCAN_ENHANCERS_CTRL.out.gene_links
+        ch_strat_trt_links  = EXTRACT_CCAN_ENHANCERS_TRT.out.gene_links
+        ch_strat_ctrl_peaks = EXTRACT_CCAN_ENHANCERS_CTRL.out.enhancer_peaks
+        ch_strat_trt_peaks  = EXTRACT_CCAN_ENHANCERS_TRT.out.enhancer_peaks
     }
 
     // ================================================================
@@ -2016,8 +2055,15 @@ workflow REGULATORY_ANALYSIS {
         ch_printer : Channel.empty()
     scprinter_footprints = params.scprinter.run ?
         SCPRINTER_FOOTPRINTING.out.footprints : Channel.empty()
-    scprinter_diff       = (has_da_peaks && params.scprinter.run) ?
-        SCPRINTER_FOOTPRINTING_DIFF.out.footprints : Channel.empty()
+    // 2026-05-06: emit gate must match invocation gate. SCPRINTER_FOOTPRINTING_DIFF
+    // fires only when (DISCOVERY mode + has_da_peaks) OR (TARGETED mode + has_da_peaks
+    // + differential.cell_types non-empty). Prior gate accessed .out unconditionally
+    // when (has_da_peaks && scprinter.run), throwing access-without-invocation in
+    // TARGETED mode with empty cell_types.
+    scprinter_diff       = (has_da_peaks && params.scprinter.run && (
+            is_discovery_mode ||
+            (params.differential?.cell_types && !params.differential.cell_types.isEmpty())
+        )) ? SCPRINTER_FOOTPRINTING_DIFF.out.footprints : Channel.empty()
     // tf_target_genes.json — input for BUILD_TF_GENE_NETWORK (Phase 3, ATAC-only GRN)
     tf_targets           = (is_discovery_mode && params.chromvar.run) ?
         MAP_TF_TO_TARGET_GENES.out.tf_targets : Channel.empty()
@@ -2034,6 +2080,13 @@ workflow REGULATORY_ANALYSIS {
     // and targeted modes.
     gene_coordinates     = params.scprinter.run ?
         RESOLVE_GENE_COORDINATES.out.coordinates : Channel.empty()
+    // 2026-05-06: per-condition CCAN→gene-link + enhancer-peak channels for
+    // cis-rewiring. Empty when stratified Cicero didn't run (single-condition
+    // datasets, params.differential.run=false, etc.).
+    cicero_strat_ctrl_links = ch_strat_ctrl_links
+    cicero_strat_trt_links  = ch_strat_trt_links
+    cicero_strat_ctrl_peaks = ch_strat_ctrl_peaks
+    cicero_strat_trt_peaks  = ch_strat_trt_peaks
 }
 
 // ============================================================================
@@ -2363,6 +2416,10 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
                               //   .out.coordinates — feeds PROMOTER_MSFP_PER_CT
                               //   (DSL2 cross-workflow scope fix). Empty when
                               //   scprinter.run=false.
+    cicero_strat_ctrl_links_ch  // 2026-05-06: per-condition CCAN→gene-link TSVs
+    cicero_strat_trt_links_ch   //   from EXTRACT_CCAN_ENHANCERS_{CTRL,TRT}.
+    cicero_strat_ctrl_peaks_ch  //   Powers cis-rewiring; empty when stratified
+    cicero_strat_trt_peaks_ch   //   Cicero didn't run.
 
     main:
 
@@ -2706,7 +2763,12 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         params.differential?.control_condition
     def overlay_cond_col = params.promoter_overlay?.condition_col ?:
         params.differential?.condition_key
-    def overlay_target_genes = params.scprinter?.target_genes ?: []
+    // 2026-05-06: prefer promoter_overlay.target_genes; fall back to
+    // scprinter.target_genes for back-compat. Decoupled because setting
+    // scprinter.target_genes non-empty flips the pipeline into TARGETED mode,
+    // which short-circuits MOTIF_SCAN_ENHANCERS (DISCOVERY-only) and starves
+    // the overlay's CT-enumeration channel.
+    def overlay_target_genes = (params.promoter_overlay?.target_genes ?: params.scprinter?.target_genes) ?: []
     def overlay_top_n = (params.promoter_overlay?.top_n_tfs ?: 4) as Integer
     def overlay_palette = ['#d62728','#1f77b4','#2ca02c','#9467bd',
                            '#ff7f0e','#17becf','#8c564b','#e377c2']
@@ -2770,7 +2832,102 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
                 tuple(ct, gene, f, tfs, overlay_palette_csv)
             }
 
-        RENDER_PROMOTER_MSFP_OVERLAY(ch_render_in)
+        RENDER_PROMOTER_MSFP_OVERLAY(ch_render_in, overlay_ctrl, overlay_trt)
+    }
+
+    // ================================================================
+    // PHASE 6: Cis-Rewiring (per-TF gained-CCAN motif-presence panels)
+    //   Build union enhancer peakset (ctrl ∪ trt) → motif scan on union →
+    //   for top-N TFs (ranked from AGGREGATE_FP_STATS triple_csv): split each
+    //   gene's gained enhancer→gene links by whether the enhancer hosts the
+    //   TF motif → render directionality bar plot. The union scan is the
+    //   methodological fix for the SDas SREBF1/Cers2 caveat — scanning only
+    //   the control peakset misses motifs at treatment-only enhancers.
+    //   Gates: differential.run + cis_rewiring.enabled + per-condition links
+    //   from EXTRACT_CCAN_ENHANCERS_{CTRL,TRT} (i.e. stratified Cicero ran).
+    // ================================================================
+    def cis_enabled = (params.cis_rewiring?.enabled ?: false)
+    def cis_top_n_tfs   = (params.cis_rewiring?.top_n_tfs ?: 10) as Integer
+    def cis_top_n_genes = (params.cis_rewiring?.top_n_genes ?: 25) as Integer
+    def cis_min_delta   = (params.cis_rewiring?.min_delta ?: 1) as Integer
+    if (cis_enabled &&
+        overlay_trt && overlay_ctrl &&
+        (params.enhancer_footprinting.build_network ?: false)) {
+        log.info "CIS-REWIRING: enabled (top_n_tfs=${cis_top_n_tfs}, top_n_genes=${cis_top_n_genes}, min_delta=${cis_min_delta})"
+
+        // Build union enhancer peakset (ctrl ∪ trt) — methodological fix
+        BUILD_UNION_ENHANCER_PEAKS(
+            cicero_strat_ctrl_peaks_ch,
+            cicero_strat_trt_peaks_ch
+        )
+
+        // Reuse the existing chromvar motif list (DISCOVERY mode); same TFs
+        // as the global scan but evaluated against the union peakset.
+        MOTIF_SCAN_ENHANCERS_UNION(
+            BUILD_UNION_ENHANCER_PEAKS.out.peaks_union,
+            chromvar_motifs_ch
+        )
+
+        // Top-N TFs by total binding evidence aggregated across (CT, gene)
+        def ch_top_tfs = AGGREGATE_FP_STATS.out.triple_csv
+            .splitCsv(header: true)
+            .map { row ->
+                def ns = (row.n_sites_in_gene_window ?: '0') as Double
+                def bd = (row.bind_dip_depth_mean ?: '0') as Double
+                tuple(row.tf as String, ns, bd)
+            }
+            .groupTuple(by: 0)
+            .map { tf, ns_list, bd_list ->
+                def total_ns = ns_list.collect { it as Double }.sum() ?: 0.0
+                def mean_bd  = bd_list ? (bd_list.collect { it as Double }.sum() / bd_list.size()) : 0.0
+                tuple(tf, total_ns, mean_bd)
+            }
+            .toSortedList { a, b -> (b[1] <=> a[1]) ?: (b[2] <=> a[2]) }
+            .flatMap { sorted -> sorted.take(cis_top_n_tfs) }
+            .map { tf, ns, bd -> tf }
+
+        // Per-TF motif BED extraction from the union scan's region_sets dir.
+        // region_sets manifest names them as <safe_ct>_<TF>.bed; for cis-rewiring
+        // we want a single TF-wide BED across all CTs (any enhancer hosting the
+        // TF motif anywhere). Manifest carries per-(ct,tf) BED paths; collect
+        // and union per TF below.
+        def ch_motif_per_tf = MOTIF_SCAN_ENHANCERS_UNION.out.manifest
+            .flatMap { manifest_file ->
+                def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                data.region_sets.collect { rs ->
+                    tuple(rs.tf as String, rs.bed_file as String)
+                }
+            }
+            .combine(MOTIF_SCAN_ENHANCERS_UNION.out.region_sets)
+            .map { tf, bed_fname, region_sets_dir ->
+                tuple(tf, file("${region_sets_dir}/${bed_fname}"))
+            }
+            .groupTuple(by: 0)
+            .map { tf, beds ->
+                tuple(tf, beds)
+            }
+
+        // Join top-N TFs against per-TF BEDs, attach per-condition links.
+        // Module concatenates per-CT BEDs into a TF-wide motif BED internally.
+        def ch_motif_in_gained = ch_top_tfs
+            .map { tf -> tuple(tf, true) }
+            .join(ch_motif_per_tf)
+            .map { tf, _flag, beds ->
+                tuple(tf, beds.findAll { it.size() > 0 })
+            }
+            .filter { tf, beds -> beds && !beds.isEmpty() }
+            .combine(cicero_strat_ctrl_links_ch)
+            .combine(cicero_strat_trt_links_ch)
+            .map { tf, beds, links_ctrl, links_trt ->
+                tuple(tf, beds, links_ctrl, links_trt)
+            }
+
+        if (params.cis_rewiring?.motif_in_gained_enabled ?: true) {
+            MOTIF_IN_GAINED_CCANS(ch_motif_in_gained, overlay_ctrl, overlay_trt)
+        }
+        if (params.cis_rewiring?.motif_stack_enabled ?: true) {
+            RENDER_CIS_REWIRING_MOTIF_STACK(ch_motif_in_gained, overlay_ctrl, overlay_trt)
+        }
     }
 
     emit:
@@ -3256,8 +3413,43 @@ workflow {
             ch_atac_anndataset,                            // D1b
             REGULATORY_ANALYSIS.out.scprinter_footprints,  // 2026-04-30: pass-through (no cross-workflow access)
             REGULATORY_ANALYSIS.out.tf_diff,               // 2026-05-04: pass-through (DSL2 scope fix; gate-aligned w/ differential_tf.run)
-            REGULATORY_ANALYSIS.out.gene_coordinates       // 2026-05-06: pass-through for PROMOTER_MSFP_PER_CT
+            REGULATORY_ANALYSIS.out.gene_coordinates,      // 2026-05-06: pass-through for PROMOTER_MSFP_PER_CT
+            REGULATORY_ANALYSIS.out.cicero_strat_ctrl_links, // 2026-05-06: cis-rewiring
+            REGULATORY_ANALYSIS.out.cicero_strat_trt_links,
+            REGULATORY_ANALYSIS.out.cicero_strat_ctrl_peaks,
+            REGULATORY_ANALYSIS.out.cicero_strat_trt_peaks
         )
+    }
+
+    // ========================================================================
+    // PER-CT × CONDITION CICERO
+    // Opt-in: set params.cicero_per_ct.enabled = true.
+    // Requires a pre-generated annotation CSV produced by bin/build_ct_annotation_v2.py
+    // (run once outside the pipeline; accepts any obs column via --cell-type-col).
+    // CTs excluded by abundance floor or --exclude-labels are marked 'EXCLUDED'
+    // in the CSV and filtered here. Per-stratum floor (250 cells) applied inside
+    // CICERO_TRIPLETS_PER_CT via make_cicero_triplets_per_ct.py --min-cells.
+    // ========================================================================
+    if (params.cicero_per_ct?.enabled == true && atac_completed) {
+        def per_ct_annotation_csv = params.cicero_per_ct.annotation_csv
+        if (!per_ct_annotation_csv) {
+            error "cicero_per_ct.enabled=true but cicero_per_ct.annotation_csv is not set"
+        }
+
+        def strata_ch = Channel
+            .fromPath(per_ct_annotation_csv)
+            .splitCsv(header: true)
+            .map  { row -> tuple(row.cell_type_v2, row.condition) }
+            .filter { ct, cond -> ct != 'EXCLUDED' }
+            .unique()
+
+        def per_ct_pm_ch  = ch_atac_peak_matrix.first()
+        def per_ct_ann_ch = Channel.value(file(per_ct_annotation_csv))
+        def per_ct_gtf_ch = Channel.value(params.cicero.gtf_full)
+        def per_ct_k_ch   = Channel.value(params.cicero.sample_num)
+
+        CICERO_TRIPLETS_PER_CT(per_ct_pm_ch, per_ct_ann_ch, strata_ch)
+        CICERO_FULL_PER_CT(CICERO_TRIPLETS_PER_CT.out.triplets, per_ct_gtf_ch, per_ct_k_ch)
     }
 
     // SHI_FIGURES — Shi et al. 2025 figure equivalents (Tier A always; Tier B

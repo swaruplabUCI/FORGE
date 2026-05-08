@@ -126,20 +126,60 @@ def render(args):
         print(f"  hit: rel {hs}-{he} ({tf} score={sc:.2f} strand={st:+d}) "
               f"abs {chrom}:{hs+start}-{he+start}", flush=True)
 
-    vmin, vmax = 0, float(np.percentile(arr_plot, 99.5))
-    fig, axes = plt.subplots(n_cond + 1, 1,
-                             figsize=(12, 2.0 * n_cond + 1.6),
-                             gridspec_kw={"height_ratios": [4] * n_cond + [1.2]},
-                             sharex=True)
-    axes = list(axes) if n_cond + 1 > 1 else [axes]
-    for i in range(n_cond):
-        ax = axes[i]
-        im = ax.imshow(arr_plot[i], aspect="auto", origin="lower", cmap="Blues",
-                       extent=[0, width, scales_plot[0], scales_plot[-1]],
-                       vmin=vmin, vmax=vmax)
-        ax.set_ylabel(f"{cond_names[i]}\nscale (bp)")
-        ax.set_yticks([s for s in [2, 5, 10, 15, 20, 25, 30] if s <= scales_plot[-1]])
-        plt.colorbar(im, ax=ax, fraction=0.025, pad=0.01, label="MSFP score")
+    has_per_cond = (
+        bool(args.control_label) and bool(args.treatment_label)
+        and n_cond >= 2
+        and args.control_label in cond_names
+        and args.treatment_label in cond_names
+    )
+
+    if has_per_cond:
+        i_ctrl = cond_names.index(args.control_label)
+        i_trt  = cond_names.index(args.treatment_label)
+        ctrl_panel = arr_plot[i_ctrl]
+        trt_panel  = arr_plot[i_trt]
+        diff_panel = trt_panel - ctrl_panel
+        vmin = 0.0
+        vmax = float(np.percentile(np.stack([ctrl_panel, trt_panel]), 99.5))
+        dvmax = float(np.percentile(np.abs(diff_panel), 99))
+        if dvmax == 0:
+            dvmax = 1.0
+        fig, axes = plt.subplots(4, 1, figsize=(12, 9.6),
+                                 gridspec_kw={"height_ratios": [4, 4, 4, 1.4]},
+                                 sharex=True)
+        axes = list(axes)
+        for panel, ax, label, cmap in [
+            (ctrl_panel, axes[0], args.control_label,   "Blues"),
+            (trt_panel,  axes[1], args.treatment_label, "Blues"),
+            (diff_panel, axes[2],
+             f"Δ ({args.treatment_label} − {args.control_label})", "RdBu_r"),
+        ]:
+            kw = dict(aspect="auto", origin="lower",
+                      extent=[0, width, scales_plot[0], scales_plot[-1]])
+            if cmap == "RdBu_r":
+                im = ax.imshow(panel, cmap=cmap, vmin=-dvmax, vmax=dvmax, **kw)
+                cb_label = "Δ MSFP score"
+            else:
+                im = ax.imshow(panel, cmap=cmap, vmin=vmin, vmax=vmax, **kw)
+                cb_label = "MSFP score"
+            ax.set_ylabel(f"{label}\nscale (bp)")
+            ax.set_yticks([s for s in [2, 5, 10, 15, 20, 25, 30] if s <= scales_plot[-1]])
+            plt.colorbar(im, ax=ax, fraction=0.025, pad=0.01, label=cb_label)
+    else:
+        vmin, vmax = 0, float(np.percentile(arr_plot, 99.5))
+        fig, axes = plt.subplots(n_cond + 1, 1,
+                                 figsize=(12, 2.0 * n_cond + 1.6),
+                                 gridspec_kw={"height_ratios": [4] * n_cond + [1.2]},
+                                 sharex=True)
+        axes = list(axes) if n_cond + 1 > 1 else [axes]
+        for i in range(n_cond):
+            ax = axes[i]
+            im = ax.imshow(arr_plot[i], aspect="auto", origin="lower", cmap="Blues",
+                           extent=[0, width, scales_plot[0], scales_plot[-1]],
+                           vmin=vmin, vmax=vmax)
+            ax.set_ylabel(f"{cond_names[i]}\nscale (bp)")
+            ax.set_yticks([s for s in [2, 5, 10, 15, 20, 25, 30] if s <= scales_plot[-1]])
+            plt.colorbar(im, ax=ax, fraction=0.025, pad=0.01, label="MSFP score")
 
     ax_track = axes[-1]
     ax_track.set_ylim(0, 1)
@@ -158,8 +198,10 @@ def render(args):
     )
 
     title_ct = args.cell_type or fp.uns.get("cell_type", "")
+    mode_tag = "per-condition + Δ" if has_per_cond else "stacked"
     fig.suptitle(
-        f"{args.gene} promoter MSFP ({title_ct}) - TF-binding scales <={args.max_scale} bp",
+        f"{args.gene} promoter MSFP ({title_ct}, {mode_tag}) - "
+        f"TF-binding scales <={args.max_scale} bp",
         fontsize=12,
     )
     fig.tight_layout()
@@ -185,6 +227,11 @@ def main():
     ap.add_argument("--score-threshold", type=float, default=None,
                     help="optional motif score floor; default = none "
                          "(matches MOTIF_SCAN_ENHANCERS default — scprinter applies its own internal cutoff)")
+    ap.add_argument("--control-label", default="",
+                    help="if set with --treatment-label and both appear in obs['name'], "
+                         "render a 4-row figure: control + treatment + Δ(treatment − control) + motif track")
+    ap.add_argument("--treatment-label", default="",
+                    help="see --control-label")
     args = ap.parse_args()
     render(args)
 

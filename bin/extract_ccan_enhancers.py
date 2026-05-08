@@ -365,6 +365,11 @@ def main():
         return
 
     # ---- Original CCAN mode ----
+    # Mirror pairwise_95's per-condition filename suffix so CTRL+TRT outputs
+    # don't collide when staged together (e.g. BUILD_UNION_ENHANCER_PEAKS).
+    cond_label = args.condition_label or ''
+    suffix = f"_{cond_label}" if cond_label else ''
+
     if args.ccan is None:
         print("ERROR: --ccan is required for 'ccan' mode", file=sys.stderr)
         sys.exit(1)
@@ -457,12 +462,12 @@ def main():
         bed_df = enhancer_df[['chr', 'start', 'end', 'CCAN_id', 'linked_genes']].copy()
         bed_df = bed_df.sort_values(['chr', 'start']).reset_index(drop=True)
 
-        bed_path = outdir / 'ccan_enhancer_peaks.bed.gz'
+        bed_path = outdir / f'ccan_enhancer_peaks{suffix}.bed.gz'
         bed_df.to_csv(bed_path, sep='\t', index=False, header=False, compression='gzip')
         print(f"\nWrote {len(bed_df)} enhancer peaks to {bed_path}")
     else:
         # Write empty BED
-        bed_path = outdir / 'ccan_enhancer_peaks.bed.gz'
+        bed_path = outdir / f'ccan_enhancer_peaks{suffix}.bed.gz'
         with gzip.open(bed_path, 'wt') as f:
             pass
         print("WARNING: No enhancer peaks found")
@@ -484,7 +489,7 @@ def main():
     links_df = pd.DataFrame(links_records) if links_records else pd.DataFrame(
         columns=['chr', 'start', 'end', 'CCAN_id', 'gene']
     )
-    links_path = outdir / 'ccan_enhancer_gene_links.tsv'
+    links_path = outdir / f'ccan_enhancer_gene_links{suffix}.tsv'
     links_df.to_csv(links_path, sep='\t', index=False)
     print(f"Wrote {len(links_df)} enhancer-gene links to {links_path}")
 
@@ -500,7 +505,7 @@ def main():
         f"Enhancer-gene links: {len(links_df)}",
         f"Unique genes linked: {links_df['gene'].nunique() if not links_df.empty else 0}",
     ]
-    summary_path = outdir / 'ccan_enhancer_summary.txt'
+    summary_path = outdir / f'ccan_enhancer_summary{suffix}.txt'
     summary_path.write_text('\n'.join(summary_lines))
     print('\n'.join(summary_lines))
 

@@ -21,6 +21,8 @@ process RENDER_PROMOTER_MSFP_OVERLAY {
 
     input:
     tuple val(cell_type), val(gene), path(fp_h5ad), val(tfs_csv), val(tf_colors_csv)
+    val control_label
+    val treatment_label
 
     output:
     path "${gene}__${cell_type.replaceAll(/[\/\s\(\)]+/, '_')}__msfp_motif_overlay.png", emit: png
@@ -29,6 +31,8 @@ process RENDER_PROMOTER_MSFP_OVERLAY {
     def safe_ct = cell_type.replaceAll(/[\/\s\(\)]+/, '_')
     def score_threshold_arg = (params.promoter_overlay?.score_threshold != null) ?
         "--score-threshold ${params.promoter_overlay.score_threshold}" : ''
+    def ctrl_arg = (control_label   && control_label   != 'none') ? "--control-label '${control_label}'"     : ''
+    def trt_arg  = (treatment_label && treatment_label != 'none') ? "--treatment-label '${treatment_label}'" : ''
     """
     python ${projectDir}/bin/render_promoter_msfp_overlay.py \\
         --gene '${gene}' \\
@@ -41,7 +45,9 @@ process RENDER_PROMOTER_MSFP_OVERLAY {
         --max-scale ${params.promoter_overlay.max_scale} \\
         --tfs '${tfs_csv}' \\
         --tf-colors '${tf_colors_csv}' \\
-        ${score_threshold_arg}
+        ${score_threshold_arg} \\
+        ${ctrl_arg} \\
+        ${trt_arg}
     """
 
     stub:

@@ -47,6 +47,7 @@ process ENHANCER_FOOTPRINTING_PER_CT {
     // queue handles the resource cap if cluster can't absorb all at once.
     maxForks 35
     errorStrategy 'terminate'
+    scratch true
     publishDir "${params.outdir}/enhancer_footprinting_per_ct/${cell_type.replaceAll(/[\/\s\(\)]+/, '_')}",
                mode: 'copy'
 
