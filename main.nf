@@ -106,6 +106,7 @@ include { CICERO_TRIPLETS_STRATIFIED as CICERO_TRIPLETS_STRATIFIED_TRT } from '.
 include { COMPARE_COACCESSIBILITY } from './modules/cicero/cicero_stratified'
 include { CICERO_TRIPLETS_PER_CT } from './modules/cicero/cicero_per_ct'
 include { CICERO_FULL_PER_CT     } from './modules/cicero/cicero_per_ct'
+include { BUILD_CT_ANNOTATION    } from './modules/cicero/build_ct_annotation'
 
 // scPRINT modules
 include { SCPRINTER_BARCODES } from './modules/scprint/barcodes'
@@ -3423,33 +3424,45 @@ workflow {
 
     // ========================================================================
     // PER-CT × CONDITION CICERO
-    // Opt-in: set params.cicero_per_ct.enabled = true.
-    // Requires a pre-generated annotation CSV produced by bin/build_ct_annotation_v2.py
-    // (run once outside the pipeline; accepts any obs column via --cell-type-col).
-    // CTs excluded by abundance floor or --exclude-labels are marked 'EXCLUDED'
-    // in the CSV and filtered here. Per-stratum floor (250 cells) applied inside
-    // CICERO_TRIPLETS_PER_CT via make_cicero_triplets_per_ct.py --min-cells.
+    // Single-pass: BUILD_CT_ANNOTATION runs after peak_matrix_annotated.h5ad
+    // is ready, then fans out to (CT, condition) strata in the same run.
+    // Onramp override: set params.cicero_per_ct.annotation_csv to skip
+    // BUILD_CT_ANNOTATION and use a pre-generated CSV directly.
+    // Opt-in: params.cicero_per_ct.enabled = true.
+    // Per-stratum floor (250 cells) applied in CICERO_TRIPLETS_PER_CT via
+    // exit 77 → errorStrategy ignore → clean skip.
     // ========================================================================
     if (params.cicero_per_ct?.enabled == true && atac_completed) {
-        def per_ct_annotation_csv = params.cicero_per_ct.annotation_csv
-        if (!per_ct_annotation_csv) {
-            error "cicero_per_ct.enabled=true but cicero_per_ct.annotation_csv is not set"
+        def csv_ch
+        if (params.cicero_per_ct?.annotation_csv) {
+            csv_ch = Channel.value(file(params.cicero_per_ct.annotation_csv))
+        } else {
+            BUILD_CT_ANNOTATION(
+                ch_atac_peak_matrix.first(),
+                params.cicero_per_ct?.cell_type_col ?: 'cell_type_broad',
+                params.cicero_per_ct?.condition_col  ?: 'condition',
+                params.cicero_per_ct?.min_cells       ?: 50,
+                params.cicero_per_ct?.min_pct         ?: 0.01
+            )
+            csv_ch = BUILD_CT_ANNOTATION.out.csv
         }
 
-        def strata_ch = Channel
-            .fromPath(per_ct_annotation_csv)
+        def strata_ch = csv_ch
             .splitCsv(header: true)
             .map  { row -> tuple(row.cell_type_v2, row.condition) }
             .filter { ct, cond -> ct != 'EXCLUDED' }
             .unique()
 
-        def per_ct_pm_ch  = ch_atac_peak_matrix.first()
-        def per_ct_ann_ch = Channel.value(file(per_ct_annotation_csv))
-        def per_ct_gtf_ch = Channel.value(params.cicero.gtf_full)
-        def per_ct_k_ch   = Channel.value(params.cicero.sample_num)
-
-        CICERO_TRIPLETS_PER_CT(per_ct_pm_ch, per_ct_ann_ch, strata_ch)
-        CICERO_FULL_PER_CT(CICERO_TRIPLETS_PER_CT.out.triplets, per_ct_gtf_ch, per_ct_k_ch)
+        CICERO_TRIPLETS_PER_CT(
+            ch_atac_peak_matrix.first(),
+            csv_ch.first(),
+            strata_ch
+        )
+        CICERO_FULL_PER_CT(
+            CICERO_TRIPLETS_PER_CT.out.triplets,
+            Channel.value(params.cicero.gtf_full),
+            Channel.value(params.cicero.sample_num)
+        )
     }
 
     // SHI_FIGURES — Shi et al. 2025 figure equivalents (Tier A always; Tier B
