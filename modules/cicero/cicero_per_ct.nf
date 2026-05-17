@@ -14,8 +14,11 @@
 // exit 77 → errorStrategy ignore → cleanly skipped without pipeline failure.
 //
 // Processes:
-//   CICERO_TRIPLETS_PER_CT  — subset h5ad → triplets TSV.gz
-//   CICERO_FULL_PER_CT      — triplets → connections, CCANs, plots
+//   CICERO_TRIPLETS_PER_CT       — subset h5ad → triplets TSV.gz
+//   CICERO_ESTIMATE_DP_PER_CT    — build shared CDS + estimate distance parameter
+//   CICERO_FULL_CHROM_PER_CT     — per-chromosome Cicero models (fan-out)
+//   CICERO_JOIN_PER_CT           — rbind chrom connections → final outputs
+//   CICERO_FULL_PER_CT           — legacy monolithic runner (retained for reference)
 
 
 // ---------------------------------------------------------------------------
@@ -54,11 +57,127 @@ process CICERO_TRIPLETS_PER_CT {
 
 
 // ---------------------------------------------------------------------------
-// Phase 2 — Run monolithic Cicero on the stratum triplets
-//
-// Using run_cicero_full.R (monolithic) rather than ESTIMATE_DP + FULL_CHROM
-// because per-CT strata are small (200–50k cells); the chromosome fan-out
-// speedup is worth its overhead only for the full pooled dataset.
+// Phase 2a — Build shared CDS + estimate global distance_parameter
+//            (one per (cell_type, condition) stratum)
+// ---------------------------------------------------------------------------
+
+process CICERO_ESTIMATE_DP_PER_CT {
+    tag { "${cell_type.replaceAll(' ', '_')}_${condition}" }
+    label 'process_medium'
+    errorStrategy 'terminate'
+
+    input:
+    tuple val(cell_type), val(condition), path(triplets)
+
+    output:
+    tuple val(cell_type), val(condition),
+          path("distance_parameter.txt"),
+          path("cicero_cds_shared.rds"),
+          path("gene_annotation.rds"),
+          path("input_cds_ordered.rds"),
+          emit: all_out
+    path "cds_summary.txt", optional: true
+    path "umap_*.pdf",      optional: true
+
+    script:
+    """
+    export HOME=/tmp/container_home
+    mkdir -p /tmp/container_home
+    export R_LIBS_USER=""
+    cicero_estimate_dp.R \\
+      --triplets "${triplets}" \\
+      --outdir "." \\
+      --num_dim ${params.cicero.num_dim} \\
+      --sample_num ${params.cicero.sample_num} \\
+      --window_bp 500000 \\
+      --distance_constraint 250000 \\
+      ${params.cicero.use_partition ? "--use_partition" : ""}
+    """
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 2b — Per-chromosome Cicero model, fanned out across all chromosomes
+//            (one task per (cell_type, condition, chrom))
+// ---------------------------------------------------------------------------
+
+process CICERO_FULL_CHROM_PER_CT {
+    tag { "${cell_type.replaceAll(' ', '_')}_${condition}_${chrom}" }
+    label 'process_medium'
+    errorStrategy 'terminate'
+
+    input:
+    tuple val(cell_type), val(condition), val(chrom),
+          path(cicero_cds_rds), path(gene_ann_rds), path(dp_file)
+
+    output:
+    tuple val(cell_type), val(condition),
+          val(chrom), path("conns_${chrom}.tsv.gz"),
+          emit: chrom_conns
+
+    script:
+    """
+    export HOME=/tmp/container_home
+    mkdir -p /tmp/container_home
+    export R_LIBS_USER=""
+    DP=\$(cat ${dp_file})
+    cicero_full_chrom.R \\
+      --chrom "${chrom}" \\
+      --cicero_cds "${cicero_cds_rds}" \\
+      --gene_annotation "${gene_ann_rds}" \\
+      --dp "\${DP}" \\
+      --window_bp 500000 \\
+      --outdir "."
+    """
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 2c — Collect per-chromosome connections, run CCAN, write final outputs
+//            publishDir mirrors the monolithic CICERO_FULL_PER_CT layout
+// ---------------------------------------------------------------------------
+
+process CICERO_JOIN_PER_CT {
+    tag { "${cell_type.replaceAll(' ', '_')}_${condition}" }
+    label 'process_medium'
+    errorStrategy 'terminate'
+    publishDir "${params.outdir}/cicero/per_ct/${cell_type.replaceAll(/\s+/, '_').replaceAll('/', '-')}/${condition}", mode: 'copy'
+
+    input:
+    tuple val(cell_type), val(condition),
+          path(chrom_conns),   // staged list of conns_chr*.tsv.gz
+          path(ordered_cds)
+    val   gtf_path
+
+    output:
+    tuple val(cell_type), val(condition),
+          path("cicero_connections.tsv.gz"),  emit: connections
+    path "CCAN_assignments.tsv.gz",           emit: ccan
+    path "input_cds_ordered.rds",             emit: cds
+    path "*.pdf",                             emit: plots, optional: true
+
+    script:
+    """
+    export HOME=/tmp/container_home
+    mkdir -p /tmp/container_home
+    export R_LIBS_USER=""
+    if [ "${ordered_cds}" != "input_cds_ordered.rds" ]; then
+        cp -L "${ordered_cds}" "input_cds_ordered.rds"
+    fi
+    cicero_join.R \\
+      --conns_glob "conns_*.tsv.gz" \\
+      --cds "input_cds_ordered.rds" \\
+      --gtf "${gtf_path}" \\
+      --connections_cutoff ${params.cicero.connections_cutoff} \\
+      --ccan_min_coaccess ${params.cicero.ccan_min_coaccess} \\
+      --outdir "."
+    """
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 2 (legacy) — Monolithic Cicero runner; superseded by the three-step
+//                    fan-out above; retained here for reference only.
 // ---------------------------------------------------------------------------
 
 process CICERO_FULL_PER_CT {
@@ -70,15 +189,15 @@ process CICERO_FULL_PER_CT {
 
     input:
     tuple val(cell_type), val(condition), path(triplets)
-    val   gtf_path      // absolute path to GTF (params.cicero.gtf_full)
-    val   sample_num    // Cicero k-NN (params.cicero.sample_num)
+    val   gtf_path
+    val   sample_num
 
     output:
     tuple val(cell_type), val(condition),
           path("cicero_connections.tsv.gz"),  emit: connections
     path  "CCAN_assignments.tsv.gz",          emit: ccan
     path  "input_cds_ordered.rds",            emit: cds
-    path  "*.pdf",                            emit: plots,   optional: true
+    path  "*.pdf",                            emit: plots, optional: true
 
     script:
     """

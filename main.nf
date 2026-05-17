@@ -104,9 +104,11 @@ include { DIFFERENTIAL_TF_ACCESSIBILITY } from './modules/chromvar/differential_
 include { CICERO_TRIPLETS_STRATIFIED } from './modules/cicero/cicero_stratified'
 include { CICERO_TRIPLETS_STRATIFIED as CICERO_TRIPLETS_STRATIFIED_TRT } from './modules/cicero/cicero_stratified'
 include { COMPARE_COACCESSIBILITY } from './modules/cicero/cicero_stratified'
-include { CICERO_TRIPLETS_PER_CT } from './modules/cicero/cicero_per_ct'
-include { CICERO_FULL_PER_CT     } from './modules/cicero/cicero_per_ct'
-include { BUILD_CT_ANNOTATION    } from './modules/cicero/build_ct_annotation'
+include { CICERO_TRIPLETS_PER_CT    } from './modules/cicero/cicero_per_ct'
+include { CICERO_ESTIMATE_DP_PER_CT } from './modules/cicero/cicero_per_ct'
+include { CICERO_FULL_CHROM_PER_CT  } from './modules/cicero/cicero_per_ct'
+include { CICERO_JOIN_PER_CT        } from './modules/cicero/cicero_per_ct'
+include { BUILD_CT_ANNOTATION       } from './modules/cicero/build_ct_annotation'
 
 // scPRINT modules
 include { SCPRINTER_BARCODES } from './modules/scprint/barcodes'
@@ -3458,11 +3460,32 @@ workflow {
             csv_ch.first(),
             strata_ch
         )
-        CICERO_FULL_PER_CT(
-            CICERO_TRIPLETS_PER_CT.out.triplets,
-            Channel.value(params.cicero.gtf_full),
-            Channel.value(params.cicero.sample_num)
-        )
+        // Phase 2a: estimate distance parameter per stratum
+        CICERO_ESTIMATE_DP_PER_CT(CICERO_TRIPLETS_PER_CT.out.triplets)
+
+        // Phase 2b: fan-out by chromosome within each stratum
+        def cicero_chroms_per_ct = (params.species == 'mouse' ? (1..19) : (1..22))
+                                       .collect { "chr${it}" } + ['chrX', 'chrY', 'chrM']
+
+        def per_ct_chrom_in = CICERO_ESTIMATE_DP_PER_CT.out.all_out
+            .combine(Channel.fromList(cicero_chroms_per_ct))
+            .map { ct, cond, dp, cds, gene_ann, ordered_cds, chrom ->
+                tuple(ct, cond, chrom, cds, gene_ann, dp)
+            }
+
+        CICERO_FULL_CHROM_PER_CT(per_ct_chrom_in)
+
+        // Phase 2c: collect per-stratum chrom connections, join with ordered CDS
+        def per_ct_chrom_conns = CICERO_FULL_CHROM_PER_CT.out.chrom_conns
+            .groupTuple(by: [0, 1], size: cicero_chroms_per_ct.size())
+            .map { ct, cond, _chroms, files -> tuple(ct, cond, files) }
+
+        def per_ct_ordered_cds = CICERO_ESTIMATE_DP_PER_CT.out.all_out
+            .map { ct, cond, dp, cds, gene_ann, ordered_cds -> tuple(ct, cond, ordered_cds) }
+
+        def per_ct_join_in = per_ct_chrom_conns.join(per_ct_ordered_cds, by: [0, 1])
+
+        CICERO_JOIN_PER_CT(per_ct_join_in, Channel.value(params.cicero.gtf_full))
     }
 
     // SHI_FIGURES — Shi et al. 2025 figure equivalents (Tier A always; Tier B
