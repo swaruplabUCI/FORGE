@@ -107,14 +107,36 @@ def plot_modality_integration(mdata, output_dir, cell_type_key="cell_type"):
             if len(_vals) == 1 and _vals[0] == 'Unknown':
                 continue  # skip all-Unknown columns
             print(f"Found cell type annotations in column: {possible_key}")
+
+            # Inject explicit color palette — scanpy's built-in godsnot_102 palette
+            # tops out at 102 colors; CellTypist brain labels routinely produce 100-200
+            # categories, causing a grayscale fallback.  Mirror the ATAC injection logic.
+            import matplotlib.colors as _mc_rna
+            _rna_cats = sorted(mdata.obs[possible_key].dropna().astype(str).unique())
+            _n_rna = len(_rna_cats)
+            _cmap_rna = plt.get_cmap(
+                "gist_ncar" if _n_rna > 102 else "turbo" if _n_rna > 20 else "tab20"
+            )
+            _rna_hex = [_mc_rna.to_hex(_cmap_rna(i / max(_n_rna - 1, 1))) for i in range(_n_rna)]
+            if ':' in possible_key:
+                _mod_name_rna, _obs_k_rna = possible_key.split(':', 1)
+                if hasattr(mdata, 'mod') and _mod_name_rna in mdata.mod:
+                    mdata.mod[_mod_name_rna].uns[f'{_obs_k_rna}_colors'] = _rna_hex
+            else:
+                mdata.uns[f'{possible_key}_colors'] = _rna_hex
+            print(f"  Injected {_n_rna}-color palette for '{possible_key}'")
+
             fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+            # For very high category counts suppress the legend (unreadable anyway);
+            # the palette itself is still colour-correct in the scatter.
+            _legend_loc_rna = "right margin" if _n_rna <= 60 else "none"
             sc.pl.umap(
                 mdata,
                 color=possible_key,
                 ax=ax,
                 show=False,
-                title="MultiVI: Cell Types",
-                legend_loc="right margin",  # <-- legend, not on data
+                title=f"MultiVI: RNA Cell Types ({_n_rna} types)",
+                legend_loc=_legend_loc_rna,
                 legend_fontsize=6,
                 legend_fontoutline=1,
                 frameon=False,
@@ -142,6 +164,18 @@ def plot_modality_integration(mdata, output_dir, cell_type_key="cell_type"):
             atac_ct_key = 'atac_cell_type'
     if atac_ct_key:
         print(f"Plotting ATAC cell type UMAP using: {atac_ct_key}")
+        # Inject full palette so high-N ATAC types (e.g. 60+ brain subclasses) get distinct colors
+        import matplotlib.colors as _mc
+        _atac_cats = sorted(mdata.obs[atac_ct_key].dropna().astype(str).unique())
+        _n_atac = len(_atac_cats)
+        _cmap_atac = plt.get_cmap("gist_ncar" if _n_atac > 102 else "turbo" if _n_atac > 20 else "tab20")
+        _atac_hex = [_mc.to_hex(_cmap_atac(i / max(_n_atac - 1, 1))) for i in range(_n_atac)]
+        if ':' in atac_ct_key:
+            _mod_name, _obs_k = atac_ct_key.split(':', 1)
+            if _mod_name in mdata.mod:
+                mdata.mod[_mod_name].uns[f'{_obs_k}_colors'] = _atac_hex
+        else:
+            mdata.uns[f'{atac_ct_key}_colors'] = _atac_hex
         fig, ax = plt.subplots(1, 1, figsize=(10, 8))
         sc.pl.umap(
             mdata, color=atac_ct_key, ax=ax, show=False,

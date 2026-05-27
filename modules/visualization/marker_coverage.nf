@@ -28,9 +28,10 @@ process MARKER_COVERAGE_TRACKS {
     def markers_arg = markers ?
         "--markers '${markers}'" :
         "--markers 'Astrocyte=Gfap,Excitatory=Slc17a7,Inhibitory=Gad2,Microglia=Csf1r,Oligodendrocyte=Mobp,OPC=Pdgfra,Vascular=Cldn5'"
+    // Use != null check (not ?: Elvis) so that marker_lineages = '' explicitly disables the filter
     def keep_csv = (params.shi_figures?.marker_lineages instanceof List) ?
         params.shi_figures.marker_lineages.join(',') :
-        (params.shi_figures?.marker_lineages ?:
+        (params.shi_figures?.marker_lineages != null ? params.shi_figures.marker_lineages :
             'Astro-Epen,IT-ET Glut,CTX-MGE GABA,Immune,OPC-Oligo,Vascular')
     """
     # Rewrite the staged manifest:

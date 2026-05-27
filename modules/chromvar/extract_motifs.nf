@@ -23,6 +23,7 @@ process EXTRACT_CHROMVAR_MOTIFS {
     val top_n           // top N TFs per cell type
     val min_zscore      // minimum mean |z-score| threshold
     val cell_type_col   // obs column for cell type (marker: 'cell_type', celltypist: 'celltypist_prediction')
+    val global_top_n    // cap on total unique TFs across all CTs (0 = disabled)
 
     output:
     path "per_celltype_motifs.json", emit: motif_list
@@ -194,11 +195,39 @@ process EXTRACT_CHROMVAR_MOTIFS {
 
     # ---- Union of all TFs ----
     result["all_unique_tfs"] = sorted(all_tfs_union)
+
+    # ---- Global top-N cap (chromvar.global_top_n > 0) ----
+    # After per-CT selection, rank all TFs by their max mean_abs_zscore across
+    # any cell type and keep the top-N globally.  Per-CT top_tfs and motif_details
+    # are then re-filtered to the surviving set.  This caps total MOTIF_SCAN_ENHANCERS
+    # / ENHANCER_FOOTPRINTING_PER_CT work without biasing any single cell type.
+    global_top_n = int(${global_top_n})
+    if global_top_n > 0:
+        tf_max_z = {}
+        for ct_data in result["cell_types"].values():
+            for d in ct_data["motif_details"]:
+                tf_max_z[d["tf"]] = max(tf_max_z.get(d["tf"], 0.0), d["mean_abs_zscore"])
+        top_global = sorted(tf_max_z, key=lambda t: -tf_max_z[t])[:global_top_n]
+        top_set = set(top_global)
+        print(f"  global_top_n={global_top_n}: keeping {len(top_set)} TFs: {top_global}", flush=True)
+        for ct_name in result["cell_types"]:
+            result["cell_types"][ct_name]["top_tfs"] = [
+                t for t in result["cell_types"][ct_name]["top_tfs"] if t in top_set
+            ]
+            result["cell_types"][ct_name]["motif_details"] = [
+                d for d in result["cell_types"][ct_name]["motif_details"] if d["tf"] in top_set
+            ]
+        result["all_unique_tfs"] = sorted(top_set)
+        report_lines.append(f"global_top_n={global_top_n}: retained {len(top_set)} TFs: {top_global}")
+    else:
+        print(f"  global_top_n disabled (0)", flush=True)
+
     result["params"] = {
         "top_n_per_celltype": top_n,
         "min_zscore": min_zscore,
+        "global_top_n": global_top_n,
         "n_cell_types": len(cell_types),
-        "total_unique_tfs": len(all_tfs_union),
+        "total_unique_tfs": len(result["all_unique_tfs"]),
     }
 
     # ---- Write outputs ----

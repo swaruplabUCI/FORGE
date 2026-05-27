@@ -1193,6 +1193,10 @@ def run_global_mode(args, printer, genome_obj, gene_regions, target_genes):
             "footprint_summary.csv", index=False
         )
         print("No global footprint results produced")
+        # Write dummy h5ad so Nextflow output glob `footprints_*.h5ad` is satisfied
+        # (mirrors the same pattern in run_differential_mode for the SKIP case)
+        dummy = ad.AnnData()
+        dummy.write_h5ad(f"footprints_{safe_label}_SKIPPED.h5ad")
 
     return promoter_results
 

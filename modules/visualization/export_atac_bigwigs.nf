@@ -5,6 +5,11 @@
 // PYCISTOPIC_PREPARE — no RNA dependency.
 //
 // Feeds PREPARE_ENHANCER_VIZ_TRACKS via --bigwig-dir.
+//
+// 2026-05-26: added condition_col input. When non-'none', also exports per-CT
+// per-condition BigWigs and adds manifest.by_condition — required for
+// RENDER_GENOME_BROWSER in differential mode. Backwards-compatible: existing
+// callers pass 'none' to skip the second export pass.
 
 nextflow.enable.dsl=2
 
@@ -20,13 +25,16 @@ process EXPORT_ATAC_BIGWIGS {
     path annotated_peaks     // peak_matrix_annotated.h5ad
     val  cell_type_col       // e.g. 'cell_type_prediction' (scATAnno) / 'cell_type_broad'
     val  min_cells           // skip groups below this cell count
+    val  condition_col       // obs column for condition split; 'none' to skip
 
     output:
     path "bigwigs/*.bw",             emit: bigwigs
     path "bigwigs/manifest.json",    emit: manifest
 
     script:
-    def blacklist_arg = params.enhancer_viz.blacklist ? "--blacklist ${params.enhancer_viz.blacklist}" : ''
+    def blacklist_arg  = params.enhancer_viz.blacklist ? "--blacklist ${params.enhancer_viz.blacklist}" : ''
+    def cond_col_arg   = (condition_col && condition_col != 'none') ?
+                         "--condition-col '${condition_col}'" : ''
     """
     python ${projectDir}/bin/export_atac_bigwigs.py \\
         --anndataset '${anndataset}' \\
@@ -36,6 +44,7 @@ process EXPORT_ATAC_BIGWIGS {
         --bin-size ${params.enhancer_viz.bin_size ?: 10} \\
         --normalization ${params.enhancer_viz.normalization ?: 'RPKM'} \\
         ${blacklist_arg} \\
+        ${cond_col_arg} \\
         --n-jobs ${task.cpus} \\
         --outdir bigwigs
     """

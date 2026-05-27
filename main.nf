@@ -196,8 +196,12 @@ include { EXTRACT_CCAN_ENHANCERS as EXTRACT_CCAN_ENHANCERS_CTRL } from './module
 include { EXTRACT_CCAN_ENHANCERS as EXTRACT_CCAN_ENHANCERS_TRT  } from './modules/scprint/extract_ccan_enhancers'
 include { BUILD_UNION_ENHANCER_PEAKS    } from './modules/scprint/build_union_enhancer_peaks'
 include { MOTIF_SCAN_ENHANCERS_UNION    } from './modules/scprint/motif_scan_enhancers_union'
-include { MOTIF_IN_GAINED_CCANS         } from './modules/visualization/motif_in_gained_ccans'
+include { MOTIF_IN_GAINED_CCANS           } from './modules/visualization/motif_in_gained_ccans'
 include { RENDER_CIS_REWIRING_MOTIF_STACK } from './modules/visualization/render_cis_rewiring_motif_stack'
+include { RENDER_MSFP_PROMOTER_STRIP      } from './modules/visualization/render_msfp_promoter_strip'
+include { RENDER_MSFP_ENHANCER_STRIP      } from './modules/visualization/render_msfp_enhancer_strip'
+include { RENDER_GENOME_BROWSER           } from './modules/visualization/render_genome_browser'
+include { RENDER_CICERO_LOLLIPOP          } from './modules/visualization/render_cicero_lollipop'
 
 // SHI_FIGURES — Shi et al. 2025 figure equivalents (1E, 2B-E, 4B-E, 5A-F)
 // Tier A (single-condition compatible) + Tier B (require >=2 conditions).
@@ -1647,7 +1651,8 @@ workflow REGULATORY_ANALYSIS {
                 ch_chromvar_dev,
                 params.chromvar.top_n_per_celltype,
                 params.chromvar.min_motif_zscore,
-                atac_cell_type_key
+                atac_cell_type_key,
+                params.chromvar?.global_top_n ?: 0
             )
 
             EXTRACT_CHROMVAR_MOTIFS.out.report.view {
@@ -2463,12 +2468,21 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     // {summary, footprints, binding_scores, global_plots} structure;
     // bind enh_fp_* references so downstream wiring is arch-agnostic.
     def enh_use_per_ct = params.enhancer_footprinting.use_per_ct ?: false
-    def enh_fp_summary
-    def enh_fp_footprints
-    def enh_fp_binding_scores
-    def enh_fp_global_plots
+    // 2026-05-26: MSFP compute gate. false → skip the expensive
+    // ENHANCER_FOOTPRINTING_PER_CT / ENHANCER_FOOTPRINTING wall-time and all
+    // downstream consumers. MOTIF_SCAN_ENHANCERS + Cicero + browser/lollipop
+    // still run. Instance configs flip true for full MSFP runs.
+    def msfp_enabled = params.enhancer_footprinting.msfp_enabled ?: false
+    if (!msfp_enabled) {
+        log.info "ENHANCER FOOTPRINTING RECIPES: MSFP compute DISABLED (msfp_enabled=false)"
+    }
 
-    if (enh_use_per_ct) {
+    def enh_fp_summary        = Channel.empty()
+    def enh_fp_footprints     = Channel.empty()
+    def enh_fp_binding_scores = Channel.empty()
+    def enh_fp_global_plots   = Channel.empty()
+
+    if (msfp_enabled && enh_use_per_ct) {
         // Per-CT fan-out: one task per ct loads printer/peak matrix once
         // and iterates all TFs. Cuts task count ~657 → ~10/33.
         def per_ct_manifest_dir = file("${workflow.workDir}/per_ct_manifests")
@@ -2486,7 +2500,10 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             .map { ct, entries, region_sets_dir ->
                 def safe_ct = ct.replaceAll(/[\/\s\(\)]+/, '_')
                 def manifest_path = file("${per_ct_manifest_dir}/manifest_${safe_ct}.json")
-                manifest_path.text = groovy.json.JsonOutput.toJson(entries)
+                def newContent = groovy.json.JsonOutput.toJson(entries)
+                if (!manifest_path.exists() || manifest_path.text != newContent) {
+                    manifest_path.text = newContent
+                }
                 def beds = entries.collect { e -> file("${region_sets_dir}/${e.bed_file}") }
                 tuple(ct, manifest_path, beds)
             }
@@ -2505,7 +2522,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         enh_fp_binding_scores = ENHANCER_FOOTPRINTING_PER_CT.out.binding_scores
         enh_fp_global_plots   = ENHANCER_FOOTPRINTING_PER_CT.out.global_plots
 
-    } else {
+    } else if (msfp_enabled) {
         // Sharded fan-out: one task per (cell_type, TF) pair (legacy).
         ch_enhancer_tasks = MOTIF_SCAN_ENHANCERS.out.manifest
             .flatMap { manifest_file ->
@@ -2544,7 +2561,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     //   Uses continuous scPrinter binding scores × Cicero co-accessibility.
     //   Absorbed from SDas_nf. No RNA dependency.
     // ================================================================
-    if (params.enhancer_footprinting.build_network ?: false) {
+    if (msfp_enabled && (params.enhancer_footprinting.build_network ?: false)) {
         log.info "ENHANCER FOOTPRINTING RECIPES: Phase 3 (TF-gene regulatory network)"
         def tf_gtf = params.species == 'human' ?
             params.scprinter.gtf_human : params.scprinter.gtf_mouse
@@ -2564,7 +2581,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     def has_scenic = (params.scenicplus.run ?: false) && (params.pycistopic.run ?: false)
     def has_dorc = (params.dorc.run ?: false)
 
-    if (has_scenic) {
+    if (has_scenic && msfp_enabled) {
         log.info "ENHANCER FOOTPRINTING RECIPES: Phase 2 (Multiome integration)"
 
         def dorc_sig_file = has_dorc ?
@@ -2633,11 +2650,13 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             ccan_manifest_ch
         )
 
-        SIGNAL_CHAIN_CORRELATION(
-            enh_fp_footprints.collect(),
-            rna_h5ad_ch,
-            EXTRACT_SIGNALING_TARGETS.out.metadata
-        )
+        if (msfp_enabled) {
+            SIGNAL_CHAIN_CORRELATION(
+                enh_fp_footprints.collect(),
+                rna_h5ad_ch,
+                EXTRACT_SIGNALING_TARGETS.out.metadata
+            )
+        }
     }
 
     // ================================================================
@@ -2649,23 +2668,96 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         def viz_cell_type_col = params.enhancer_viz.cell_type_col ?: cell_type_col
         def viz_min_cells     = params.enhancer_viz.min_cells     ?: 100
 
-        // D1b: ATAC-only pseudobulk bigWigs via snap.ex.export_coverage when
-        // SCENIC+ multiome path isn't producing pycistopic bigwigs.
-        def bigwig_dir_ch
-        if (has_scenic) {
-            bigwig_dir_ch = pseudobulk_bigwigs_ch.ifEmpty(file('NO_BIGWIGS')).collect()
-        } else {
-            EXPORT_ATAC_BIGWIGS(
-                anndataset_ch,
-                peak_matrix,
-                viz_cell_type_col,
-                viz_min_cells
-            )
-            bigwig_dir_ch = EXPORT_ATAC_BIGWIGS.out.bigwigs.collect()
-            // SHI Tier A wiring: expose bigwig outputs for SHI_FIGURES.
-            shi_bw_manifest_ch = EXPORT_ATAC_BIGWIGS.out.manifest
-            shi_bw_dir_ch      = EXPORT_ATAC_BIGWIGS.out.bigwigs
+        // D1b: ATAC-only pseudobulk bigWigs via snap.ex.export_coverage.
+        //
+        // EXPORT_ATAC_BIGWIGS always runs: it produces BROAD-CLASS bigwigs
+        // (cell_type_broad from scATAnno) for SHI MARKER_COVERAGE_TRACKS.
+        //
+        // For SCENIC+ datasets pycistopic already produces fine-grained bigwigs
+        // for PREPARE_ENHANCER_VIZ_TRACKS (fine resolution, condition-aware).
+        // Those two purposes are distinct: SHI needs broad classes; enhancer viz
+        // tracks need fine labels.  Previously gating EXPORT_ATAC_BIGWIGS with
+        // !has_scenic caused MARKER_COVERAGE_TRACKS to silently skip on all
+        // SCENIC+ instances (AD, Brain_Mm_BD, etc).  2026-05-24 fix: always run.
+        // 2026-05-26: pass condition_col so export_atac_bigwigs.py also writes
+        // per-CT × condition BigWigs into manifest.by_condition. Required for
+        // RENDER_GENOME_BROWSER in differential mode. When enhancer_viz.condition_col
+        // is null, the script skips the second pass — backwards compatible.
+        def bw_condition_col = params.enhancer_viz?.condition_col ?: 'none'
+
+        EXPORT_ATAC_BIGWIGS(
+            anndataset_ch,
+            peak_matrix,
+            viz_cell_type_col,
+            viz_min_cells,
+            bw_condition_col
+        )
+        // SHI Tier A wiring: broad-class manifest always available now.
+        shi_bw_manifest_ch = EXPORT_ATAC_BIGWIGS.out.manifest
+        shi_bw_dir_ch      = EXPORT_ATAC_BIGWIGS.out.bigwigs
+
+        // 2026-05-26: RENDER_GENOME_BROWSER — per-gene matplotlib browser tracks.
+        // Gated on browser_viz.enabled; target_genes shared with enhancer_viz.
+        if (params.browser_viz?.enabled ?: false) {
+            def browser_mode      = params.browser_viz?.mode ?: 'absolute'
+            def browser_genes     = params.enhancer_viz?.target_genes ?: []
+            def browser_cell_types = params.browser_viz?.cell_types ?:
+                                     params.enhancer_viz?.target_genes ? null : null
+            def browser_gtf       = file(params.species == 'human' ?
+                                    params.scprinter.gtf_human : params.scprinter.gtf_mouse)
+            def browser_ctrl      = enh_ctrl ?: 'none'
+            def browser_trt       = enh_trt  ?: 'none'
+            def no_da             = file('NO_FILE')
+
+            if (browser_genes && !browser_genes.isEmpty()) {
+                log.info "GENOME BROWSER: enabled for ${browser_genes.size()} genes, mode=${browser_mode}"
+
+                // FIX (attempt 3): combine() always splatts the top-level List from the
+                // right-hand channel into the combined tuple element-by-element.
+                // Removing the no-op .map didn't help — combine(ch_browser_bws) where
+                // ch_browser_bws emits [bw1,...,bwN] still produces a flat N+2-element tuple.
+                //
+                // Correct approach: use flatMap to embed bws INSIDE a [gene, bws] parent tuple
+                // BEFORE any combine. combine() only splatts the top-level emission; nested
+                // list elements inside a tuple slot are preserved.
+                //   flatMap → [gene, [bw1,...,bwN]]       (bws nested as element[1])
+                //   .combine(manifest) → [gene, [bw1,...,bwN], manifest]  ← bws intact ✓
+                def ch_browser_bws      = EXPORT_ATAC_BIGWIGS.out.bigwigs.collect()
+                def ch_browser_manifest = EXPORT_ATAC_BIGWIGS.out.manifest
+
+                def ch_browser_in = ch_browser_bws
+                    .flatMap { bws_raw ->
+                        // Normalize: glob output emits List<Path>; .collect() on a 1-item
+                        // channel may double-wrap to [[bw1,...,bwN]]. flatten() collapses
+                        // one nesting level safely whether single- or double-wrapped.
+                        def bws = bws_raw instanceof List ? bws_raw.flatten() : [bws_raw]
+                        browser_genes.collect { gene -> tuple(gene, bws) }
+                    }
+                    .combine(ch_browser_manifest)
+                    .map { gene, bws, manifest ->
+                        def ct_str = (browser_cell_types instanceof List)
+                            ? browser_cell_types.join(',')
+                            : (browser_cell_types ?: '')
+                        tuple(gene, manifest, bws, ct_str, browser_mode)
+                    }
+
+                RENDER_GENOME_BROWSER(
+                    ch_browser_in,
+                    browser_gtf,
+                    browser_ctrl,
+                    browser_trt,
+                    no_da
+                )
+            } else {
+                log.warn "GENOME BROWSER: enabled but no target genes configured (set enhancer_viz.target_genes)"
+            }
         }
+
+        // PREPARE_ENHANCER_VIZ_TRACKS gets fine-grained bigwigs from pycistopic
+        // (SCENIC+ path) or from EXPORT_ATAC_BIGWIGS (non-SCENIC+ path).
+        def bigwig_dir_ch = has_scenic ?
+            pseudobulk_bigwigs_ch.ifEmpty(file('NO_BIGWIGS')).collect() :
+            EXPORT_ATAC_BIGWIGS.out.bigwigs.collect()
 
         PREPARE_ENHANCER_VIZ_TRACKS(
             cicero_conns_ch,
@@ -2693,9 +2785,9 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             diff_csvs_ch
         )
 
-        // D1b: per-(ct, TF) scalar metric rollup; gated on build_network so
-        // BUILD_TF_GENE_NETWORK.out.adjacency is available.
-        if (params.enhancer_footprinting.build_network ?: false) {
+        // D1b: per-(ct, TF) scalar metric rollup; gated on msfp_enabled + build_network
+        // so BUILD_TF_GENE_NETWORK.out.adjacency is available.
+        if (msfp_enabled && (params.enhancer_footprinting.build_network ?: false)) {
             def promoter_fp_dir_ch = scprinter_footprints_ch
                 .collect()
                 .map { _files -> file("${params.outdir}/scprinter/footprints") }
@@ -2722,11 +2814,14 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         // D1b: collapse fp PNG inputs to a single dir symlink. .collect() acts
         // as the synchronization barrier; per-ct architecture publishes to a
         // different root, so pick by use_per_ct.
+        // 2026-05-26: .ifEmpty([]) ensures the channel fires immediately when
+        // msfp_enabled=false so COMPOSITE_ENHANCER_VIZ is not blocked.
         def fp_root = enh_use_per_ct ?
             file("${params.outdir}/enhancer_footprinting_per_ct") :
             file("${params.outdir}/enhancer_footprinting/footprints")
         def fp_dir_ch = enh_fp_global_plots
             .collect()
+            .ifEmpty([])
             .map { _files -> fp_root }
             .first()
 
@@ -2776,7 +2871,8 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     def overlay_palette = ['#d62728','#1f77b4','#2ca02c','#9467bd',
                            '#ff7f0e','#17becf','#8c564b','#e377c2']
 
-    if (overlay_enabled &&
+    if (msfp_enabled &&
+        overlay_enabled &&
         overlay_trt && overlay_ctrl &&
         overlay_target_genes && !overlay_target_genes.isEmpty() &&
         (params.enhancer_footprinting.build_network ?: false)) {
@@ -2836,6 +2932,94 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             }
 
         RENDER_PROMOTER_MSFP_OVERLAY(ch_render_in, overlay_ctrl, overlay_trt)
+
+        // 2026-05-26: new-style strip render (zoom + logo + ref seq).
+        // Gated on msfp_strip.enabled; reuses the same PROMOTER_MSFP_PER_CT h5ads.
+        if (params.msfp_strip?.enabled ?: false) {
+            def strip_mode = params.msfp_strip?.mode ?: 'all_three'
+            log.info "RENDER_MSFP_PROMOTER_STRIP: mode=${strip_mode}"
+
+            // Group all h5ads per (ct, TF set) and stage into scan_dir
+            def ch_strip_in = PROMOTER_MSFP_PER_CT.out.fp
+                .map { ct, h5ads ->
+                    tuple(ct, overlay_genes_csv,
+                          overlay_palette.take(overlay_top_n).join(','),
+                          h5ads instanceof List ? h5ads : [h5ads],
+                          strip_mode)
+                }
+                .map { ct, genes, tfs, h5ads, m ->
+                    tuple(ct, tfs, genes, h5ads, m)
+                }
+
+            RENDER_MSFP_PROMOTER_STRIP(ch_strip_in, overlay_ctrl, overlay_trt)
+        }
+    }
+
+    // 2026-05-26: RENDER_MSFP_ENHANCER_STRIP — per-(CT, TF, target_gene)
+    // multi-scale footprint strip for each Cicero-linked enhancer peak.
+    // Gate: msfp_enabled (footprints must exist) + msfp_strip.enabled.
+    // Decoupled from overlay_enabled/build_network; runs whenever footprints
+    // and target_genes are configured. Cicero connections optional (NO_FILE).
+    // target_genes: prefers msfp_strip.target_genes; falls back to
+    // scprinter.target_genes.
+    if (msfp_enabled && (params.msfp_strip?.enabled ?: false)) {
+        def enh_strip_genes = params.msfp_strip?.target_genes ?:
+                              params.scprinter?.target_genes ?: []
+        def _strip_mode_raw = params.msfp_strip?.mode ?: 'absolute'
+        // enhancer strip only supports absolute|differential; map all_three → differential
+        def enh_strip_mode  = (_strip_mode_raw == 'all_three') ? 'differential' : _strip_mode_raw
+        def enh_strip_gtf   = file(params.species == 'human' ?
+            params.scprinter.gtf_human : params.scprinter.gtf_mouse)
+
+        if (enh_strip_genes && !enh_strip_genes.isEmpty()) {
+            log.info "RENDER_MSFP_ENHANCER_STRIP: mode=${enh_strip_mode}, " +
+                     "genes=${enh_strip_genes}, n=${enh_strip_genes.size()}"
+
+            // Build expected filename → (ct, tf) lookup from motif scan manifest.
+            // Reproduces Python sanitize rules from run_enhancer_footprinting.py:
+            //   safe_ct = ct.replace("/", "_")   ← ONLY slashes (spaces preserved!)
+            //   safe_tf = tf.replace("/", "_")
+            // NOTE: run_enhancer_footprinting_per_ct.py uses a stricter _sanitize()
+            // for summary CSV names, but the h5ad files are named by the inner
+            // run_enhancer_footprinting.py which uses the lax replace-only rule.
+            def ch_fp_name_to_ct_tf = MOTIF_SCAN_ENHANCERS.out.manifest
+                .flatMap { manifest_file ->
+                    def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                    data.region_sets.collect { entry ->
+                        def safe_ct = (entry.cell_type as String).replace('/', '_')
+                        def safe_tf = (entry.tf as String).replace('/', '_')
+                        def exp_name = "enhancer_footprints_${safe_ct}_${safe_tf}.h5ad"
+                        tuple(exp_name, entry.cell_type as String, entry.tf as String)
+                    }
+                }
+
+            // FlatMap per-CT footprint emissions to individual (filename, file) pairs.
+            def ch_fp_by_name = enh_fp_footprints
+                .flatMap { files ->
+                    (files instanceof List ? files : [files]).collect { f ->
+                        tuple(f.name, f)
+                    }
+                }
+
+            // Recover original (ct, tf) labels via filename join; cross with target genes.
+            def ch_enh_strip_in = ch_fp_by_name
+                .join(ch_fp_name_to_ct_tf, by: 0)
+                .map { fname, h5ad, ct, tf -> tuple(ct, tf, h5ad) }
+                .combine(Channel.fromList(enh_strip_genes))
+                .map { ct, tf, h5ad, gene ->
+                    tuple(ct, tf, gene, h5ad, file('NO_FILE'), enh_strip_mode)
+                }
+
+            RENDER_MSFP_ENHANCER_STRIP(
+                ch_enh_strip_in,
+                enh_strip_gtf,
+                enh_ctrl,
+                enh_trt
+            )
+        } else {
+            log.warn "RENDER_MSFP_ENHANCER_STRIP: skipped — msfp_strip.target_genes " +
+                     "(and scprinter.target_genes) is empty"
+        }
     }
 
     // ================================================================
@@ -2853,9 +3037,12 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     def cis_top_n_tfs   = (params.cis_rewiring?.top_n_tfs ?: 10) as Integer
     def cis_top_n_genes = (params.cis_rewiring?.top_n_genes ?: 25) as Integer
     def cis_min_delta   = (params.cis_rewiring?.min_delta ?: 1) as Integer
-    if (cis_enabled &&
-        overlay_trt && overlay_ctrl &&
-        (params.enhancer_footprinting.build_network ?: false)) {
+    // 2026-05-26: cis_rewiring gate decoupled from build_network.
+    // When msfp_enabled=false or build_network=false, TFs are sourced from
+    // cis_rewiring.target_tfs (explicit list in config) instead of
+    // AGGREGATE_FP_STATS ranking. Empty target_tfs with build_network=false
+    // means the motif_in_gained / motif_stack blocks fire but lollipop skips.
+    if (cis_enabled && overlay_trt && overlay_ctrl) {
         log.info "CIS-REWIRING: enabled (top_n_tfs=${cis_top_n_tfs}, top_n_genes=${cis_top_n_genes}, min_delta=${cis_min_delta})"
 
         // Build union enhancer peakset (ctrl ∪ trt) — methodological fix
@@ -2871,23 +3058,37 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             chromvar_motifs_ch
         )
 
-        // Top-N TFs by total binding evidence aggregated across (CT, gene)
-        def ch_top_tfs = AGGREGATE_FP_STATS.out.triple_csv
-            .splitCsv(header: true)
-            .map { row ->
-                def ns = (row.n_sites_in_gene_window ?: '0') as Double
-                def bd = (row.bind_dip_depth_mean ?: '0') as Double
-                tuple(row.tf as String, ns, bd)
+        // Top-N TF selection: prefer AGGREGATE_FP_STATS ranking (requires
+        // msfp_enabled + build_network); fall back to cis_rewiring.target_tfs.
+        def ch_top_tfs
+        if (msfp_enabled && (params.enhancer_footprinting.build_network ?: false)) {
+            ch_top_tfs = AGGREGATE_FP_STATS.out.triple_csv
+                .splitCsv(header: true)
+                .map { row ->
+                    def ns = (row.n_sites_in_gene_window ?: '0') as Double
+                    def bd = (row.bind_dip_depth_mean ?: '0') as Double
+                    tuple(row.tf as String, ns, bd)
+                }
+                .groupTuple(by: 0)
+                .map { tf, ns_list, bd_list ->
+                    def total_ns = ns_list.collect { it as Double }.sum() ?: 0.0
+                    def mean_bd  = bd_list ?
+                        (bd_list.collect { it as Double }.sum() / bd_list.size()) : 0.0
+                    tuple(tf, total_ns, mean_bd)
+                }
+                .toSortedList { a, b -> (b[1] <=> a[1]) ?: (b[2] <=> a[2]) }
+                .flatMap { sorted -> sorted.take(cis_top_n_tfs) }
+                .map { tf, ns, bd -> tf }
+        } else {
+            def explicit_tfs = params.cis_rewiring?.target_tfs ?: []
+            if (explicit_tfs) {
+                log.info "CIS-REWIRING: using cis_rewiring.target_tfs (${explicit_tfs.size()} TFs) — build_network/msfp_enabled not active"
+                ch_top_tfs = Channel.fromList(explicit_tfs.take(cis_top_n_tfs))
+            } else {
+                log.warn "CIS-REWIRING: msfp_enabled=false and cis_rewiring.target_tfs is empty — motif_in_gained/motif_stack will fire but lollipop will not"
+                ch_top_tfs = Channel.empty()
             }
-            .groupTuple(by: 0)
-            .map { tf, ns_list, bd_list ->
-                def total_ns = ns_list.collect { it as Double }.sum() ?: 0.0
-                def mean_bd  = bd_list ? (bd_list.collect { it as Double }.sum() / bd_list.size()) : 0.0
-                tuple(tf, total_ns, mean_bd)
-            }
-            .toSortedList { a, b -> (b[1] <=> a[1]) ?: (b[2] <=> a[2]) }
-            .flatMap { sorted -> sorted.take(cis_top_n_tfs) }
-            .map { tf, ns, bd -> tf }
+        }
 
         // Per-TF motif BED extraction from the union scan's region_sets dir.
         // region_sets manifest names them as <safe_ct>_<TF>.bed; for cis-rewiring
@@ -2931,6 +3132,61 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         if (params.cis_rewiring?.motif_stack_enabled ?: true) {
             RENDER_CIS_REWIRING_MOTIF_STACK(ch_motif_in_gained, overlay_ctrl, overlay_trt)
         }
+
+        // 2026-05-26: RENDER_CICERO_LOLLIPOP — per-(CT, TF) lollipop chart
+        // of Δ CCAN arc counts comparing ctrl vs trt.
+        // Gated on cis_rewiring.lollipop_enabled (default true).
+        // Requires: ch_top_tfs (non-empty) + per-CT motif BEDs from
+        // MOTIF_SCAN_ENHANCERS_UNION + per-condition cicero gz files.
+        if ((params.cis_rewiring?.lollipop_enabled ?: true) &&
+            (cicero_strat_ctrl_links_ch || cicero_strat_trt_links_ch)) {
+            def lollipop_gtf = file(params.species == 'human' ?
+                params.scprinter.gtf_human : params.scprinter.gtf_mouse)
+
+            // Per-CT motif BED for each top-N TF (across all CTs in union scan)
+            def ch_lollipop_motif = MOTIF_SCAN_ENHANCERS_UNION.out.manifest
+                .flatMap { manifest_file ->
+                    def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                    data.region_sets.collect { rs ->
+                        tuple(rs.tf as String, rs.cell_type as String, rs.bed_file as String)
+                    }
+                }
+                .combine(MOTIF_SCAN_ENHANCERS_UNION.out.region_sets)
+                .map { tf, ct, bed_fname, region_sets_dir ->
+                    tuple(tf, ct, file("${region_sets_dir}/${bed_fname}"))
+                }
+                // For lollipop we want one BED per (CT, TF); use the first CT
+                // with a motif BED that passes. The lollipop script receives
+                // the per-CT CCAN base so CT is the join key.
+                .groupTuple(by: [0, 1])
+                .map { tf, ct, beds -> tuple(tf, ct, beds[0]) }
+
+            // Restrict to top-N TFs
+            def ch_lollipop_in = ch_top_tfs
+                .map { tf -> tuple(tf, true) }
+                .join(
+                    ch_lollipop_motif.map { tf, ct, bed -> tuple(tf, ct, bed) }
+                        .groupTuple(by: 0)
+                        .map { tf, cts, beds -> tuple(tf, [cts, beds].transpose()) },
+                    by: 0
+                )
+                .flatMap { tf, _flag, ct_bed_pairs ->
+                    ct_bed_pairs.collect { ct, bed -> tuple(ct, tf, bed) }
+                }
+                // Add per-condition cicero connections
+                .combine(cicero_strat_ctrl_links_ch)
+                .combine(cicero_strat_trt_links_ch)
+                .map { ct, tf, bed, ctrl_gz, trt_gz ->
+                    tuple(ct, tf, bed, ctrl_gz, trt_gz)
+                }
+
+            RENDER_CICERO_LOLLIPOP(
+                ch_lollipop_in,
+                lollipop_gtf,
+                overlay_ctrl,
+                overlay_trt
+            )
+        }
     }
 
     emit:
@@ -2938,8 +3194,8 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     motif_scan         = MOTIF_SCAN_ENHANCERS.out.motif_scan
     region_sets        = MOTIF_SCAN_ENHANCERS.out.region_sets
     enhancer_fps       = enh_fp_footprints
-    cross_modal        = has_scenic ? CROSS_MODAL_VALIDATION.out.validation_table : Channel.empty()
-    evidence_tiers     = params.enhancer_recipe_c.run ? SIGNAL_CHAIN_CORRELATION.out.evidence_tiers : Channel.empty()
+    cross_modal        = (has_scenic && msfp_enabled) ? CROSS_MODAL_VALIDATION.out.validation_table : Channel.empty()
+    evidence_tiers     = (params.enhancer_recipe_c.run && msfp_enabled) ? SIGNAL_CHAIN_CORRELATION.out.evidence_tiers : Channel.empty()
     enhancer_viz       = (params.enhancer_viz.run ?: false) ? COMPOSITE_ENHANCER_VIZ.out.composite_png : Channel.empty()
     shi_bw_manifest    = shi_bw_manifest_ch
     shi_bw_dir         = shi_bw_dir_ch
