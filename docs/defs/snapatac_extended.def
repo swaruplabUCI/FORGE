@@ -1,0 +1,133 @@
+Bootstrap: docker
+From: python:3.10-slim
+
+%labels
+    Author       Luis Solano (Swarup Lab, UCI)
+    Project      FORGE single-cell multiomics pipeline
+    Container    snapatac_extended
+    Version      v3.4
+    Description  Python ATAC: SnapATAC2 + scPrinter + scATAnno + MACS3 + GPU chromVAR
+
+%help
+    GPU-accelerated single-cell ATAC container.
+
+    Major contents:
+      snapatac2 (latest), MACS3, cykhash, hmmlearn
+      scPrinter (from buenrostrolab/scPrinter HEAD)
+      scATAnno + harmonypy + leidenalg (reference-based cell type annotation)
+      cupy-cuda12x 13.x + rmm-cu12 24.x  (numpy-1.x-compatible series)
+      torch (CUDA 12.8 wheel)
+      pygenometracks, deeptools (numpy<2.0 re-pinned after install)
+      kaleido 0.2.1 (pinned; later versions break plotly write_image)
+
+    Build:
+      singularity build --fakeroot snapatac_extended.sif snapatac_extended.def
+
+    Run:
+      singularity exec --nv --contain --bind /tmp --bind /your/data \
+        snapatac_extended.sif python -c "import snapatac2; print(snapatac2.__version__)"
+
+%post
+    set -e
+
+    # ----------------------------------------------------------------------
+    # System build tools. python:3.10-slim has no compilers; MACS3 has no
+    # binary wheels on PyPI and must compile from source.
+    # ----------------------------------------------------------------------
+    apt-get update -qq
+    apt-get install -y -qq gcc g++ make git pkg-config procps \
+        libhdf5-dev zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
+    rm -rf /var/lib/apt/lists/*
+
+    # ----------------------------------------------------------------------
+    # MACS3 + cykhash + numerical prerequisites
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir \
+        Cython numpy scipy scikit-learn \
+        cykhash hmmlearn macs3
+
+    # ----------------------------------------------------------------------
+    # SnapATAC2 + ATAC analysis + plotting libs
+    # NOTE: kaleido is pinned to 0.2.1 — 1.x changes the API in a way that
+    # breaks plotly's write_image() against the plotly version pulled here.
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir \
+        snapatac2 pyranges sorted_nearest ncls \
+        "kaleido==0.2.1" plotly statsmodels polars psutil \
+        bioframe pysam pybedtools \
+        MOODS-python ema_pytorch \
+        hatchling hatch-vcs \
+        biopython pyfaidx anndata scanpy \
+        pygenometracks deeptools
+
+    # deeptools transitively pulls numpy 2.x; pin back to 1.x for snapatac2.
+    pip install --no-cache-dir "numpy<2.0"
+
+    # ----------------------------------------------------------------------
+    # PyTorch (CUDA 12.8) + scPrinter
+    # scPrinter is installed --no-deps because its setup.py over-specifies
+    # versions that fight our torch / numpy pins. Its runtime deps are
+    # installed manually in the step above.
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir h5py pandas
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
+    pip install --no-cache-dir \
+        dna_features_viewer pyBigWig gffutils \
+        wandb logomaker shap tangermeme adjustText \
+        pynndescent umap-learn
+    pip install --no-cache-dir --no-deps \
+        "git+https://github.com/buenrostrolab/scPrinter.git"
+
+    # ----------------------------------------------------------------------
+    # GPU chromVAR: cupy + rmm pinned to numpy-1.x-compatible series.
+    #   cupy 14.x wheels are compiled against numpy 2.x C ABI -> incompatible
+    #   with snapatac2's numpy<2 requirement. cupy 13.x is the last series
+    #   with numpy 1.x ABI wheels.
+    #   rmm 25.x also pulls numpy 2.x; pin to 24.x.
+    #   cuda-bindings 12.9.4 matches what torch 2.10 expects.
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir "numpy<2.0" "cuda-bindings==12.9.4"
+    pip install --no-cache-dir "cupy-cuda12x>=13.0,<14"
+    pip install --no-cache-dir "rmm-cu12>=24.0,<25" || { \
+        echo "rmm-cu12 24.x not directly resolvable, installing with --no-deps..."; \
+        pip install --no-cache-dir --no-deps rmm-cu12 librmm-cu12; \
+        pip install --no-cache-dir rapids-logger; }
+
+    # Verify numpy stayed at 1.x (canary against silent regressions)
+    python -c "import numpy; assert int(numpy.__version__.split('.')[0]) < 2, numpy.__version__; print('numpy', numpy.__version__, 'OK (1.x)')"
+
+    # ----------------------------------------------------------------------
+    # scATAnno: reference-based scATAC cell type annotation
+    # Uses snapatac2 spectral embedding + KNN + Harmony batch correction.
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir scATAnno harmonypy leidenalg python-igraph
+
+%test
+    set -e
+    python -c "import snapatac2;   print('snapatac2', snapatac2.__version__)"
+    python -c "import MACS3;       print('macs3 OK')"
+    python -c "import cykhash;     print('cykhash OK')"
+    python -c "import hmmlearn;    print('hmmlearn OK')"
+    python -c "import scprinter;   print('scPrinter OK')"
+    python -c "from scprinter import chromvar; print('scPrinter.chromvar OK')"
+    python -c "import cupy;        print('cupy', cupy.__version__)"
+    python -c "import rmm;         print('rmm OK')"
+    python -c "from rmm.allocators.cupy import rmm_cupy_allocator; print('rmm_cupy_allocator OK')"
+    python -c "import scATAnno;    print('scATAnno OK')"
+    python -c "import harmonypy;   print('harmonypy OK')"
+    python -c "import leidenalg;   print('leidenalg OK')"
+    python -c "import igraph;      print('igraph OK')"
+    python -c "import torch;       print('torch', torch.__version__)"
+    python -c "import pygenometracks; print('pygenometracks OK')"
+    python -c "import deeptools;   print('deeptools OK')"
+    python -c "import pynndescent; print('pynndescent OK')"
+    python -c "import kaleido;     print('kaleido', kaleido.__version__)"
+    python -c "import numpy; assert int(numpy.__version__.split('.')[0]) < 2, numpy.__version__; print('numpy', numpy.__version__, 'OK')"
+    # Verify plotly+kaleido image export works end-to-end (catches silent kaleido install failure)
+    python -c "
+import plotly.graph_objects as go
+go.Figure(data=go.Scatter(x=[1,2], y=[3,4])).write_image('/tmp/test_kaleido.png')
+print('plotly+kaleido write_image OK')
+"
+    ps --version | head -1
+    echo "snapatac_extended OK"

@@ -1,0 +1,138 @@
+Bootstrap: docker
+From: condaforge/mambaforge:latest
+
+%labels
+    Author       Luis Solano (Swarup Lab, UCI)
+    Project      FORGE single-cell multiomics pipeline
+    Container    cicero
+    Version      v3.4
+    Description  R + Cicero (via Monocle3) + Bioconductor genomics, with HPC library lockdown
+
+%help
+    R container for chromatin co-accessibility analysis (Cicero) and
+    Bioconductor genomic-range utilities.
+
+    Major contents:
+      R 4.4 from conda-forge
+      Cicero (cole-trapnell-lab/cicero-release @ monocle3 branch)
+      Monocle3 (cole-trapnell-lab/monocle3)
+      BPCells (bnprks/BPCells)
+      Bioconductor 3.20: rtracklayer, Gviz, GenomicRanges, S4Vectors,
+        IRanges, SingleCellExperiment, SummarizedExperiment, batchelor,
+        HDF5Array, DelayedArray, DelayedMatrixStats, limma, Biobase
+
+    Important: an Renviron.site file is baked in that blanks R_LIBS_USER,
+    R_LIBS, and R_LIBS_SITE. This prevents personal R libraries on the
+    HPC user's $HOME (often ABI-incompatible) from leaking into .libPaths()
+    when the container is run with bind mounts.
+
+    Build:
+      singularity build --fakeroot cicero.sif cicero.def
+
+    Run:
+      singularity exec --contain --bind /tmp --bind /your/data \
+        --env R_LIBS_USER=/dev/null \
+        cicero.sif Rscript -e 'library(cicero); cat("OK\n")'
+
+%post
+    # IMPORTANT: do NOT set -e in this %post. mamba is known to exit non-zero
+    # on its libxml2 self-upgrade mid-solve; the R install is still complete
+    # and functional afterwards. We tolerate that exit and verify R works
+    # explicitly at the end.
+
+    # ----------------------------------------------------------------------
+    # ONE big mamba solve: R 4.4 + CRAN packages + Bioconductor + system libs.
+    # The bioconductor-* packages here are the ones with native compiled
+    # dependencies; the rest go through CRAN below.
+    # ----------------------------------------------------------------------
+    mamba install -y -c bioconda -c conda-forge \
+        r-base=4.4 \
+        r-devtools r-remotes r-biocmanager \
+        r-optparse r-data.table r-matrix r-ggplot2 \
+        r-dplyr r-tidyr r-stringr r-pheatmap r-igraph \
+        r-rcpp r-gtools r-xml r-png r-rcurl \
+        r-ggrepel r-grr r-nloptr r-lme4 r-cairo \
+        r-units r-sf r-s2 r-spdep r-ggrastr \
+        bioconductor-rtracklayer \
+        bioconductor-gviz \
+        bioconductor-genomicranges \
+        bioconductor-genomeinfodb \
+        bioconductor-iranges \
+        bioconductor-s4vectors \
+        bioconductor-biocgenerics \
+        bioconductor-singlecellexperiment \
+        bioconductor-summarizedexperiment \
+        bioconductor-delayedarray \
+        bioconductor-delayedmatrixstats \
+        bioconductor-limma \
+        bioconductor-batchelor \
+        bioconductor-hdf5array \
+        bioconductor-biobase \
+        procps-ng \
+        compilers pkg-config make git cmake \
+        zlib libxml2 libpng hdf5 bzip2 xz curl openssl \
+        udunits2 cairo abseil-cpp \
+        || echo "mamba exited non-zero (expected on libxml2 self-upgrade) — verifying R below"
+
+    # Verify R is functional after the mamba solve (independent of mamba's exit code)
+    Rscript -e 'cat("R version:", R.version.string, "\n"); library(rtracklayer); library(Gviz); library(optparse); cat("Step 1 verified — R + Bioc core packages load OK\n")'
+
+    # ----------------------------------------------------------------------
+    # HPC library lockdown: bake an Renviron.site that blanks R_LIBS_USER /
+    # R_LIBS / R_LIBS_SITE so the user's personal R library on the HPC
+    # cannot leak into .libPaths() at runtime.
+    # ----------------------------------------------------------------------
+    R_ETC_DIR=$(Rscript -e 'cat(R.home("etc"))')
+    cat > "${R_ETC_DIR}/Renviron.site" <<'RENVIRON'
+## Lock library paths to container-only directories.
+## Prevents HPC automounted personal R libraries from leaking into .libPaths(),
+## e.g. ~/R/x86_64-conda-linux-gnu-library/4.4/ on UCI HPC3.
+R_LIBS_USER=""
+R_LIBS=""
+R_LIBS_SITE=""
+RENVIRON
+    echo "Renviron.site baked at ${R_ETC_DIR}/Renviron.site"
+    cat "${R_ETC_DIR}/Renviron.site"
+
+    # Verify the lockdown took effect (no /data or /home paths should appear)
+    Rscript -e '
+    paths <- .libPaths()
+    cat("  .libPaths():\n")
+    for (p in paths) cat("    ", p, "\n")
+    if (any(grepl("/data/", paths))) stop("ERROR: /data path found in .libPaths!")
+    if (any(grepl("/home/", paths))) stop("ERROR: /home path found in .libPaths!")
+    cat("Library path lockdown OK\n")
+    '
+
+    # ----------------------------------------------------------------------
+    # BiocManager 3.20, BPCells, Monocle3, Cicero (from GitHub)
+    # BPCells must go in before Monocle3: newer Monocle3 optionally uses
+    # BPCells for sparse matrix backing.
+    # ----------------------------------------------------------------------
+    export PATH=/opt/conda/bin:$PATH
+    Rscript -e 'BiocManager::install(version = "3.20", ask = FALSE, update = FALSE)'
+    Rscript -e 'remotes::install_github("bnprks/BPCells/r", upgrade = "never")'
+    Rscript -e 'devtools::install_github("cole-trapnell-lab/monocle3", upgrade = "never"); library(monocle3); cat("monocle3 OK\n")'
+    Rscript -e 'devtools::install_github("cole-trapnell-lab/cicero-release", ref = "monocle3", upgrade = "never"); library(cicero); cat("cicero OK\n")'
+
+%environment
+    export PATH=/opt/conda/bin:$PATH
+
+%test
+    set -e
+    export PATH=/opt/conda/bin:$PATH
+
+    # Library loads
+    Rscript -e 'library(cicero); library(monocle3); library(optparse); library(data.table); library(rtracklayer); library(Gviz); cat("All packages OK\n")'
+
+    # HPC isolation test: simulate a leaky $HOME with a decoy personal R library.
+    FAKE_HOME=/tmp/fake_hpc_home
+    mkdir -p "${FAKE_HOME}/R/x86_64-conda-linux-gnu-library/4.4/fake_pkg"
+    touch "${FAKE_HOME}/R/x86_64-conda-linux-gnu-library/4.4/fake_pkg/DESCRIPTION"
+    HOME="$FAKE_HOME" Rscript -e '
+    bad <- grep("fake_hpc_home", .libPaths(), value = TRUE)
+    if (length(bad)) stop("FAIL: personal library leaked: ", paste(bad, collapse = ", "))
+    library(cicero); library(monocle3)
+    cat("HPC isolation OK — no personal library leakage\n")
+    '
+    rm -rf "$FAKE_HOME"

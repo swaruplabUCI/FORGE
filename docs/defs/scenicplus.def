@@ -1,0 +1,167 @@
+Bootstrap: docker
+From: python:3.11.8-slim
+
+%labels
+    Author       Luis Solano (Swarup Lab, UCI)
+    Project      FORGE single-cell multiomics pipeline
+    Container    scenicplus
+    Version      v3.4
+    Description  SCENIC+ + pycisTopic + pySCENIC + Mallet 202108 + graph-tool
+
+%help
+    SCENIC+ container for enhancer-driven gene regulatory network inference.
+
+    Major contents:
+      scenicplus 1.0a2 @ 840dab8 (and transitive: pycisTopic, pycistarget, pyscenic, LoomXpy)
+      Mallet 202108 (baked into /opt/Mallet-202108, symlinked to /usr/local/bin/mallet)
+      OpenJDK 17 (default-jre-headless, needed for Mallet)
+      bedtools (system) + pybedtools
+      Snakemake
+      graph-tool via miniforge (in a dedicated /opt/miniforge3/envs/gt environment;
+        callable as /opt/miniforge3/envs/gt/bin/python — DO NOT shadow the system python)
+
+    Two post-install patches are applied to vendored Python files:
+      1. pycisTopic gene_annotation.py — BioMart .astype(str) fix (aertslab/pycisTopic#215)
+      2. gensim matutils.py — scipy.linalg.triu removed in scipy 1.12; replace with numpy.triu
+
+    Build:
+      singularity build --fakeroot scenicplus.sif scenicplus.def
+
+    Run:
+      singularity exec --contain --bind /tmp --bind /your/data \
+        scenicplus.sif python -c "import scenicplus; print('OK')"
+
+    Run graph-tool steps:
+      singularity exec scenicplus.sif /opt/miniforge3/envs/gt/bin/python <script>
+
+%post
+    set -e
+
+    # ----------------------------------------------------------------------
+    # System build tools, bedtools, Java JRE (for Mallet)
+    # ----------------------------------------------------------------------
+    apt-get update -qq
+    apt-get install -y -qq gcc g++ make git pkg-config procps \
+        libhdf5-dev zlib1g-dev libbz2-dev liblzma-dev \
+        libcurl4-openssl-dev libssl-dev libxml2-dev \
+        libffi-dev curl wget bedtools \
+        default-jre-headless
+    rm -rf /var/lib/apt/lists/*
+
+    # ----------------------------------------------------------------------
+    # Bake Mallet 202108 into /opt so pycisTopic does not download it at
+    # runtime on offline compute nodes.
+    # ----------------------------------------------------------------------
+    wget -q -O /tmp/Mallet-202108-bin.tar.gz \
+        https://github.com/mimno/Mallet/releases/download/v202108/Mallet-202108-bin.tar.gz
+    tar -xf /tmp/Mallet-202108-bin.tar.gz -C /opt/
+    rm /tmp/Mallet-202108-bin.tar.gz
+    ln -s /opt/Mallet-202108/bin/mallet /usr/local/bin/mallet
+    mallet --help 2>&1 | head -3
+
+    # ----------------------------------------------------------------------
+    # Pre-install tricky build deps (pybedtools requires setuptools < 70)
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir pip==24.0 "setuptools<70" wheel Cython numpy
+    pip install --no-cache-dir pybedtools
+
+    # ----------------------------------------------------------------------
+    # SCENIC+ (pulls in pycisTopic, pycistarget, pySCENIC, LoomXpy as deps)
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir \
+        "git+https://github.com/aertslab/scenicplus.git"
+
+    # ----------------------------------------------------------------------
+    # Patch 1: pycisTopic gene_annotation.py BioMart .astype(str) fix.
+    # BioMart returns chromosomes 1-22 as int but X/Y/MT as str. The mixed
+    # dtype breaks polars.from_pandas() in the gene annotation pipeline.
+    # See: https://github.com/aertslab/pycisTopic/issues/215
+    # ----------------------------------------------------------------------
+    GENE_ANNOT=$(python -c 'import importlib.util; print(importlib.util.find_spec("pycisTopic").submodule_search_locations[0] + "/gene_annotation.py")')
+    echo "Patching pycisTopic: $GENE_ANNOT"
+    sed -i '/ensembl_tss_annotation_bed_df_pl.*=.*pl\.from_pandas/i\    ensembl_tss_annotation = ensembl_tss_annotation.astype({"Chromosome/scaffold name": str, "Gene name": str})' "$GENE_ANNOT"
+    grep -n 'astype.*Chromosome' "$GENE_ANNOT" >/dev/null || { echo "FATAL: pycisTopic patch not applied"; exit 1; }
+    echo "pycisTopic patch OK"
+
+    # ----------------------------------------------------------------------
+    # Patch 2: gensim 4.3.2 imports scipy.linalg.triu, removed in scipy 1.12.
+    # numpy.triu is functionally identical.
+    # ----------------------------------------------------------------------
+    GENSIM_DIR=$(python -c 'import importlib.util; print(importlib.util.find_spec("gensim").submodule_search_locations[0])')
+    MATUTILS="$GENSIM_DIR/matutils.py"
+    echo "Patching gensim: $MATUTILS"
+    sed -i 's/from scipy.linalg import get_blas_funcs, triu/from scipy.linalg import get_blas_funcs\nfrom numpy import triu/' "$MATUTILS"
+    grep -n 'from numpy import triu' "$MATUTILS" >/dev/null || { echo "FATAL: gensim patch not applied"; exit 1; }
+    echo "gensim patch OK"
+
+    # ----------------------------------------------------------------------
+    # Snakemake + PuLP (linear program solver for Snakemake's scheduler)
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir snakemake pulp
+
+    # ----------------------------------------------------------------------
+    # graph-tool via miniforge (no pip support — Boost/CGAL C++ library).
+    #
+    # CRITICAL: do NOT add /opt/miniforge3/bin to PATH. Miniforge ships
+    # Python 3.13 in its base, which would shadow the system python 3.11.8
+    # that scenicplus and friends were installed against.
+    #
+    # Instead, create a dedicated 'gt' env with its own python 3.11 +
+    # data-interop packages, and have downstream scripts call its python
+    # directly: /opt/miniforge3/envs/gt/bin/python <script>.
+    # ----------------------------------------------------------------------
+    wget -q -O /tmp/miniforge.sh \
+        "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
+    bash /tmp/miniforge.sh -b -p /opt/miniforge3
+    rm /tmp/miniforge.sh
+    /opt/miniforge3/bin/conda create -y -n gt -c conda-forge \
+        graph-tool python=3.11 pandas mudata anndata h5py
+    echo "/opt/miniforge3/envs/gt/lib" > /etc/ld.so.conf.d/graph-tool.conf
+    ldconfig
+
+    # Verify the gt env can import graph-tool and the data libs
+    /opt/miniforge3/envs/gt/bin/python -c "
+import graph_tool
+print('graph_tool', graph_tool.__version__.split()[0], 'OK')
+import pandas, mudata, anndata, h5py
+print('gt env data deps OK')
+"
+
+%environment
+    export GT_PY=/opt/miniforge3/envs/gt/bin/python
+    export MALLET_HOME=/opt/Mallet-202108
+
+%test
+    set -e
+    PY=/usr/local/bin/python
+
+    $PY -c "import scenicplus; print('scenicplus OK')"
+    $PY -c "import pycisTopic; print('pycisTopic OK')"
+    $PY -c "import pyscenic;   print('pyscenic OK')"
+    $PY -c "import snakemake;  print('snakemake OK')"
+    $PY -c "from pycisTopic.cistopic_class import CistopicObject; print('CistopicObject OK')"
+    $PY -c "from pycisTopic.lda_models import run_cgs_models_mallet; print('mallet binding OK')"
+    $PY -c "from scenicplus.grn_builder.modules import eRegulon; print('eRegulon OK')"
+
+    # Java + Mallet
+    java -version 2>&1 | head -1
+    mallet --help 2>&1 | head -1
+
+    # Patches survived?
+    $PY -c "
+import inspect, sys
+from pycisTopic.gene_annotation import *
+src = inspect.getsource(sys.modules['pycisTopic.gene_annotation'])
+assert 'astype' in src and 'Chromosome' in src, 'pycisTopic patch not in source'
+print('pycisTopic BioMart patch VERIFIED')
+"
+    $PY -c "from gensim import matutils; print('gensim matutils OK')"
+
+    # Core dependency versions (sanity)
+    $PY -c "import numpy, scipy, pandas, polars; print('numpy', numpy.__version__, '| scipy', scipy.__version__, '| pandas', pandas.__version__, '| polars', polars.__version__)"
+
+    # graph-tool in the dedicated env
+    /opt/miniforge3/envs/gt/bin/python -c "import graph_tool; print('graph_tool', graph_tool.__version__.split()[0], 'OK')"
+    /opt/miniforge3/envs/gt/bin/python -c "import pandas; import anndata; import mudata; import h5py; print('gt env data deps OK')"
+
+    echo "scenicplus OK"

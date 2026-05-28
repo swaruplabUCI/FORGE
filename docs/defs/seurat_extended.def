@@ -1,0 +1,121 @@
+Bootstrap: docker
+From: rocker/r-ver:4.4.3
+
+%labels
+    Author       Luis Solano (Swarup Lab, UCI)
+    Project      FORGE single-cell multiomics pipeline
+    Container    seurat_extended
+    Version      v3.4
+    Description  R: Seurat 5 + hdWGCNA + CellChat + MAST + WGCNA + Bioconductor genomics
+
+%help
+    R container for downstream Seurat-based analyses and gene module discovery.
+
+    Major contents:
+      R 4.4.3 (from rocker/r-ver:4.4.3, Debian bookworm)
+      Seurat 5.4.0, SeuratObject
+      hdWGCNA, CellChat, schard (from GitHub)
+      WGCNA, MAST (DE testing), enrichR
+      ggrepel 0.9.6 (pinned; 0.9.7+ requires R >= 4.5)
+      magick (rebuilt from source against HDRI ImageMagick)
+      Bioconductor 3.20: ComplexHeatmap, GSVA, UCell, GeneOverlap,
+        rtracklayer, biomaRt, EnhancedVolcano, zellkonverter, rhdf5, etc.
+
+    Build:
+      singularity build --fakeroot seurat_extended.sif seurat_extended.def
+
+    Run:
+      singularity exec --contain --bind /tmp --bind /your/data \
+        --env R_LIBS_USER=/dev/null \
+        seurat_extended.sif Rscript -e 'library(Seurat); cat("OK\n")'
+
+%post
+    set -e
+
+    # ----------------------------------------------------------------------
+    # System dependencies. The libmagick++-6.q16hdri-dev + libgdal/geos/proj/
+    # udunits stack is required for the magick rebuild + sf/spatial packages
+    # that Seurat 5's spatial extensions pull in.
+    # ----------------------------------------------------------------------
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        libcurl4-openssl-dev libssl-dev libxml2-dev libhdf5-dev \
+        libgit2-dev libfontconfig1-dev libfreetype6-dev libpng-dev \
+        libtiff5-dev libfribidi-dev libharfbuzz-dev pkg-config \
+        libbz2-dev liblzma-dev zlib1g-dev \
+        libgsl-dev cmake gfortran \
+        libjpeg-dev libwebp-dev \
+        libmagick++-6.q16hdri-dev \
+        libgdal-dev libgeos-dev libproj-dev libudunits2-dev \
+        git curl wget procps
+    rm -rf /var/lib/apt/lists/*
+
+    # ----------------------------------------------------------------------
+    # BiocManager + Bioconductor prereqs for WGCNA (impute, preprocessCore)
+    # ----------------------------------------------------------------------
+    Rscript -e 'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", repos = "https://cran.r-project.org"); BiocManager::install(c("impute","preprocessCore"), ask = FALSE, update = FALSE, Ncpus = 4)'
+
+    # ----------------------------------------------------------------------
+    # Pin ggrepel 0.9.6.
+    # CRAN current (>= 0.9.7) requires R >= 4.5, but we are on R 4.4.3.
+    # ----------------------------------------------------------------------
+    Rscript -e 'install.packages("remotes", repos = "https://cran.r-project.org", Ncpus = 4); remotes::install_version("ggrepel", version = "0.9.6", repos = "https://cran.r-project.org", upgrade = "never")'
+
+    # ----------------------------------------------------------------------
+    # Seurat 5 + CRAN packages
+    # ----------------------------------------------------------------------
+    Rscript -e 'install.packages("Seurat", repos = "https://cran.r-project.org", Ncpus = 4); install.packages(c("optparse","enrichR","cowplot","patchwork","ggpubr","pheatmap","tidygraph","ggraph","gtools","WGCNA","devtools","reticulate"), repos = "https://cran.r-project.org", Ncpus = 4)'
+
+    # ----------------------------------------------------------------------
+    # Rebuild magick from source against HDRI ImageMagick.
+    # Ubuntu/Debian ship only the HDRI variant of ImageMagick 6 and name its
+    # pkg-config file Magick++-6.Q16HDRI.pc. The magick R package's configure
+    # script greps for plain "Magick++". Create a compat symlink so
+    # pkg-config can find it under the expected name, then build from source
+    # (the CRAN binary links against the non-HDRI variant that does not exist
+    # on this system).
+    # ----------------------------------------------------------------------
+    HDRI_PC=$(find /usr/lib -name "Magick++-6.Q16HDRI.pc" 2>/dev/null | head -1)
+    if [ -z "$HDRI_PC" ]; then
+        echo "FATAL: Magick++-6.Q16HDRI.pc not found under /usr/lib"
+        exit 1
+    fi
+    PC_DIR=$(dirname "$HDRI_PC")
+    ln -sf "$HDRI_PC" "$PC_DIR/Magick++.pc"
+    echo "Symlinked: $PC_DIR/Magick++.pc -> $HDRI_PC"
+    export PKG_CONFIG_PATH="$PC_DIR:${PKG_CONFIG_PATH:-}"
+    pkg-config --cflags --libs Magick++ || { echo "FATAL: pkg-config Magick++ still unresolved"; exit 1; }
+    Rscript -e 'install.packages("magick", type = "source", repos = "https://cran.r-project.org", Ncpus = 4); library(magick); cat("magick", as.character(packageVersion("magick")), "OK (from source)\n")'
+
+    # ----------------------------------------------------------------------
+    # Bioconductor packages
+    # ----------------------------------------------------------------------
+    Rscript -e 'BiocManager::install(c("MAST","SingleCellExperiment","zellkonverter","Rhtslib","Rsamtools","GenomicAlignments","rtracklayer","biomaRt","EnhancedVolcano","rhdf5","ComplexHeatmap","NMF","circlize","BiocNeighbors","GSVA","UCell","GeneOverlap"), ask = FALSE, update = FALSE, Ncpus = 4)'
+
+    # ----------------------------------------------------------------------
+    # GitHub packages: hdWGCNA, CellChat, schard
+    # NOTE: hdWGCNA must use install_github, not install_local from a tarball.
+    # install_local silently exits 0 without registering the package, even
+    # though it appears to complete (this was the v3.0 -> v3.1 fix).
+    # ----------------------------------------------------------------------
+    Rscript -e 'devtools::install_github("smorabit/hdWGCNA", upgrade = "never", dependencies = TRUE); devtools::install_github("jinworks/CellChat", upgrade = "never", dependencies = TRUE); devtools::install_github("cellgeni/schard", upgrade = "never", dependencies = TRUE)'
+
+%test
+    Rscript -e '
+    pkgs <- c("Seurat","SeuratObject","optparse","enrichR","cowplot","patchwork",
+              "ggrepel","ggpubr","pheatmap","tidygraph","ggraph","gtools",
+              "WGCNA","devtools","reticulate","magick",
+              "MAST","SingleCellExperiment","zellkonverter","Rhtslib","Rsamtools",
+              "GenomicAlignments","rtracklayer","biomaRt","EnhancedVolcano",
+              "rhdf5","ComplexHeatmap","GSVA","UCell","GeneOverlap",
+              "hdWGCNA","CellChat","schard")
+    fail <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
+    if (length(fail)) stop("MISSING: ", paste(fail, collapse = ", "))
+    cat("All", length(pkgs), "packages OK\n")
+    # Spot-check pinned versions
+    if (as.character(packageVersion("ggrepel")) != "0.9.6") {
+        stop("ggrepel is not pinned at 0.9.6: ", packageVersion("ggrepel"))
+    }
+    cat("ggrepel pin 0.9.6 OK\n")
+    cat("Seurat", as.character(packageVersion("Seurat")), "\n")
+    '

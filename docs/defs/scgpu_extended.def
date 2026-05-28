@@ -1,0 +1,90 @@
+Bootstrap: docker
+From: ghcr.io/scverse/scvi-tools:py3.11-cu12-base
+
+%labels
+    Author       Luis Solano (Swarup Lab, UCI)
+    Project      FORGE single-cell multiomics pipeline
+    Container    scgpu_extended
+    Version      v3.4
+    Description  GPU Python: scvi-tools + CellBender + CellTypist + scrublet + MOFA+ + muon
+
+%help
+    GPU-accelerated single-cell RNA container.
+
+    Major contents:
+      scvi-tools 1.4.x       (scVI / scANVI / etc.)
+      CellBender 0.3.2 @4334e89 (ambient RNA removal; patched for PyTorch 2.x)
+      CellTypist 1.7.x       (automated cell type annotation, models baked in)
+      scrublet 0.2.3         (doublet detection)
+      muon / mudata / mofapy2 (MOFA+ Python side, multi-omic factor analysis)
+      scanpy 1.11.x, anndata 0.12.x
+      torch 2.4.0 with CUDA 12.1
+
+    Build:
+      singularity build --fakeroot scgpu_extended.sif scgpu_extended.def
+
+    Run (GPU node):
+      singularity exec --nv --contain --bind /tmp --bind /your/data \
+        scgpu_extended.sif python -c "import scvi; print(scvi.__version__)"
+
+%post
+    set -e
+
+    # ----------------------------------------------------------------------
+    # Base sanity: procps avoids the libprocps.so.8 bind-mount fragility
+    # that earlier containers relied on. With ps baked in, singularity no
+    # longer needs --bind /usr/bin/ps in runOptions.
+    # ----------------------------------------------------------------------
+    apt-get update -qq
+    apt-get install -y -qq procps
+    rm -rf /var/lib/apt/lists/*
+
+    # ----------------------------------------------------------------------
+    # Core pipeline packages + automated annotation + doublet detection
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir \
+        scvi-tools \
+        muon mudata mofapy2 mofax \
+        psutil polars tables \
+        celltypist scrublet
+
+    # ----------------------------------------------------------------------
+    # CellBender from a pinned commit.
+    # PyPI cellbender 0.3.2 crashes on torch.save() under PyTorch 2.x because
+    # the registered hook dict is backed by weakref. Commit 4334e89 fixes the
+    # checkpoint serialization path.
+    # See: https://github.com/broadinstitute/CellBender/issues/386
+    # ----------------------------------------------------------------------
+    pip install --no-cache-dir -U \
+        "git+https://github.com/broadinstitute/CellBender.git@4334e8966217c3591bf7c545f31ab979cdc6590d"
+
+    # ----------------------------------------------------------------------
+    # Pre-download CellTypist reference models (~500 MB).
+    # Bakes them into /root/.celltypist/data inside the image so the
+    # container works on offline compute nodes.
+    # ----------------------------------------------------------------------
+    python -c "
+from celltypist import models
+models.download_models(force_update=False)
+print('CellTypist models at:', models.models_path)
+for m in models.get_all_models():
+    print('  ', m)
+"
+
+%environment
+    # Re-point CellTypist at the baked-in model dir even when HOME=/tmp at
+    # runtime (the pipeline sets HOME=/tmp via --env to suppress HPC home leakage).
+    export CELLTYPIST_FOLDER=/root/.celltypist
+
+%test
+    set -e
+    python -c "import scvi;        print('scvi-tools', scvi.__version__)"
+    python -c "import cellbender;  print('cellbender', cellbender.__version__)"
+    python -c "import muon;        print('muon OK')"
+    python -c "import mofax;       print('mofax OK')"
+    python -c "import celltypist;  print('celltypist', celltypist.__version__)"
+    python -c "import scrublet;    print('scrublet OK')"
+    python -c "import torch;       print('torch', torch.__version__)"
+    python -c "import psutil;      print('psutil OK')"
+    ps --version | head -1
+    echo "scgpu_extended OK"
