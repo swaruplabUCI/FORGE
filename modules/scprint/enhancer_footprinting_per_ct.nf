@@ -118,6 +118,8 @@ process ENHANCER_FOOTPRINTING_PER_CT {
         --gtf '${params.species == "mouse" ? params.scprinter.gtf_mouse : params.scprinter.gtf_human}' \\
         --control-condition '${control_condition}' \\
         --treatment-condition '${treatment_condition}' \\
+        --strip-target-genes '${(params.msfp_strip?.enabled && params.msfp_strip?.target_genes) ? params.msfp_strip.target_genes.join(",") : ""}' \\
+        --strip-context-bp ${params.msfp_strip?.context_bp ?: 500000} \\
         --outdir .
     """
 }

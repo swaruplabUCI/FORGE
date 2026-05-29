@@ -592,7 +592,8 @@ def main():
     )
 
     if not region_data:
-        sys.exit('[msfp_enh] ERROR: no enhancer regions passed filters')
+        print('[msfp_enh] WARN: no enhancer regions passed filters — skipping', flush=True)
+        sys.exit(77)
 
     shared_vmax = max(float(np.percentile(np.abs(d['msfp_zoom']), 99))
                       for d in region_data)

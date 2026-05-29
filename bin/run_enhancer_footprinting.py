@@ -539,6 +539,13 @@ def parse_args():
     # FIX-43: Configurable cell type column (was hardcoded 'cell_type')
     p.add_argument("--cell-type-col", default="celltypist_prediction",
                    help="obs column name for cell type annotations")
+    # MSFP enhancer strip: preserve full footprint tensor for regions near these genes
+    p.add_argument("--strip-target-genes", default="",
+                   help="Comma-separated gene names for MSFP enhancer strip rendering. "
+                        "Regions within --strip-context-bp of each gene's TSS will have "
+                        "their full footprint tensor saved to obsm.")
+    p.add_argument("--strip-context-bp", type=int, default=500000,
+                   help="Context window (bp) around each strip target gene TSS (default 500000).")
     return p.parse_args()
 
 
@@ -1107,6 +1114,22 @@ def setup_pipeline(args, *, peak_matrix_path=None):
         )
     print(f"  Matched {len(df)} barcodes across {df['cell_type'].nunique()} cell types")
 
+    # Restrict to the target cell type before building the scPrinter grouping.
+    # get_footprint_score / get_binding_score compute for every group simultaneously;
+    # passing all 262 fine cell types costs 262× the compute even though only the
+    # target CT's row is used downstream. Barcodes not in the grouping are excluded
+    # from group-level accumulation by scPrinter.
+    target_ct = getattr(args, 'cell_type', None)
+    if target_ct:
+        ct_df = df[df['cell_type'] == target_ct].copy()
+        if ct_df.empty:
+            print(f"  [WARN] '{target_ct}' not found in printer-matched barcodes; "
+                  f"falling back to all {df['cell_type'].nunique()} groups")
+        else:
+            print(f"  Grouping restricted to '{target_ct}': "
+                  f"{len(ct_df)} barcodes → 1 group (was {df['cell_type'].nunique()})")
+            df = ct_df
+
     barcodeGroups = df[['barcode', 'cell_type']].copy()
     grouping, uniq_groups = scp.utils.df2cell_grouping(printer, barcodeGroups)
     order = np.argsort(uniq_groups)
@@ -1340,26 +1363,66 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
         n_regions = len(var_names_list)
         summary_X = np.zeros((n_groups, n_regions), dtype=np.float32)
         obsm_keys = set(fp_data.obsm.keys()) if hasattr(fp_data, 'obsm') else set()
+
+        # Resolve TSS for MSFP strip target genes (empty list = feature disabled)
+        _strip_genes_raw = getattr(args, 'strip_target_genes', '') or ''
+        _strip_ctx = getattr(args, 'strip_context_bp', 500000)
+        _strip_tss = []  # list of (chrom, tss_pos)
+        if _strip_genes_raw and getattr(args, 'gtf', ''):
+            for _g in _strip_genes_raw.split(','):
+                _g = _g.strip()
+                if _g:
+                    _info = parse_tss_from_gtf(args.gtf, _g)
+                    if _info:
+                        _strip_tss.append((_info[0], _info[1]))
+            print(f"  Strip TSS: {_strip_genes_raw} → {len(_strip_tss)} resolved, "
+                  f"context={_strip_ctx}bp")
+
+        strip_obsm = {}
         missing = 0
         for j, region_key in enumerate(var_names_list):
             if region_key in obsm_keys:
                 tensor = np.asarray(fp_data.obsm[region_key])
                 summary_X[:, j] = np.nanmean(tensor, axis=(1, 2)).astype(np.float32)
+                if _strip_tss:
+                    try:
+                        _parts = region_key.replace(':', '-').split('-')
+                        _rc, _rs, _re = _parts[0], int(_parts[1]), int(_parts[2])
+                        _rmid = (_rs + _re) // 2
+                        for _gc, _gp in _strip_tss:
+                            if _rc == _gc and abs(_rmid - _gp) <= _strip_ctx:
+                                strip_obsm[region_key] = tensor
+                                break
+                    except Exception:
+                        pass
             else:
                 missing += 1
         if missing:
             print(f"  WARNING: {missing}/{n_regions} regions missing in obsm (left as 0)")
+        if strip_obsm:
+            print(f"  Strip: preserved full tensor for {len(strip_obsm)}/{n_regions} "
+                  f"regions near target genes")
+
+        _scales = np.asarray(fp_data.uns.get('scales', np.arange(2, 101)))
         summary_ad = ad.AnnData(
             X=summary_X,
             obs=pd.DataFrame(index=list(fp_data.obs_names)),
             var=pd.DataFrame(index=var_names_list),
-            uns={'summary_version': 'region_group_mean_v1', 'cell_type': ct, 'tf': tf},
+            uns={
+                'summary_version': 'region_group_mean_v1',
+                'cell_type': ct,
+                'tf': tf,
+                'scales': _scales,
+            },
         )
+        for _rk, _t in strip_obsm.items():
+            summary_ad.obsm[_rk] = _t
         fp_h5ad = f"enhancer_footprints_{safe_ct}_{safe_tf}.h5ad"
         summary_ad.write(fp_h5ad, compression='gzip')
         fp_saved = True
         print(f"  Saved region-group mean footprint summary to {fp_h5ad} "
-              f"(shape={summary_X.shape}, {summary_ad.X.nbytes/1024:.1f} KB)")
+              f"(shape={summary_X.shape}, strip_regions={len(strip_obsm)}, "
+              f"{summary_ad.X.nbytes/1024:.1f} KB)")
 
     # FIX-96: Compute promoter footprints/binding scores SEPARATELY
     # (different region width than enhancers — scPRINTER requires uniform shapes)

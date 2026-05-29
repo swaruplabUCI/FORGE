@@ -69,6 +69,10 @@ def parse_args():
     p.add_argument('--control-condition', default='')
     p.add_argument('--treatment-condition', default='')
     p.add_argument('--outdir', default='.')
+    p.add_argument('--strip-target-genes', default='',
+                   help='Comma-separated gene names; regions near their TSS get full tensor in obsm.')
+    p.add_argument('--strip-context-bp', type=int, default=500000,
+                   help='Context window (bp) around each strip target gene TSS.')
     p.add_argument('--binding-threshold', default='otsu',
                    help='Passed through to run_one_pair (otsu|percentile_75|float)')
     p.add_argument('--smoke-test', action='store_true',
@@ -162,6 +166,8 @@ def main():
                 treatment_condition=args.treatment_condition,
                 binding_threshold=args.binding_threshold,
                 cpus=args.cpus,
+                strip_target_genes=getattr(args, 'strip_target_genes', ''),
+                strip_context_bp=getattr(args, 'strip_context_bp', 500000),
             )
 
             try:

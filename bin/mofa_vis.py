@@ -406,7 +406,13 @@ Model dimensions:
         fig, ax = plt.subplots(figsize=(10, 8))
         cell_types = mdata.obs[atac_ct_key].astype(str)
         unique_types = cell_types.unique()
-        colors = plt.cm.tab20(np.linspace(0, 1, len(unique_types)))
+        _n_atac_m = len(unique_types)
+        if _n_atac_m <= 20:
+            colors = plt.cm.tab20(np.linspace(0, 1, _n_atac_m))
+        elif _n_atac_m <= 102:
+            colors = plt.cm.turbo(np.linspace(0.05, 0.95, _n_atac_m))
+        else:
+            colors = plt.cm.gist_ncar(np.linspace(0, 1, _n_atac_m))
         color_map = dict(zip(unique_types, colors))
         for ct_label in unique_types:
             mask = cell_types == ct_label

@@ -21,7 +21,7 @@ process RENDER_MSFP_ENHANCER_STRIP {
 
     tag "${cell_type}__${tf}__${target_gene}__${mode}"
     label 'process_low'
-    errorStrategy 'terminate'
+    errorStrategy { task.exitStatus == 77 ? 'ignore' : 'terminate' }
     publishDir "${params.outdir}/msfp_strips/enhancer/${cell_type.replaceAll(/[\/\s\(\)]+/, '_')}",
                mode: 'copy'
 
@@ -48,7 +48,7 @@ process RENDER_MSFP_ENHANCER_STRIP {
     def gene_arg  = target_gene ? "--target-gene '${target_gene}'" : ''
     """
     python ${projectDir}/bin/render_msfp_enhancer_strip.py \\
-        --enhancer-h5ad '${enhancer_h5ad}' \\
+        --enhancer-h5ad ${enhancer_h5ad} \\
         --tfs           '${tf}' \\
         --pfm           '${params.scprinter.pfms}' \\
         --cache-dir     '${params.scprinter.cache_dir}' \\

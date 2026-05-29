@@ -130,11 +130,9 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
         n_passing = (cell_type_counts >= min_cells_plot).sum()
         viable_ratio = n_passing / n_total_types if n_total_types > 0 else 1.0
 
-        # Adaptive compression: only compress to broad categories when viable AND the map
-        # actually applies.  Guard: if >80% of cells collapse to 'Progenitors/Other' the
-        # map is inapplicable for this tissue (e.g. mouse brain labels not in PBMC map).
-        use_broad = viable_ratio < 0.5 and len(CELLTYPIST_BROAD_MAP) > 0
-        if use_broad:
+        # Same adaptive compression as extract_cell_types_for_hdwgcna
+        if viable_ratio < 0.5 and len(CELLTYPIST_BROAD_MAP) > 0:
+            print(f"  UMAP: {n_passing}/{n_total_types} types >= {min_cells_plot} cells ({viable_ratio:.0%}) — compressing to broad categories")
             plot_key = 'cell_type_broad'
             if plot_key not in adata.obs.columns:
                 adata.obs[plot_key] = (
@@ -142,23 +140,10 @@ def create_post_integration_plots(adata, output_dir, resolutions=[0.5, 5.0], cel
                     .map(CELLTYPIST_BROAD_MAP)
                     .fillna('Progenitors/Other')
                 )
-            broad_counts = adata.obs[plot_key].value_counts()
-            progenitor_frac = broad_counts.get('Progenitors/Other', 0) / len(adata.obs)
-            if progenitor_frac > 0.8:
-                print(f"  UMAP: broad map collapsed {progenitor_frac:.0%} → 'Progenitors/Other' "
-                      f"(map inapplicable for this tissue); falling back to fine-grained '{cell_type_key}'")
-                use_broad = False
-            else:
-                print(f"  UMAP: {n_passing}/{n_total_types} types >= {min_cells_plot} cells ({viable_ratio:.0%}) — compressing to broad categories")
-
-        if use_broad:
-            plot_key = 'cell_type_broad'
-            plot_counts = broad_counts
+            plot_counts = adata.obs[plot_key].value_counts()
         else:
             plot_key = cell_type_key
             plot_counts = cell_type_counts
-            # Lower floor when falling back so small non-PBMC datasets remain informative
-            min_cells_plot = 50
 
         # Filter to types with >= min_cells
         valid_types = plot_counts[plot_counts >= min_cells_plot].index.tolist()
@@ -569,26 +554,15 @@ def extract_cell_types_for_hdwgcna(adata, output_dir, cell_type_key='scanvi_pred
 
     print(f"Fine-grained types: {n_total}, passing min_cells={min_cells}: {n_passing} ({viable_ratio:.0%})")
 
-    # Adaptive compression: if <50% of types are viable, switch to broad categories.
-    # Guard: if >80% of cells collapse to 'Progenitors/Other' the map is inapplicable
-    # for this tissue (e.g. mouse brain labels not in PBMC map) — revert to fine-grained.
+    # Adaptive compression: if <50% of types are viable, switch to broad categories
     use_broad = viable_ratio < 0.5 and len(CELLTYPIST_BROAD_MAP) > 0
     if use_broad:
+        print(f"Adaptive compression: {n_passing}/{n_total} types viable ({viable_ratio:.0%}) — switching to broad categories")
         adata.obs['cell_type_broad'] = (
             adata.obs[cell_type_key]
             .map(CELLTYPIST_BROAD_MAP)
             .fillna('Progenitors/Other')
         )
-        broad_counts_ct = adata.obs['cell_type_broad'].value_counts()
-        progenitor_frac_ct = broad_counts_ct.get('Progenitors/Other', 0) / len(adata.obs)
-        if progenitor_frac_ct > 0.8:
-            print(f"Adaptive compression: broad map collapsed {progenitor_frac_ct:.0%} → 'Progenitors/Other' "
-                  f"(map inapplicable); reverting to fine-grained '{cell_type_key}'")
-            use_broad = False
-        else:
-            print(f"Adaptive compression: {n_passing}/{n_total} types viable ({viable_ratio:.0%}) — switching to broad categories")
-
-    if use_broad:
         active_key = 'cell_type_broad'
         cell_type_counts = adata.obs[active_key].value_counts()
     else:
