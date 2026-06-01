@@ -22,14 +22,16 @@ scratch.
 | -------------------------- | ----- | -------------------------------------------- | -------------------------------------------------------------- |
 | `scgpu_extended.sif`       | 3.7 G | `ghcr.io/scverse/scvi-tools:py3.11-cu12-base`| scVI / scANVI, CellBender, CellTypist, scrublet, MOFA+, muon   |
 | `snapatac_extended.sif`    | 4.7 G | `python:3.10-slim`                           | SnapATAC2, scPrinter, scATAnno, MACS3, cupy/rmm, deeptools     |
-| `seurat_extended.sif`      | 1.1 G | `rocker/r-ver:4.4.3`                         | Seurat 5, hdWGCNA, CellChat, MAST, WGCNA, MOFA+ R-side         |
+| `seurat_extended.sif`      | 1.8 G | `rocker/r-ver:4.4.3`                         | Seurat 5, hdWGCNA, CellChat, MAST, WGCNA, zellkonverter (+ baked basilisk env) |
 | `cicero.sif`               | 1.9 G | `condaforge/mambaforge:latest`               | R + Cicero (via Monocle3), Bioconductor, rtracklayer, Gviz     |
 | `scenicplus.sif`           | 1.8 G | `python:3.11.8-slim`                         | SCENIC+, pycisTopic, pySCENIC, Mallet, graph-tool              |
 
-Sizes above are the actual `.sif` sizes from `sif_output/`. Build dates
-of the canonical artifacts: cicero 2026-03-12, seurat 2026-03-13,
-scgpu 2026-03-17 (CellBender fix), scenicplus 2026-03-30, snapatac
-2026-04-08 (scATAnno addition).
+Sizes above are the actual `.sif` sizes from `sif_output/` for the v3.4 set,
+**except `seurat_extended.sif`** which lists the projected v3.5 size after
+the basilisk-env bake (was 1.1 G in v3.4; +500–800 MB for the baked conda
+env). Build dates of the canonical artifacts: cicero 2026-03-12, seurat
+2026-03-13 (v3.4) / pending rebuild (v3.5), scgpu 2026-03-17 (CellBender
+fix), scenicplus 2026-03-30, snapatac 2026-04-08 (scATAnno addition).
 
 ## Build system
 
@@ -97,7 +99,7 @@ RAM, Rosetta x86_64 emulation):
 | `cicero.sif`             | ~30–45 min  | ~25 min               |
 | `scgpu_extended.sif`     | ~20–30 min  | ~15 min               |
 | `snapatac_extended.sif`  | ~25–35 min  | ~20 min               |
-| `seurat_extended.sif`    | ~45–60 min  | ~40 min               |
+| `seurat_extended.sif`    | ~50–70 min  | ~45 min               |
 | `scenicplus.sif`         | ~20–30 min  | ~15 min               |
 
 Native x86_64 Linux builds are ~2–3× faster than Apple Silicon under
@@ -259,6 +261,35 @@ singularity build --fakeroot seurat_extended.sif docs/defs/seurat_extended.def
   bakes an `Renviron.site` lockdown in `cicero.sif` (see below); for
   `seurat_extended.sif` the lockdown happens via the runtime env var,
   configured in `nextflow.config` via `containerOptions = '--env R_LIBS_USER=/dev/null'`.
+- **basilisk env must be baked at `/opt/basilisk_cache` (v3.5).** zellkonverter
+  uses basilisk to manage its anndata conda env. basilisk's default cache
+  path is derived from `tools::R_user_dir("basilisk", "cache")`, which under
+  the pipeline runtime (`--contain --bind /tmp --env HOME=/tmp
+  --env XDG_CACHE_HOME=/tmp/cache`) resolves to somewhere under `/tmp`. The
+  `--bind /tmp` mount then shadows whatever was at that path in the image,
+  so basilisk effectively sees an empty cache and tries to bootstrap a fresh
+  conda env on every job — which (a) requires outbound network access, often
+  unavailable on compute nodes, and (b) creates a node-local env in the
+  host's `/tmp` that disappears when `/tmp` is cleaned. Symptom: CellChat
+  works on some nodes and not others, depending on whether a prior job
+  happened to populate that host's `/tmp`.
+
+  The v3.5 fix invokes `basilisk::obtainEnvironmentPath()` during `%post`
+  with `BASILISK_EXTERNAL_DIR=/opt/basilisk_cache` set, so the conda env
+  materializes inside the image at `/opt/basilisk_cache/` (not shadowed by
+  `--bind /tmp`). `%environment` then exports `BASILISK_EXTERNAL_DIR` so
+  basilisk uses the baked env at runtime. No more node lottery.
+
+  For belt-and-suspenders, also set this in `nextflow.config` for the
+  CellChat / r_seurat / r_cellchat processes:
+
+  ```groovy
+  containerOptions = '--env R_LIBS_USER=/dev/null --env BASILISK_EXTERNAL_DIR=/opt/basilisk_cache'
+  ```
+
+  (The container's `%environment` already sets this, but an explicit
+  `--env` at runtime is harmless and protects against `--cleanenv` /
+  `--no-init` flags that strip `%environment` from being applied.)
 
 ---
 
@@ -433,7 +464,7 @@ apptainer build sif_output/<name>.sif /tmp/container_builds/<name>_sandbox
 | --------------------- | ---------------------------------------------------- | -------------------------------------------------------- |
 | `scgpu_extended.sif`  | CellTypist models (~500 MB) at `~/.celltypist/data/` | numba JIT (`/tmp/numba_cache`), matplotlib font cache    |
 | `snapatac_extended.sif` | None                                                | numba JIT, cupy compile cache (`/tmp/cupy_cache`)        |
-| `seurat_extended.sif` | None                                                | None                                                     |
+| `seurat_extended.sif` | basilisk conda env at `/opt/basilisk_cache/` (v3.5; ~500–800 MB) | None                                                     |
 | `cicero.sif`          | None                                                | None                                                     |
 | `scenicplus.sif`      | Mallet 202108 at `/opt/Mallet-202108`                | cistarget databases (NOT baked — user supplies)          |
 
@@ -571,3 +602,4 @@ same imports plus the pinning invariants (numpy 1.x in `snapatac_extended`,
 | v3.2    | 2026-03-19 | scgpu: +mofax/scrublet/CellBender@4334e89; snapatac: +pygenometracks/deeptools; scenicplus: +Mallet, +pygraphistry |
 | v3.3    | 2026-03-29 | scenicplus: dropped RAPIDS/pygraphistry; +graph-tool via miniforge; pycisTopic + gensim patches |
 | v3.4    | 2026-04-08 | snapatac: +scATAnno + harmonypy + leidenalg + python-igraph                    |
+| v3.5    | 2026-05-30 | seurat: bake basilisk env at `/opt/basilisk_cache` (fixes `/tmp` shadow lottery for CellChat / zellkonverter) |

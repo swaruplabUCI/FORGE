@@ -5,8 +5,8 @@ From: rocker/r-ver:4.4.3
     Author       Luis Solano (Swarup Lab, UCI)
     Project      FORGE single-cell multiomics pipeline
     Container    seurat_extended
-    Version      v3.4
-    Description  R: Seurat 5 + hdWGCNA + CellChat + MAST + WGCNA + Bioconductor genomics
+    Version      v3.5
+    Description  R: Seurat 5 + hdWGCNA + CellChat + MAST + WGCNA + Bioconductor + baked basilisk env
 
 %help
     R container for downstream Seurat-based analyses and gene module discovery.
@@ -20,6 +20,23 @@ From: rocker/r-ver:4.4.3
       magick (rebuilt from source against HDRI ImageMagick)
       Bioconductor 3.20: ComplexHeatmap, GSVA, UCell, GeneOverlap,
         rtracklayer, biomaRt, EnhancedVolcano, zellkonverter, rhdf5, etc.
+      basilisk + zellkonverter anndata env pre-baked at /usr/local/lib/R/site-library/zellkonverter/basilisk/ (via BASILISK_USE_SYSTEM_DIR=1)
+
+    v3.5 — basilisk env baked into the zellkonverter package dir at
+    /usr/local/lib/R/site-library/zellkonverter/basilisk/ via the
+    BASILISK_USE_SYSTEM_DIR=1 mechanism. Fixes two stacked problems:
+      (a) v3.4 left basilisk's env as an incomplete stub under
+          $XDG_CACHE_HOME/R/basilisk, which the runtime --bind /tmp shadowed
+          on every node, causing CellChat/zellkonverter to fail
+          non-deterministically depending on whether a prior job had
+          populated the host's /tmp.
+      (b) The naive BASILISK_EXTERNAL_DIR=/opt/basilisk_cache bake (tried
+          first in v3.5) put the env at a non-shadowed path but basilisk
+          still tries to acquire a writable lock at the external dir on
+          every obtainEnvironmentPath() call — fails on a read-only SIF.
+    BASILISK_USE_SYSTEM_DIR=1 is the canonical mode for this use case:
+    basilisk treats the env as system-managed, skips locking, and
+    resolves the path statically from the package install dir.
 
     Build:
       singularity build --fakeroot seurat_extended.sif seurat_extended.def
@@ -47,7 +64,14 @@ From: rocker/r-ver:4.4.3
         libjpeg-dev libwebp-dev \
         libmagick++-6.q16hdri-dev \
         libgdal-dev libgeos-dev libproj-dev libudunits2-dev \
+        libuv1-dev \
         git curl wget procps
+    # NOTE: libuv1-dev is required by fs >= 2.0.0 (released mid-2026), which
+    # dropped its vendored libuv and now expects a system libuv. Older fs 1.x
+    # builds didn't need this. devtools transitively pulls fs through many
+    # routes (testthat, pkgload, roxygen2, etc.), so without libuv1-dev the
+    # entire downstream stack (devtools, hdWGCNA, CellChat) fails to install.
+    # Alternative if libuv1-dev unavailable: set USE_BUNDLED_LIBUV=1 in env.
     rm -rf /var/lib/apt/lists/*
 
     # ----------------------------------------------------------------------
@@ -59,12 +83,54 @@ From: rocker/r-ver:4.4.3
     # Pin ggrepel 0.9.6.
     # CRAN current (>= 0.9.7) requires R >= 4.5, but we are on R 4.4.3.
     # ----------------------------------------------------------------------
-    Rscript -e 'install.packages("remotes", repos = "https://cran.r-project.org", Ncpus = 4); remotes::install_version("ggrepel", version = "0.9.6", repos = "https://cran.r-project.org", upgrade = "never")'
+    Rscript -e '
+    install.packages("remotes", repos = "https://cran.r-project.org", Ncpus = 4)
+    if (!requireNamespace("remotes", quietly = TRUE)) stop("FATAL: remotes install failed")
+    remotes::install_version("ggrepel", version = "0.9.6", repos = "https://cran.r-project.org", upgrade = "never")
+    if (!requireNamespace("ggrepel", quietly = TRUE)) stop("FATAL: ggrepel 0.9.6 install failed")
+    cat("ggrepel", as.character(packageVersion("ggrepel")), "OK\n")
+    '
 
     # ----------------------------------------------------------------------
-    # Seurat 5 + CRAN packages
+    # devtools in isolation FIRST.
+    #
+    # Why a separate install: install.packages() with a vector arg does NOT
+    # error on individual package failures — it just warns and continues.
+    # devtools has a heavy dependency tree (gert, credentials, pkgbuild,
+    # pkgload, rcmdcheck, roxygen2, urlchecker, usethis, ...) and any one
+    # of those failing to compile silently leaves devtools missing without
+    # tripping a build error. We then blow up later at install_github() time.
+    # Isolating it + checking requireNamespace() catches the failure where
+    # it happens.
     # ----------------------------------------------------------------------
-    Rscript -e 'install.packages("Seurat", repos = "https://cran.r-project.org", Ncpus = 4); install.packages(c("optparse","enrichR","cowplot","patchwork","ggpubr","pheatmap","tidygraph","ggraph","gtools","WGCNA","devtools","reticulate"), repos = "https://cran.r-project.org", Ncpus = 4)'
+    Rscript -e '
+    install.packages("devtools", repos = "https://cran.r-project.org", Ncpus = 4)
+    if (!requireNamespace("devtools", quietly = TRUE)) {
+        stop("FATAL: devtools failed to install. Scroll up in the build log for ",
+             "ERROR or non-zero exit lines in transitive deps (gert, credentials, ",
+             "pkgbuild, pkgload, rcmdcheck, roxygen2, urlchecker, usethis).")
+    }
+    cat("devtools", as.character(packageVersion("devtools")), "OK\n")
+    '
+
+    # ----------------------------------------------------------------------
+    # Seurat 5 + remaining CRAN packages
+    # ----------------------------------------------------------------------
+    Rscript -e '
+    install.packages("Seurat", repos = "https://cran.r-project.org", Ncpus = 4)
+    install.packages(c(
+        "optparse", "enrichR", "cowplot", "patchwork",
+        "ggpubr", "pheatmap", "tidygraph", "ggraph", "gtools",
+        "WGCNA", "reticulate"
+    ), repos = "https://cran.r-project.org", Ncpus = 4)
+    # Verify every package landed (catches silent install.packages drops)
+    pkgs <- c("Seurat", "curl", "WGCNA", "ggpubr", "ggrepel", "enrichR",
+              "optparse", "cowplot", "patchwork", "pheatmap", "tidygraph",
+              "ggraph", "gtools", "reticulate")
+    fail <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
+    if (length(fail)) stop("FATAL: CRAN packages failed to install: ", paste(fail, collapse = ", "))
+    cat("CRAN install verified —", length(pkgs), "packages OK\n")
+    '
 
     # ----------------------------------------------------------------------
     # Rebuild magick from source against HDRI ImageMagick.
@@ -88,9 +154,59 @@ From: rocker/r-ver:4.4.3
     Rscript -e 'install.packages("magick", type = "source", repos = "https://cran.r-project.org", Ncpus = 4); library(magick); cat("magick", as.character(packageVersion("magick")), "OK (from source)\n")'
 
     # ----------------------------------------------------------------------
-    # Bioconductor packages
+    # Bioconductor packages, with BASILISK_USE_SYSTEM_DIR=1 set BEFORE the
+    # install so zellkonverter bakes its anndata conda env into its package
+    # install directory (/usr/local/lib/R/site-library/zellkonverter/basilisk/).
+    #
+    # Why this approach (v3.5):
+    #   basilisk has three operating modes for its conda env cache:
+    #     1. Default — cache lives under tools::R_user_dir("basilisk","cache")
+    #        which resolves under $HOME or $XDG_CACHE_HOME at runtime. Under
+    #        our pipeline's --bind /tmp --env HOME=/tmp, the cache lands at
+    #        /tmp/... and the runtime mount shadows whatever we baked. Bad.
+    #     2. EXTERNAL_DIR — point basilisk at a fixed cache path. Fixes the
+    #        shadowing but basilisk still tries to acquire a write-lock at
+    #        that path on every obtainEnvironmentPath() call. Fails on the
+    #        read-only SIF filesystem. Bad.
+    #     3. SYSTEM_DIR (this one) — basilisk treats envs in the R package's
+    #        install dir as system-managed, resolves paths STATICALLY, and
+    #        SKIPS the lock entirely. Designed exactly for the
+    #        "bake into a read-only container" use case. Good.
     # ----------------------------------------------------------------------
-    Rscript -e 'BiocManager::install(c("MAST","SingleCellExperiment","zellkonverter","Rhtslib","Rsamtools","GenomicAlignments","rtracklayer","biomaRt","EnhancedVolcano","rhdf5","ComplexHeatmap","NMF","circlize","BiocNeighbors","GSVA","UCell","GeneOverlap"), ask = FALSE, update = FALSE, Ncpus = 4)'
+    export BASILISK_USE_SYSTEM_DIR=1
+    Rscript -e '
+    Sys.setenv(BASILISK_USE_SYSTEM_DIR = "1")
+    BiocManager::install(c(
+        "MAST", "SingleCellExperiment", "zellkonverter",
+        "Rhtslib", "Rsamtools", "GenomicAlignments",
+        "rtracklayer", "biomaRt", "EnhancedVolcano",
+        "rhdf5", "ComplexHeatmap", "NMF", "circlize",
+        "BiocNeighbors", "GSVA", "UCell", "GeneOverlap"
+    ), ask = FALSE, update = FALSE, Ncpus = 4)
+    pkgs <- c("MAST","SingleCellExperiment","zellkonverter","Rhtslib","Rsamtools",
+              "GenomicAlignments","rtracklayer","biomaRt","EnhancedVolcano",
+              "rhdf5","ComplexHeatmap","NMF","circlize","BiocNeighbors",
+              "GSVA","UCell","GeneOverlap")
+    fail <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
+    if (length(fail)) stop("FATAL: Bioc packages failed to install: ", paste(fail, collapse = ", "))
+    cat("Bioconductor install verified —", length(pkgs), "packages OK\n")
+
+    # Verify zellkonverter baked its basilisk env into the package dir
+    bk_dir <- file.path(find.package("zellkonverter"), "basilisk")
+    if (!dir.exists(bk_dir)) {
+        stop("FATAL: zellkonverter basilisk dir not found at ", bk_dir,
+             " — BASILISK_USE_SYSTEM_DIR=1 was not honoured during install. ",
+             "Check that the env var was set before BiocManager::install.")
+    }
+    pythons <- list.files(bk_dir, pattern = "^python$", recursive = TRUE, full.names = TRUE)
+    pythons <- pythons[grepl("/bin/python$", pythons)]
+    if (length(pythons) == 0) {
+        stop("FATAL: no bin/python under ", bk_dir,
+             " — basilisk env failed to materialize during install.")
+    }
+    cat("zellkonverter basilisk env baked at:", bk_dir, "\n")
+    cat("bin/python at:", pythons[1], "\n")
+    '
 
     # ----------------------------------------------------------------------
     # GitHub packages: hdWGCNA, CellChat, schard
@@ -98,13 +214,49 @@ From: rocker/r-ver:4.4.3
     # install_local silently exits 0 without registering the package, even
     # though it appears to complete (this was the v3.0 -> v3.1 fix).
     # ----------------------------------------------------------------------
-    Rscript -e 'devtools::install_github("smorabit/hdWGCNA", upgrade = "never", dependencies = TRUE); devtools::install_github("jinworks/CellChat", upgrade = "never", dependencies = TRUE); devtools::install_github("cellgeni/schard", upgrade = "never", dependencies = TRUE)'
+    Rscript -e '
+    # Sanity check before we use devtools — fail with a clearer message than
+    # "no package called devtools" if the CRAN install was somehow incomplete.
+    if (!requireNamespace("devtools", quietly = TRUE)) {
+        stop("FATAL: devtools missing at GitHub install step — CRAN install verification was bypassed?")
+    }
+    devtools::install_github("smorabit/hdWGCNA", upgrade = "never", dependencies = TRUE)
+    devtools::install_github("jinworks/CellChat", upgrade = "never", dependencies = TRUE)
+    devtools::install_github("cellgeni/schard", upgrade = "never", dependencies = TRUE)
+    pkgs <- c("hdWGCNA", "CellChat", "schard")
+    fail <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
+    if (length(fail)) stop("FATAL: GitHub packages failed to install: ", paste(fail, collapse = ", "))
+    cat("GitHub install verified —", length(pkgs), "packages OK\n")
+    '
+
+    # ----------------------------------------------------------------------
+    # Final cross-check on the basilisk env in the package dir, with anndata
+    # version probe. Uses shQuote() to make sure ; / parens in the Python
+    # one-liner survive the /bin/sh layer that system2(stdout=TRUE) goes
+    # through.
+    # ----------------------------------------------------------------------
+    Rscript -e '
+    bk_dir <- file.path(find.package("zellkonverter"), "basilisk")
+    pythons <- list.files(bk_dir, pattern = "^python$", recursive = TRUE, full.names = TRUE)
+    pythons <- pythons[grepl("/bin/python$", pythons)]
+    py <- pythons[1]
+    code <- shQuote("import anndata\nprint(anndata.__version__)")
+    res <- system2(py, c("-c", code), stdout = TRUE, stderr = TRUE)
+    cat("anndata version in basilisk env:", paste(res, collapse = " "), "\n")
+    '
+
+%environment
+    # Belt-and-suspenders: tell basilisk at runtime that envs are system-managed
+    # (matches what was set during install). basilisk reads this var when
+    # resolving env paths and skips the lock-acquisition + install-conda flow
+    # that would otherwise fail on the read-only SIF filesystem.
+    export BASILISK_USE_SYSTEM_DIR=1
 
 %test
     Rscript -e '
     pkgs <- c("Seurat","SeuratObject","optparse","enrichR","cowplot","patchwork",
               "ggrepel","ggpubr","pheatmap","tidygraph","ggraph","gtools",
-              "WGCNA","devtools","reticulate","magick",
+              "WGCNA","devtools","reticulate","magick","basilisk",
               "MAST","SingleCellExperiment","zellkonverter","Rhtslib","Rsamtools",
               "GenomicAlignments","rtracklayer","biomaRt","EnhancedVolcano",
               "rhdf5","ComplexHeatmap","GSVA","UCell","GeneOverlap",
@@ -118,4 +270,31 @@ From: rocker/r-ver:4.4.3
     }
     cat("ggrepel pin 0.9.6 OK\n")
     cat("Seurat", as.character(packageVersion("Seurat")), "\n")
+
+    # Verify the SYSTEM_DIR basilisk bake survived into the package install dir.
+    # DO NOT call basilisk::obtainEnvironmentPath() here — that function tries
+    # to acquire a writable lock at the env root, which fails on the read-only
+    # SIF filesystem ("Cannot open lock file: Read-only file system"). The
+    # static check below is what the runtime CellChat code path actually needs
+    # to succeed; the runtime obtainEnvironmentPath() resolves via the system
+    # path and skips locking when BASILISK_USE_SYSTEM_DIR=1 is set (which our
+    # %environment block does).
+    Sys.setenv(BASILISK_USE_SYSTEM_DIR = "1")
+    library(zellkonverter)
+    bk_dir <- file.path(find.package("zellkonverter"), "basilisk")
+    if (!dir.exists(bk_dir)) {
+        stop("FATAL: zellkonverter basilisk dir missing at ", bk_dir,
+             " — BASILISK_USE_SYSTEM_DIR=1 was not honoured at install time")
+    }
+    pythons <- list.files(bk_dir, pattern = "^python$", recursive = TRUE, full.names = TRUE)
+    pythons <- pythons[grepl("/bin/python$", pythons)]
+    if (length(pythons) == 0) {
+        stop("FATAL: no bin/python under ", bk_dir,
+             " — basilisk env in package dir is incomplete")
+    }
+    if (!grepl("^/usr/local/lib/R/site-library/zellkonverter/basilisk", pythons[1])) {
+        stop("FAIL: basilisk env at ", pythons[1],
+             " is not under the system R library — SYSTEM_DIR mode did not bake to the right place")
+    }
+    cat("basilisk env (system mode) at", pythons[1], "OK (v3.5 bake)\n")
     '
