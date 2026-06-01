@@ -1969,10 +1969,12 @@ workflow REGULATORY_ANALYSIS {
     // 2026-05-06: workflow-scope channels for cis-rewiring; populated inside
     // the stratified-cicero block, default empty so emit gates are well-formed
     // when stratified Cicero doesn't run.
-    def ch_strat_ctrl_links = Channel.empty()
-    def ch_strat_trt_links  = Channel.empty()
-    def ch_strat_ctrl_peaks = Channel.empty()
-    def ch_strat_trt_peaks  = Channel.empty()
+    def ch_strat_ctrl_links       = Channel.empty()
+    def ch_strat_trt_links        = Channel.empty()
+    def ch_strat_ctrl_peaks       = Channel.empty()
+    def ch_strat_trt_peaks        = Channel.empty()
+    def ch_strat_ctrl_connections = Channel.empty()
+    def ch_strat_trt_connections  = Channel.empty()
     if ((cicero_strat_auto || cicero_strat_manual) && params.cicero.run) {
         def strat_ctrl = params.cicero?.control_condition ?:
                          params.differential?.control_condition
@@ -2044,10 +2046,12 @@ workflow REGULATORY_ANALYSIS {
             strat_enhancer_gtf,
             strat_trt
         )
-        ch_strat_ctrl_links = EXTRACT_CCAN_ENHANCERS_CTRL.out.gene_links
-        ch_strat_trt_links  = EXTRACT_CCAN_ENHANCERS_TRT.out.gene_links
-        ch_strat_ctrl_peaks = EXTRACT_CCAN_ENHANCERS_CTRL.out.enhancer_peaks
-        ch_strat_trt_peaks  = EXTRACT_CCAN_ENHANCERS_TRT.out.enhancer_peaks
+        ch_strat_ctrl_links       = EXTRACT_CCAN_ENHANCERS_CTRL.out.gene_links
+        ch_strat_trt_links        = EXTRACT_CCAN_ENHANCERS_TRT.out.gene_links
+        ch_strat_ctrl_peaks       = EXTRACT_CCAN_ENHANCERS_CTRL.out.enhancer_peaks
+        ch_strat_trt_peaks        = EXTRACT_CCAN_ENHANCERS_TRT.out.enhancer_peaks
+        ch_strat_ctrl_connections = CICERO_JOIN_CTRL.out.connections
+        ch_strat_trt_connections  = CICERO_JOIN_TRT.out.connections
     }
 
     // ================================================================
@@ -2091,10 +2095,12 @@ workflow REGULATORY_ANALYSIS {
     // 2026-05-06: per-condition CCAN→gene-link + enhancer-peak channels for
     // cis-rewiring. Empty when stratified Cicero didn't run (single-condition
     // datasets, params.differential.run=false, etc.).
-    cicero_strat_ctrl_links = ch_strat_ctrl_links
-    cicero_strat_trt_links  = ch_strat_trt_links
-    cicero_strat_ctrl_peaks = ch_strat_ctrl_peaks
-    cicero_strat_trt_peaks  = ch_strat_trt_peaks
+    cicero_strat_ctrl_links       = ch_strat_ctrl_links
+    cicero_strat_trt_links        = ch_strat_trt_links
+    cicero_strat_ctrl_peaks       = ch_strat_ctrl_peaks
+    cicero_strat_trt_peaks        = ch_strat_trt_peaks
+    cicero_strat_ctrl_connections = ch_strat_ctrl_connections
+    cicero_strat_trt_connections  = ch_strat_trt_connections
 }
 
 // ============================================================================
@@ -2424,10 +2430,12 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
                               //   .out.coordinates — feeds PROMOTER_MSFP_PER_CT
                               //   (DSL2 cross-workflow scope fix). Empty when
                               //   scprinter.run=false.
-    cicero_strat_ctrl_links_ch  // 2026-05-06: per-condition CCAN→gene-link TSVs
-    cicero_strat_trt_links_ch   //   from EXTRACT_CCAN_ENHANCERS_{CTRL,TRT}.
-    cicero_strat_ctrl_peaks_ch  //   Powers cis-rewiring; empty when stratified
-    cicero_strat_trt_peaks_ch   //   Cicero didn't run.
+    cicero_strat_ctrl_links_ch        // 2026-05-06: per-condition CCAN→gene-link TSVs
+    cicero_strat_trt_links_ch         //   from EXTRACT_CCAN_ENHANCERS_{CTRL,TRT}.
+    cicero_strat_ctrl_peaks_ch        //   Powers cis-rewiring; empty when stratified
+    cicero_strat_trt_peaks_ch         //   Cicero didn't run.
+    cicero_strat_ctrl_connections_ch  // 2026-06-01: raw stratified Cicero connections
+    cicero_strat_trt_connections_ch   //   (Peak1/Peak2/coaccess .tsv.gz) for lollipop.
 
     main:
 
@@ -3139,7 +3147,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         // Requires: ch_top_tfs (non-empty) + per-CT motif BEDs from
         // MOTIF_SCAN_ENHANCERS_UNION + per-condition cicero gz files.
         if ((params.cis_rewiring?.lollipop_enabled ?: true) &&
-            (cicero_strat_ctrl_links_ch || cicero_strat_trt_links_ch)) {
+            (cicero_strat_ctrl_connections_ch || cicero_strat_trt_connections_ch)) {
             def lollipop_gtf = file(params.species == 'human' ?
                 params.scprinter.gtf_human : params.scprinter.gtf_mouse)
 
@@ -3173,9 +3181,9 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
                 .flatMap { tf, _flag, ct_bed_pairs ->
                     ct_bed_pairs.collect { ct, bed -> tuple(ct, tf, bed) }
                 }
-                // Add per-condition cicero connections
-                .combine(cicero_strat_ctrl_links_ch)
-                .combine(cicero_strat_trt_links_ch)
+                // Add per-condition cicero connections (raw Peak1/Peak2/coaccess gz)
+                .combine(cicero_strat_ctrl_connections_ch)
+                .combine(cicero_strat_trt_connections_ch)
                 .map { ct, tf, bed, ctrl_gz, trt_gz ->
                     tuple(ct, tf, bed, ctrl_gz, trt_gz)
                 }
@@ -3673,10 +3681,12 @@ workflow {
             REGULATORY_ANALYSIS.out.scprinter_footprints,  // 2026-04-30: pass-through (no cross-workflow access)
             REGULATORY_ANALYSIS.out.tf_diff,               // 2026-05-04: pass-through (DSL2 scope fix; gate-aligned w/ differential_tf.run)
             REGULATORY_ANALYSIS.out.gene_coordinates,      // 2026-05-06: pass-through for PROMOTER_MSFP_PER_CT
-            REGULATORY_ANALYSIS.out.cicero_strat_ctrl_links, // 2026-05-06: cis-rewiring
+            REGULATORY_ANALYSIS.out.cicero_strat_ctrl_links,        // 2026-05-06: cis-rewiring
             REGULATORY_ANALYSIS.out.cicero_strat_trt_links,
             REGULATORY_ANALYSIS.out.cicero_strat_ctrl_peaks,
-            REGULATORY_ANALYSIS.out.cicero_strat_trt_peaks
+            REGULATORY_ANALYSIS.out.cicero_strat_trt_peaks,
+            REGULATORY_ANALYSIS.out.cicero_strat_ctrl_connections,   // 2026-06-01: lollipop fix
+            REGULATORY_ANALYSIS.out.cicero_strat_trt_connections
         )
     }
 

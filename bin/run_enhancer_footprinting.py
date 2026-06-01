@@ -1403,7 +1403,7 @@ def run_one_pair(args, *, printer, peak_matrix_path, grouping, uniq_groups,
             print(f"  Strip: preserved full tensor for {len(strip_obsm)}/{n_regions} "
                   f"regions near target genes")
 
-        _scales = np.asarray(fp_data.uns.get('scales', np.arange(2, 101)))
+        _scales = np.asarray(fp_data.uns['scales'] if 'scales' in fp_data.uns else np.arange(2, 101))
         summary_ad = ad.AnnData(
             X=summary_X,
             obs=pd.DataFrame(index=list(fp_data.obs_names)),

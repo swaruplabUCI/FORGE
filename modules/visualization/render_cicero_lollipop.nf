@@ -30,7 +30,9 @@ process RENDER_CICERO_LOLLIPOP {
                mode: 'copy'
 
     input:
-    tuple val(cell_type), val(tf), path(motif_peaks_bed), path(ccan_ctrl_gz), path(ccan_trt_gz)
+    tuple val(cell_type), val(tf), path(motif_peaks_bed),
+          path(ccan_ctrl_gz, stageAs: 'ccan_ctrl.tsv.gz'),
+          path(ccan_trt_gz,  stageAs: 'ccan_trt.tsv.gz')
     path gtf
     val  ctrl_condition
     val  trt_condition
@@ -54,8 +56,8 @@ process RENDER_CICERO_LOLLIPOP {
     #   ccan_base/{ctrl_condition}/cicero_connections.tsv.gz
     #   ccan_base/{trt_condition}/cicero_connections.tsv.gz
     mkdir -p "ccan_base/${ctrl_condition}" "ccan_base/${trt_condition}"
-    cp -L "${ccan_ctrl_gz}" "ccan_base/${ctrl_condition}/cicero_connections.tsv.gz"
-    cp -L "${ccan_trt_gz}"  "ccan_base/${trt_condition}/cicero_connections.tsv.gz"
+    cp -L "ccan_ctrl.tsv.gz" "ccan_base/${ctrl_condition}/cicero_connections.tsv.gz"
+    cp -L "ccan_trt.tsv.gz"  "ccan_base/${trt_condition}/cicero_connections.tsv.gz"
 
     python ${projectDir}/bin/render_cicero_lollipop.py \\
         --motif-peaks     '${motif_peaks_bed}' \\
