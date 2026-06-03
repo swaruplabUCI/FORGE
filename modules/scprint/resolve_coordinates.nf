@@ -25,8 +25,8 @@ process RESOLVE_GENE_COORDINATES {
         --species ${species} \\
         --gtf-human '${params.scprinter.gtf_human}' \\
         --gtf-mouse '${params.scprinter.gtf_mouse}' \\
-        --promoter-upstream ${params.scprinter.promoter_upstream} \\
-        --promoter-downstream ${params.scprinter.promoter_downstream} \\
+        --promoter-upstream ${task.ext.promoter_upstream ?: params.scprinter.promoter_upstream} \\
+        --promoter-downstream ${task.ext.promoter_downstream ?: params.scprinter.promoter_downstream} \\
         ${manual_arg} \\
         --output gene_coordinates.json \\
         --format both \\

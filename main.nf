@@ -112,7 +112,8 @@ include { BUILD_CT_ANNOTATION       } from './modules/cicero/build_ct_annotation
 
 // scPRINT modules
 include { SCPRINTER_BARCODES } from './modules/scprint/barcodes'
-include { RESOLVE_GENE_COORDINATES } from './modules/scprint/resolve_coordinates'
+include { RESOLVE_GENE_COORDINATES                              } from './modules/scprint/resolve_coordinates'
+include { RESOLVE_GENE_COORDINATES as RESOLVE_OVERLAY_COORDINATES } from './modules/scprint/resolve_coordinates'
 include { SCPRINTER_BUILD_PRINTER } from './modules/scprint/build_printer'
 include { SCPRINTER_FOOTPRINTING } from './modules/scprint/footprinter'
 include { SCPRINTER_FOOTPRINTING as SCPRINTER_FOOTPRINTING_DIFF } from './modules/scprint/footprinter'
@@ -2890,6 +2891,16 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         def overlay_genes_csv = overlay_target_genes.join(',')
         def overlay_palette_csv = overlay_palette.take(overlay_top_n).join(',')
 
+        // Resolve coords for the overlay target genes using a 4000bp window
+        // (upstream=2000, downstream=2000 via withName:RESOLVE_OVERLAY_COORDINATES).
+        // Separate from gene_coordinates_ch which uses the scPrinter footprinting
+        // window and covers a different gene set.
+        RESOLVE_OVERLAY_COORDINATES(
+            params.species,
+            Channel.value(overlay_target_genes),
+            file('NO_FILE')
+        )
+
         def ch_overlay_compute_in = MOTIF_SCAN_ENHANCERS.out.manifest
             .flatMap { manifest_file ->
                 def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
@@ -2901,7 +2912,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             ch_overlay_compute_in,
             printer,
             peak_matrix,
-            gene_coordinates_ch,
+            RESOLVE_OVERLAY_COORDINATES.out.coordinates,
             cell_type_col,
             overlay_cond_col,
             overlay_ctrl,
@@ -2947,16 +2958,25 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             def strip_mode = params.msfp_strip?.mode ?: 'all_three'
             log.info "RENDER_MSFP_PROMOTER_STRIP: mode=${strip_mode}"
 
+            // Collapse ch_tf_per_ct_gene (already ranked per (ct, gene)) to per-ct.
+            // overlay_palette contains hex colors, not TF names — the script
+            // needs real TF names to scan JASPAR motifs.
+            def ch_tfs_per_ct = ch_tf_per_ct_gene
+                .map { ct, gene, tfs_csv -> tuple(ct, tfs_csv) }
+                .groupTuple(by: [0])
+                .map { ct, tfs_csvs ->
+                    def seen = new LinkedHashSet()
+                    tfs_csvs.each { csv -> csv.split(',').each { seen << it.trim() } }
+                    tuple(ct, seen.take(overlay_top_n).join(','))
+                }
+
             // Group all h5ads per (ct, TF set) and stage into scan_dir
             def ch_strip_in = PROMOTER_MSFP_PER_CT.out.fp
-                .map { ct, h5ads ->
-                    tuple(ct, overlay_genes_csv,
-                          overlay_palette.take(overlay_top_n).join(','),
+                .join(ch_tfs_per_ct, by: [0])
+                .map { ct, h5ads, tfs ->
+                    tuple(ct, tfs, overlay_genes_csv,
                           h5ads instanceof List ? h5ads : [h5ads],
                           strip_mode)
-                }
-                .map { ct, genes, tfs, h5ads, m ->
-                    tuple(ct, tfs, genes, h5ads, m)
                 }
 
             RENDER_MSFP_PROMOTER_STRIP(ch_strip_in, overlay_ctrl, overlay_trt)

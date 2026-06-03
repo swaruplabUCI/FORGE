@@ -506,8 +506,9 @@ def _find_h5ads(scan_dir, target_genes):
     d = Path(scan_dir)
     result = []
     for gene in target_genes:
-        matches = sorted(d.glob(f'footprints_*{gene}*.h5ad'))
-        exact = [m for m in matches if m.stem.endswith(f'_{gene}')]
+        matches = sorted(d.glob(f'promoter_fp_*{gene}*.h5ad') or
+                         d.glob(f'footprints_*{gene}*.h5ad'))
+        exact = [m for m in matches if (f'_{gene}__' in m.stem or m.stem.endswith(f'_{gene}'))]
         hits  = exact if exact else matches
         if not hits:
             print(f'[WARN] no h5ad for {gene} in {scan_dir}', flush=True)

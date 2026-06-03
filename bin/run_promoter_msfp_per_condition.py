@@ -45,9 +45,10 @@ def parse_args():
     return p.parse_args()
 
 
-def tail_only(barcode):
+def to_printer_fmt(barcode):
+    """Convert peak-matrix barcode (sample:bc) to printer format (sample_bc)."""
     barcode = str(barcode)
-    return barcode.split(":", 1)[1] if ":" in barcode else barcode
+    return barcode.replace(":", "_", 1) if ":" in barcode else barcode
 
 
 def safe_label(s):
@@ -80,7 +81,7 @@ def main():
         return
 
     df = pd.DataFrame({
-        "barcode": [tail_only(b) for b in sub.obs_names.astype(str)],
+        "barcode": [to_printer_fmt(b) for b in sub.obs_names.astype(str)],
         "group":   sub.obs[args.condition_col].astype(str).values,
     })
     printer_bcs = set(map(str, printer.obs_names))
