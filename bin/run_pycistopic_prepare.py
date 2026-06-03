@@ -133,6 +133,24 @@ def parse_args():
     help="Path to a Gencode GTF file. If provided, TSS BED is generated locally from the GTF "
          "instead of querying BioMart (avoids ArrowTypeError from polars/pyarrow incompatibility).",
     )
+    p.add_argument(
+        "--phase1-only",
+        action="store_true",
+        help="Stop after per-sample QC and write group_list.tsv. Skip CistopicObject "
+             "creation, LDA, and region_sets (Phase 1 of the 3-phase pipeline).",
+    )
+    p.add_argument(
+        "--condition-col",
+        default="condition",
+        help="Column in cell metadata with condition label, used for CT×condition "
+             "fan-out in group_list.tsv. Falls back to 'all' if column is absent.",
+    )
+    p.add_argument(
+        "--min-cells",
+        type=int,
+        default=200,
+        help="Minimum cells per CT×condition group for inclusion in group_list.tsv.",
+    )
     args = p.parse_args()
 
     # Sanity check: require at least one of fragments or fragments-map
@@ -143,6 +161,32 @@ def parse_args():
 
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
+
+
+def _write_group_list(cell_data, cell_type_col, condition_col, min_cells, outdir, logger):
+    """Write group_list.tsv for Phase 2 fan-out (CT × condition, min_cells filtered)."""
+    if condition_col not in cell_data.columns:
+        logger.warning("[phase1] Condition column '%s' absent — grouping by cell type only.", condition_col)
+        cell_data = cell_data.copy()
+        cell_data["_cond"] = "all"
+        condition_col = "_cond"
+
+    grp = (
+        cell_data.groupby([cell_type_col, condition_col])
+        .size().reset_index(name="n_cells")
+    )
+    grp.columns = ["cell_type_safe", "condition", "n_cells"]
+    ct_min = grp.groupby("cell_type_safe")["n_cells"].min()
+    passing_cts = ct_min[ct_min >= min_cells].index
+    passing = grp[grp["cell_type_safe"].isin(passing_cts)].copy()
+
+    logger.info(
+        "[phase1] %d / %d cell types pass min_cells=%d in ALL conditions (%d / %d groups)",
+        len(passing_cts), grp["cell_type_safe"].nunique(), min_cells, len(passing), len(grp),
+    )
+    out = os.path.join(outdir, "group_list.tsv")
+    passing.to_csv(out, sep="\t", index=False)
+    logger.info("[phase1] group_list.tsv → %s", out)
 
 
 def ensure_mallet(mallet_path, logger):
@@ -690,6 +734,10 @@ def main():
             logger.warning(f"  {sid}: 0 barcodes passing QC — skipping")
             continue
 
+        # Phase 1-only: QC done; skip CistopicObject creation
+        if args.phase1_only:
+            continue
+
         sample_metrics = (
             pl.read_parquet(os.path.join(qc_outdir, f"{sid}.fragments_stats_per_cb.parquet"))
             .to_pandas()
@@ -710,6 +758,23 @@ def main():
         cistopic_objects.append(obj)
         total_cells += len(bc_passing)
         logger.info(f"  {sid}: created cisTopic object with {len(obj.cell_names)} cells")
+
+    # Phase 1-only exit: write group_list + supporting files then stop.
+    if args.phase1_only:
+        _write_group_list(cell_data, args.cell_type_col, args.condition_col,
+                          args.min_cells, outdir, logger)
+        pd.DataFrame(
+            list(path_to_fragments.items()), columns=["sample_id", "fragments_path"]
+        ).to_csv(os.path.join(outdir, "fragments_map.tsv"), sep="\t", index=False)
+        bl_dest = os.path.join(outdir, "blacklist.bed")
+        if path_to_blacklist and os.path.abspath(path_to_blacklist) != os.path.abspath(bl_dest):
+            import shutil
+            shutil.copy(path_to_blacklist, bl_dest)
+        meta_dest = os.path.join(outdir, "cell_metadata_for_pycistopic.safe.tsv")
+        cell_data.to_csv(meta_dest, sep="\t", index=True)
+        logger.info("[phase1] cell_metadata_for_pycistopic.safe.tsv → %s", meta_dest)
+        logger.info("[phase1] Done. Outputs in %s", outdir)
+        sys.exit(0)
 
     if len(cistopic_objects) == 0:
         raise ValueError("No samples produced cells passing QC — cannot proceed.")
