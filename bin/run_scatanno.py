@@ -295,6 +295,39 @@ def main():
     # Add a unified cell_type_prediction column for downstream compatibility
     query_annotated.obs['cell_type_prediction'] = query_annotated.obs[pred_col]
 
+    # Propagate reference class hierarchy → cell_type_broad.
+    # Users can add any of these columns to their reference h5ad obs alongside
+    # the primary 'celltypes' annotation. The pipeline will detect it here and
+    # write cell_type_broad to the output h5ad — no config changes needed.
+    # merge_annotations.py reads cell_type_broad from this h5ad first before
+    # falling back to the identity fallback.
+    _CLASS_COL_CANDIDATES = [
+        'class_label', 'cell_type_class', 'broad_cell_type', 'supertype',
+        'class', 'broad_class',
+    ]
+    ref_class_col = next(
+        (c for c in _CLASS_COL_CANDIDATES if c in reference.obs.columns), None
+    )
+    if ref_class_col is not None:
+        # Build subclass → class map from reference obs (one row per unique subclass)
+        sub_to_class = (
+            reference.obs[['celltypes', ref_class_col]]
+            .drop_duplicates('celltypes')
+            .set_index('celltypes')[ref_class_col]
+            .to_dict()
+        )
+        query_annotated.obs['cell_type_broad'] = (
+            query_annotated.obs['cell_type_prediction']
+            .map(sub_to_class)
+            .fillna('Unknown')
+        )
+        print(f"\n  Propagated class hierarchy from reference '{ref_class_col}' → 'cell_type_broad'")
+        print(query_annotated.obs['cell_type_broad'].value_counts().to_string(header=False))
+    else:
+        print(f"\n  NOTE: No class-level column found in reference obs "
+              f"(checked: {_CLASS_COL_CANDIDATES}). "
+              f"'cell_type_broad' will be derived downstream via identity fallback.")
+
     # Save h5ad
     query_annotated.write_h5ad(args.output)
     print(f"  h5ad: {args.output}")

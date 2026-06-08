@@ -251,8 +251,11 @@ def apply_scatanno_annotations(peak_matrix, scatanno_h5ad_path):
         missing = len(peak_barcodes) - len(common)
         print(f"  WARNING: {missing} peak_matrix cells not in scATAnno — will be labeled 'Unknown'")
 
-    # Transfer scATAnno columns by index alignment
+    # Transfer scATAnno columns by index alignment.
+    # cell_type_broad is written by run_scatanno.py when the reference atlas
+    # contains a class-level hierarchy column (class_label, cell_type_class, etc.).
     sa_columns = ['cell_type_prediction', 'pred_y', 'cluster_annotation',
+                  'cell_type_broad',
                   'Uncertainty_Score', 'uncertainty_score_step1', 'uncertainty_score_step2',
                   '1.knn-based_celltype', '2.corrected_celltype']
     transferred = []
@@ -283,20 +286,20 @@ def apply_scatanno_annotations(peak_matrix, scatanno_h5ad_path):
                     series = series.cat.add_categories('Unknown')
             peak_matrix.obs[col] = series.fillna('Unknown')
 
-    # Broad-class coarsening via Allen subclass -> class map (parallels the
-    # CELLTYPIST_BROAD_MAP pattern on the RNA side). Keep the fine
-    # 'cell_type_prediction' AND add coarse 'cell_type_broad' (~35 classes).
-    try:
-        from scatanno_broad_map import SCATANNO_BROAD_MAP
-        fine = peak_matrix.obs['cell_type_prediction'].astype(str)
-        broad = fine.map(SCATANNO_BROAD_MAP).fillna('Unknown')
-        peak_matrix.obs['cell_type_broad'] = broad.astype('category')
-        unmapped = sorted(set(fine) - set(SCATANNO_BROAD_MAP.keys()) - {'Unknown'})
-        if unmapped:
-            print(f"  WARNING: {len(unmapped)} fine labels have no Allen broad mapping "
-                  f"(first 5: {unmapped[:5]}) — flagged as 'Unknown'")
-    except Exception as e:
-        print(f"  WARNING: scatanno_broad_map unavailable ({e}); cell_type_broad not populated")
+    # Populate cell_type_broad.
+    # Priority 1: reference-derived broad classes written by run_scatanno.py when
+    #             the reference atlas has a class-level hierarchy column.
+    # Priority 2: identity — use cell_type_prediction directly so downstream
+    #             modules always have a usable broad label.
+    if ('cell_type_broad' in peak_matrix.obs.columns and
+            peak_matrix.obs['cell_type_broad'].notna().any() and
+            (peak_matrix.obs['cell_type_broad'].astype(str) != 'Unknown').any()):
+        print("  Using reference-derived cell_type_broad from scATAnno output.")
+    else:
+        print("  No reference-derived cell_type_broad found — using cell_type_prediction as cell_type_broad.")
+        peak_matrix.obs['cell_type_broad'] = (
+            peak_matrix.obs['cell_type_prediction'].astype(str).astype('category')
+        )
 
     # Report
     print(f"\n  Cell type predictions (cell_type_prediction):")
