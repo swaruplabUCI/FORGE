@@ -155,7 +155,7 @@ def main():
             valid_bc=bc_passing,
             n_cpu=1,
             project=sid,
-            split_pattern="___",
+            split_pattern="-",
         )
         logger.info("  %s: created CistopicObject with %d cells.", sid, len(obj.cell_names))
         cistopic_objects.append(obj)
@@ -175,7 +175,7 @@ def main():
             is_acc=1,
             project=f"{ct_safe}__{cond_safe}",
             copy=True,
-            split_pattern="___",
+            split_pattern="-",
         )
         logger.info("Merged %d samples — %d cells total.",
                     len(cistopic_objects), len(merged.cell_names))

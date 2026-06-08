@@ -89,6 +89,16 @@ def main():
     manifest_ids = set(meta["sample_id"].drop_duplicates().unique())
     print(f"[build_meta] Manifest sample_ids: {sorted(manifest_ids)}", file=sys.stderr)
 
+    # Strip -sample_id suffix from barcodes if present.
+    # Fragment files use bare 16bp barcodes; RNA h5ad obs_names carry a -{sample_id}
+    # suffix that would cause barcode reconciliation to fail silently (empty DARs).
+    _sfx_pattern = re.compile(r'-(' + '|'.join(re.escape(s) for s in manifest_ids) + r')$')
+    _n_sfx = sum(1 for b in barcodes if _sfx_pattern.search(b))
+    if _n_sfx > 0:
+        barcodes = barcodes.map(lambda b: _sfx_pattern.sub('', b))
+        print(f"[build_meta] Stripped sample_id suffix from {_n_sfx}/{len(barcodes)} barcodes "
+              f"(e.g. {adata.obs_names[0]} -> {barcodes[0]})", file=sys.stderr)
+
     # Resolve sample_key: try obs['sample_id'] first, then obs['sample']
     if "sample_id" in obs.columns:
         obs_ids = set(obs["sample_id"].dropna().unique())

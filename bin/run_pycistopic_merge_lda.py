@@ -122,7 +122,14 @@ def main():
     logger.info("Loading cell metadata from %s", args.cell_metadata)
     cell_data = pd.read_table(args.cell_metadata, index_col=0, sep="\t")
     if "barcode" in cell_data.columns:
-        cell_data.index = cell_data["barcode"].astype(str)
+        # Prefer the compound key barcode___sample_id to match pycisTopic's split_pattern.
+        # This avoids ambiguous reverse-mapping when the same raw barcode appears in
+        # multiple samples (pd.Series.get() returns a Series for duplicate keys).
+        if "sample_id" in cell_data.columns:
+            cell_data.index = (cell_data["barcode"].astype(str) + "___"
+                               + cell_data["sample_id"].astype(str))
+        else:
+            cell_data.index = cell_data["barcode"].astype(str)
     raw_idx = cell_data.index.astype(str)
     if raw_idx.str.contains(":").any():
         cell_data.index = raw_idx.str.split(":", n=1).str[-1]
@@ -133,15 +140,15 @@ def main():
     logger.info("Barcode overlap (direct): %d / %d cistopic barcodes match metadata.",
                 len(shared), len(cto_barcodes))
 
-    # Strip the split_pattern='___' suffix added by create_cistopic_object_from_fragments.
-    # Per pycisTopic docs, the default split_pattern is '___', giving barcodes of the
-    # form  AAACAGCC-1___sample_id.  Strip to recover the raw barcode for the join.
+    # Fallback: strip the split_pattern='___' suffix for single-sample objects whose
+    # metadata only has raw barcodes (no sample_id column).
     if len(shared) == 0 and cto_barcodes.str.contains("___").any():
         stripped = cto_barcodes.str.split("___").str[0]
         shared_stripped = stripped.intersection(meta_barcodes)
         logger.info("After '___' strip: %d / %d match.", len(shared_stripped), len(cto_barcodes))
         if len(shared_stripped) > 0:
-            bc_map = pd.Series(cto_barcodes.values, index=stripped.values)
+            # Build a dict (not Series) to avoid duplicate-key ambiguity.
+            bc_map = dict(zip(stripped.values, cto_barcodes.values))
             cell_data = cell_data.copy()
             cell_data.index = cell_data.index.map(lambda x: bc_map.get(x, x))
             meta_barcodes = cell_data.index.astype(str)

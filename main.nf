@@ -149,7 +149,12 @@ include { MULTIVI_VALIDATE } from './modules/multiome/multivi_validate'
 // ============================================================================
 // PYcistopic / SCENIC+ / DORC MODULES
 // ============================================================================
-include { PYCISTOPIC_PREPARE } from './modules/multiome/pycistopic_prepare'
+include { PYCISTOPIC_PHASE1         } from './modules/multiome/pycistopic_phase1'
+include { PYCISTOPIC_ATAC_PREPARE   } from './modules/multiome/pycistopic_prepare_atac'
+include { PYCISTOPIC_PER_GROUP      } from './modules/multiome/pycistopic_per_group'
+include { PYCISTOPIC_MERGE_OBJECTS  } from './modules/multiome/pycistopic_merge_objects'
+include { PYCISTOPIC_RUN_LDA        } from './modules/multiome/pycistopic_run_lda'
+include { PYCISTOPIC_FINALIZE_LDA   } from './modules/multiome/pycistopic_finalize_lda'
 include { SCENICPLUS_RUN       } from './modules/multiome/scenicplus_run'
 include { SCENICPLUS_VISUALIZE } from './modules/multiome/scenicplus_visualize'
 include { SCENICPLUS_GRN_VIZ  } from './modules/multiome/scenicplus_grn_viz'
@@ -2318,19 +2323,90 @@ workflow MULTIOME_GRN {
     - DORC: peak-gene associations and DORC scores
     """
 
-    // pycisTopic preparation
+    // pycisTopic preparation — 2 modes (same Phase 2-3, differ only in Phase 1):
+    //   atac_only=false (default): build cell metadata from RNA h5ad (multiome)
+    //   atac_only=true           : build cell metadata from ATAC peak matrix directly
     if (params.pycistopic.run) {
-        log.info "Running pycisTopic preparation..."
+        log.info "Running pycisTopic preparation (atac_only=${params.pycistopic.atac_only ?: false})..."
 
-        PYCISTOPIC_PREPARE(
-            metadata_csv,
-            rna_h5ad,       // Use CellTypist-annotated RNA (not un-annotated MuData export)
-            // FIX-P0-8: Auto-derive pycistopic species from params.species
-            params.pycistopic.species ?: [human: 'hsapiens', mouse: 'mmusculus'].get(params.species, params.species),
-            mudata_stats,
-            blacklist_bed,
-            file(params.pycistopic.gtf),
-            cell_type_key
+        def _pyc_species = params.pycistopic.species
+            ?: [human: 'hsapiens', mouse: 'mmusculus'].get(params.species, params.species)
+
+        // ── Phase 1 (mode-dependent) ─────────────────────────────────────────
+        def _phase1_dir_ch        = null
+        def _phase1_group_list_ch = null
+        def _phase1_cell_meta_ch  = null
+        def _phase1_qc_dir_ch     = null
+        def _phase1_blacklist_ch  = null
+        def _phase1_bigwigs_ch    = null
+
+        def _pyc_cond_col  = params.pycistopic.condition_col ?: 'condition'
+        def _pyc_min_cells = params.pycistopic.min_cells     ?: 100
+
+        if (params.pycistopic.atac_only) {
+            // ATAC-only: cell types come from ATAC peak matrix obs (no RNA needed)
+            PYCISTOPIC_ATAC_PREPARE(
+                atac_peak_matrix,
+                metadata_csv,
+                _pyc_species,
+                blacklist_bed,
+                file(params.pycistopic.gtf),
+                cell_type_key,
+                _pyc_cond_col,
+                _pyc_min_cells
+            )
+            _phase1_dir_ch        = PYCISTOPIC_ATAC_PREPARE.out.phase1_dir
+            _phase1_group_list_ch = PYCISTOPIC_ATAC_PREPARE.out.group_list
+            _phase1_cell_meta_ch  = PYCISTOPIC_ATAC_PREPARE.out.cell_metadata
+            _phase1_qc_dir_ch     = PYCISTOPIC_ATAC_PREPARE.out.qc_dir
+            _phase1_blacklist_ch  = PYCISTOPIC_ATAC_PREPARE.out.blacklist
+            _phase1_bigwigs_ch    = PYCISTOPIC_ATAC_PREPARE.out.pseudobulk_bigwigs
+        } else {
+            // Multiome (default): cell types come from RNA h5ad annotations
+            PYCISTOPIC_PHASE1(
+                metadata_csv,
+                rna_h5ad,
+                _pyc_species,
+                blacklist_bed,
+                file(params.pycistopic.gtf),
+                cell_type_key,
+                _pyc_cond_col,
+                _pyc_min_cells
+            )
+            _phase1_dir_ch        = PYCISTOPIC_PHASE1.out.phase1_dir
+            _phase1_group_list_ch = PYCISTOPIC_PHASE1.out.group_list
+            _phase1_cell_meta_ch  = PYCISTOPIC_PHASE1.out.cell_metadata
+            _phase1_qc_dir_ch     = PYCISTOPIC_PHASE1.out.qc_dir
+            _phase1_blacklist_ch  = PYCISTOPIC_PHASE1.out.blacklist
+            _phase1_bigwigs_ch    = PYCISTOPIC_PHASE1.out.pseudobulk_bigwigs
+        }
+
+        // ── Phase 2: one CistopicObject per CT×condition (parallel fan-out) ──
+        def _groups_ch = _phase1_group_list_ch.splitCsv(header: true, sep: '\t')
+        PYCISTOPIC_PER_GROUP(_groups_ch.combine(_phase1_dir_ch))
+
+        // ── Phase 3a: merge all per-group PKLs into merged_cistopic.pkl ──────
+        PYCISTOPIC_MERGE_OBJECTS(
+            PYCISTOPIC_PER_GROUP.out.pkl.collect(),
+            _phase1_cell_meta_ch
+        )
+
+        // ── Phase 3b: one LDA job per topic count (parallel fan-out) ─────────
+        def _topics_list = (params.pycistopic.topics ?: '10,20,30')
+            .split(',').collect { it.trim().toInteger() }
+        PYCISTOPIC_RUN_LDA(
+            Channel.fromList(_topics_list),
+            PYCISTOPIC_MERGE_OBJECTS.out.merged_pkl.first()
+        )
+
+        // ── Phase 3c: evaluate models, binarize, DARs, region_sets ───────────
+        PYCISTOPIC_FINALIZE_LDA(
+            PYCISTOPIC_RUN_LDA.out.topic_pkl.collect(),
+            PYCISTOPIC_MERGE_OBJECTS.out.merged_pkl,
+            _phase1_cell_meta_ch,
+            _phase1_qc_dir_ch,
+            _phase1_blacklist_ch,
+            _pyc_species
         )
     }
 
@@ -2339,9 +2415,9 @@ workflow MULTIOME_GRN {
         log.info "Running SCENIC+ Snakemake pipeline..."
 
         SCENICPLUS_RUN(
-            PYCISTOPIC_PREPARE.out.cistopic_obj,
+            PYCISTOPIC_FINALIZE_LDA.out.cistopic_obj,
             rna_for_dorc,
-            PYCISTOPIC_PREPARE.out.region_sets,
+            PYCISTOPIC_FINALIZE_LDA.out.region_sets,
             params.scenicplus.ctx_rankings,
             params.scenicplus.ctx_scores,
             params.scenicplus.motif_annotations,
@@ -2379,11 +2455,14 @@ workflow MULTIOME_GRN {
 
     emit:
     // pycisTopic outputs
-    cistopic_obj   = params.pycistopic.run ? PYCISTOPIC_PREPARE.out.cistopic_obj   : Channel.empty()
-    region_sets    = params.pycistopic.run ? PYCISTOPIC_PREPARE.out.region_sets    : Channel.empty()
-    gene_activity  = (params.pycistopic.run && PYCISTOPIC_PREPARE.out.gene_activity) ?
-                     PYCISTOPIC_PREPARE.out.gene_activity : Channel.empty()
-    pseudobulk_bigwigs = params.pycistopic.run ? PYCISTOPIC_PREPARE.out.pseudobulk_bigwigs : Channel.empty()
+    cistopic_obj       = params.pycistopic.run ? PYCISTOPIC_FINALIZE_LDA.out.cistopic_obj   : Channel.empty()
+    region_sets        = params.pycistopic.run ? PYCISTOPIC_FINALIZE_LDA.out.region_sets     : Channel.empty()
+    gene_activity      = params.pycistopic.run ? PYCISTOPIC_FINALIZE_LDA.out.gene_activity   : Channel.empty()
+    pseudobulk_bigwigs = params.pycistopic.run
+        ? (params.pycistopic.atac_only
+            ? PYCISTOPIC_ATAC_PREPARE.out.pseudobulk_bigwigs
+            : PYCISTOPIC_PHASE1.out.pseudobulk_bigwigs)
+        : Channel.empty()
 
     // SCENIC+ outputs
     scplus_mudata      = (params.scenicplus.run && params.pycistopic.run) ? SCENICPLUS_RUN.out.scplus_mudata      : Channel.empty()
@@ -2642,10 +2721,10 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
             ptfJson
         )
 
-        def ereg_regions_ch = has_scenic ?
+        def ereg_regions_ch = (has_scenic && msfp_enabled) ?
             EXTRACT_EREGULON_REGIONS.out.region_sets :
             Channel.value(file('NO_FILE_ereg_regions'))
-        def ereg_manifest_ch = has_scenic ?
+        def ereg_manifest_ch = (has_scenic && msfp_enabled) ?
             EXTRACT_EREGULON_REGIONS.out.manifest :
             Channel.value(file('NO_FILE_ereg_manifest'))
         def ccan_regions_ch = MOTIF_SCAN_ENHANCERS.out.region_sets

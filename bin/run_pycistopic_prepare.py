@@ -212,14 +212,29 @@ def ensure_mallet(mallet_path, logger):
     return new_path
 
 
-def download_chromsizes_hg38():
+_SPECIES_TO_UCSC = {
+    "hsapiens": "hg38",
+    "mmusculus": "mm10",
+}
+_SPECIES_TO_MACS = {
+    "hsapiens": "hs",
+    "mmusculus": "mm",
+}
+_SPECIES_TO_BIOMART = {
+    "hsapiens": "hsapiens_gene_ensembl",
+    "mmusculus": "mmusculus_gene_ensembl",
+}
+
+
+def download_chromsizes(species):
+    ucsc_genome = _SPECIES_TO_UCSC.get(species, "hg38")
     chromsizes = pd.read_table(
-        "http://hgdownload.cse.ucsc.edu/goldenPath/hg38/bigZips/hg38.chrom.sizes",
+        f"http://hgdownload.cse.ucsc.edu/goldenPath/{ucsc_genome}/bigZips/{ucsc_genome}.chrom.sizes",
         header=None,
         names=["Chromosome", "End"],
     )
     chromsizes.insert(1, "Start", 0)
-    return chromsizes
+    return chromsizes, ucsc_genome
 
 
 def generate_tss_bed_from_gtf(gtf_path, output_bed, logger):
@@ -287,6 +302,8 @@ def main():
     # 1. Load cell metadata
     logger.info(f"Loading cell metadata from {args.cell_metadata}")
     cell_data = pd.read_table(args.cell_metadata, index_col=0, sep="\t")
+    # BD Rhapsody barcodes are integers; cast index to str before pyCisTopic sees it.
+    cell_data.index = cell_data.index.astype(str)
 
     if "barcode" in cell_data.columns:
         cell_data.index = cell_data["barcode"].astype(str)
@@ -455,10 +472,10 @@ def main():
         first_sample_id = cell_data[args.sample_id_col].astype(str).iloc[0]
         path_to_fragments = {first_sample_id: args.fragments}
 
-    # 2. Chrom sizes for hg38 (assuming human; generalization possible)
-    logger.info("Downloading chromsizes for hg38 from UCSC...")
-    chromsizes = download_chromsizes_hg38()
-    chromsizes.to_csv(os.path.join(outdir, "hg38.chrom.sizes"), sep="\t", index=False)
+    # 2. Chrom sizes — species-aware
+    chromsizes, ucsc_genome = download_chromsizes(args.species)
+    logger.info(f"Downloaded chromsizes for {ucsc_genome} (species={args.species})")
+    chromsizes.to_csv(os.path.join(outdir, f"{ucsc_genome}.chrom.sizes"), sep="\t", index=False)
 
     # 3. Export pseudobulk profiles
     pb_outdir = os.path.join(outdir, "consensus_peak_calling")
@@ -625,7 +642,7 @@ def main():
         macs_path=macs_path,
         bed_paths=bed_paths,
         outdir=os.path.join(pb_outdir, "MACS"),
-        genome_size="hs",
+        genome_size=_SPECIES_TO_MACS.get(args.species, "hs"),
         n_cpu=args.n_cpu,
         input_format="BEDPE",
         shift=73,
@@ -683,11 +700,11 @@ def main():
                 "--output",
                 tss_bed,
                 "--name",
-                "hsapiens_gene_ensembl",
+                _SPECIES_TO_BIOMART.get(args.species, "hsapiens_gene_ensembl"),
                 "--to-chrom-source",
                 "ucsc",
                 "--ucsc",
-                "hg38",
+                ucsc_genome,
             ]
             subprocess.check_call(cmd)
 
