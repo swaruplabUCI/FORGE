@@ -75,10 +75,11 @@ def main():
     if "barcode" in cell_data.columns:
         cell_data.index = cell_data["barcode"].astype(str)
 
-    # Normalise barcode index (strip sample prefix if present)
+    # Normalise barcode index: ensure str dtype, then strip sample prefix if present
     raw_idx = cell_data.index.astype(str)
     if raw_idx.str.contains(":").any():
-        cell_data.index = raw_idx.str.split(":", n=1).str[-1]
+        raw_idx = raw_idx.str.split(":", n=1).str[-1]
+    cell_data.index = raw_idx
 
     # Filter to this group
     if args.condition_col in cell_data.columns:
@@ -134,8 +135,25 @@ def main():
             .to_pandas()
             .set_index("CB")
         )
-        # Keep only group barcodes that appear in the QC stats
-        bc_passing = [bc for bc in sample_barcodes if bc in stats_df.index]
+        # Normalize barcodes to the base form used by pycisTopic QC stats.
+        # pycisTopic QC runs with split_pattern="-", so the CB in the stats parquet
+        # is always the first hyphen-delimited segment of the raw fragment barcode.
+        #
+        # Cell metadata → base barcode:
+        #   BD numeric:  "30848699"              → "30848699"   (str cast, no "-")
+        #   10x style:   "ACGT…-sample_id"       → "ACGT…"      (strip suffix, then split)
+        #   10x PBMC:    "ACGT…-1-sample_id"     → "ACGT…"      (strip suffix "→-1", split)
+        #
+        # valid_bc is passed in base-barcode form; create_cistopic_object_from_fragments
+        # also applies split_pattern="-" to fragment barcodes before matching.
+        bc_base = []
+        for bc in sample_barcodes:
+            bc = str(bc)
+            if bc.endswith(f'-{sid}'):
+                bc = bc[:-(len(sid) + 1)]
+            bc_base.append(bc.split('-')[0])
+
+        bc_passing = [bc for bc in bc_base if bc in stats_df.index]
         logger.info("  %s: %d/%d group barcodes found in QC stats.",
                     sid, len(bc_passing), len(sample_barcodes))
 
