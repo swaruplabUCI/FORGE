@@ -84,8 +84,13 @@ def run_celltypist_annotation(adata, species, model_name=None, majority_voting=T
         model_name = DEFAULT_MODELS.get(species, "Immune_All_Low.pkl")
     logger.info(f"Using CellTypist model: {model_name}")
 
-    # Download model if needed
-    models.download_models(force_update=False)
+    # Load model — skip bulk download when an absolute path is provided
+    import os, scipy.sparse as sp
+    if os.path.isabs(model_name) or os.path.exists(model_name):
+        logger.info(f"Loading model from path: {model_name}")
+    else:
+        logger.info("Downloading CellTypist models...")
+        models.download_models(force_update=False)
     model = models.Model.load(model=model_name)
 
     # CellTypist expects log-normalized data
@@ -102,6 +107,13 @@ def run_celltypist_annotation(adata, species, model_name=None, majority_voting=T
         sc.pp.log1p(adata_ct)
     else:
         logger.info("Data appears already log-normalized")
+
+    # CellTypist's gene-matching step can produce a COO matrix internally,
+    # which then crashes on the `indata[indata > 10] = 10` clip. Converting
+    # to dense sidesteps all sparse-format issues; 2-3k cells is fine for RAM.
+    if sp.issparse(adata_ct.X):
+        logger.info(f"Converting {type(adata_ct.X).__name__} to dense array for CellTypist")
+        adata_ct.X = adata_ct.X.toarray()
 
     # Run annotation
     logger.info("Running CellTypist annotation...")
