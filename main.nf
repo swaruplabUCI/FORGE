@@ -1198,7 +1198,8 @@ workflow RNA {
                 params.hdwgcna.condition_key,
                 params.hdwgcna.control_condition,
                 params.hdwgcna.treatment_condition,
-                traits_str
+                traits_str,
+                file(params.hdwgcna?.group_mapping ?: params.differential_rna?.group_mapping ?: params.cellchat?.group_mapping ?: 'NO_FILE')
             )
         } else {
             log.info "  Skipping hdWGCNA differential analysis (no conditions defined)"

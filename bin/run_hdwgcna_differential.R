@@ -43,6 +43,8 @@ option_list <- list(
     make_option("--control",       type = "character", default = "Control"),
     make_option("--treatment",     type = "character", default = "90plus"),
     make_option("--traits",        type = "character", default = NULL),
+    make_option("--group_mapping", type = "character", default = NULL,
+                help = "JSON mapping sample -> condition_group (used if condition_key column is missing from the Seurat object)"),
     make_option("--output_prefix", type = "character", default = "hdwgcna_diff")
 )
 opts <- parse_args(OptionParser(option_list = option_list))
@@ -56,6 +58,32 @@ seurat_obj <- readRDS(opts$seurat_rds)
 # Verify hdWGCNA has been run
 if (is.null(GetModules(seurat_obj))) {
     stop("No hdWGCNA modules found in Seurat object. Run HDWGCNA_PER_CELLTYPE first.")
+}
+
+# FIX-46 (ported from run_cellchat_per_condition.R): the hdWGCNA per-cell-type object
+# is built from the annotated RNA object *before* condition_group is assigned, so the
+# condition_key column is typically absent here. Recover it from the same
+# sample -> condition_group JSON map the rest of the pipeline uses.
+if (!opts$condition_key %in% colnames(seurat_obj@meta.data)) {
+    if (is.null(opts$group_mapping) || !file.exists(opts$group_mapping)) {
+        stop(sprintf("Condition column '%s' not found in Seurat meta.data and no valid --group_mapping provided.",
+                     opts$condition_key))
+    }
+    cat(sprintf("Column '%s' not found — recovering from group_mapping JSON: %s\n",
+                opts$condition_key, opts$group_mapping))
+    mapping <- jsonlite::fromJSON(opts$group_mapping)   # named character vector: sample -> group
+    sample_col <- if ("sample" %in% colnames(seurat_obj@meta.data)) "sample"
+                  else if ("sample_id" %in% colnames(seurat_obj@meta.data)) "sample_id"
+                  else if ("batch" %in% colnames(seurat_obj@meta.data)) "batch"
+                  else stop("Cannot find a sample/sample_id/batch column to join the group mapping.")
+    seurat_obj@meta.data[[opts$condition_key]] <-
+        unname(mapping[as.character(seurat_obj@meta.data[[sample_col]])])
+    assigned <- sum(!is.na(seurat_obj@meta.data[[opts$condition_key]]))
+    cat(sprintf("  Mapped %d/%d cells to '%s' via '%s' column\n",
+                assigned, nrow(seurat_obj@meta.data), opts$condition_key, sample_col))
+    if (assigned == 0) {
+        stop("group_mapping produced 0 assignments — sample names do not match the JSON keys.")
+    }
 }
 
 # Sanitize cell type name for filesystem-safe filenames
@@ -89,18 +117,21 @@ if (length(group1_cells) < 10 || length(group2_cells) < 10) {
     quit(save = "no", status = 0)
 }
 
-# Get wgcna_name (use the cell type as stored during HDWGCNA_PER_CELLTYPE)
-wgcna_names <- GetWGCNANames(seurat_obj)
-cat(sprintf("Available WGCNA names: %s\n", paste(wgcna_names, collapse = ", ")))
+# Get wgcna_name (the active WGCNA experiment set during HDWGCNA_PER_CELLTYPE).
+# NOTE: hdWGCNA exposes GetActiveWGCNAName() — there is no GetWGCNANames() (the prior
+# call crashed every run once the condition_group fix let execution reach this point).
+wgcna_name <- GetActiveWGCNAName(seurat_obj)
+cat(sprintf("Active WGCNA name: %s\n", wgcna_name))
 
-# Use the first available (typically matches cell type)
-wgcna_name <- wgcna_names[1]
-
-# Run DME test
+# Run DME test.
+# barcodes1 = treatment (TG), barcodes2 = control (WT) so a POSITIVE avg_log2FC means the
+# module eigengene is UP in the treatment condition — matching the MAST DEG "<treatment>_vs_
+# <control>" convention and the hdWGCNA vignette's disease-vs-control orientation. (The prior
+# order put control first, silently inverting every module's reported direction.)
 DMEs <- FindDMEs(
     seurat_obj,
-    barcodes1 = group1_cells,
-    barcodes2 = group2_cells,
+    barcodes1 = group2_cells,   # treatment (e.g. TG)
+    barcodes2 = group1_cells,   # control   (e.g. WT)
     test.use = 'wilcox',
     wgcna_name = wgcna_name
 )

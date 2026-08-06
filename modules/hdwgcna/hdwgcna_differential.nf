@@ -20,6 +20,7 @@ process HDWGCNA_DIFFERENTIAL {
     val  control_condition
     val  treatment_condition
     val  traits              // comma-separated list of trait columns for module-trait correlation
+    path group_mapping       // sample -> condition_group JSON (or 'NO_FILE'); recovers condition_key when absent from the object
 
     output:
     path "dme_results_*.csv",         emit: dme_results,         optional: true
@@ -31,6 +32,7 @@ process HDWGCNA_DIFFERENTIAL {
     script:
     cell_type_safe = cell_type.replaceAll(/[\/\s\(\)]+/, '_')
     def traits_arg = traits ? "--traits ${traits}" : ""
+    def mapping_arg = group_mapping.name != 'NO_FILE' ? "--group_mapping ${group_mapping}" : ""
     """
     run_hdwgcna_differential.R \\
         --seurat_rds ${seurat_rds} \\
@@ -40,6 +42,7 @@ process HDWGCNA_DIFFERENTIAL {
         --control "${control_condition}" \\
         --treatment "${treatment_condition}" \\
         ${traits_arg} \\
+        ${mapping_arg} \\
         --output_prefix hdwgcna_diff 2>&1 | tee "hdwgcna_diff_${cell_type_safe}.log"
     """
 }
