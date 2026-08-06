@@ -55,7 +55,7 @@ def parse_args():
     p.add_argument("--blacklist",       required=True)
     p.add_argument("--cell-type-col",   default="cell_type_safe")
     p.add_argument("--condition-col",   default="condition")
-    p.add_argument("--selected-topics", type=int, default=40)
+    p.add_argument("--selected-topics", type=int, default=None)
     p.add_argument("--n-cpu",           type=int, default=8)
     p.add_argument("--do-gene-activity", action="store_true")
     p.add_argument("--species",         default="mmusculus")
@@ -88,7 +88,9 @@ def main():
         models.append(m)
 
     # ── Select best model ─────────────────────────────────────────────────
-    logger.info("Evaluating models, selecting n_topics=%d...", args.selected_topics)
+    logger.info("Evaluating models, selecting n_topics=%s...",
+                args.selected_topics if args.selected_topics is not None
+                else "auto (pycisTopic chooses)")
     model = evaluate_models(
         models,
         select_model=args.selected_topics,

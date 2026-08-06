@@ -37,8 +37,9 @@ process PYCISTOPIC_FINALIZE_LDA {
     path "pycistopic_gene_activity.h5ad", optional: true, emit: gene_activity
 
     script:
-    def sel_topics  = params.pycistopic?.selected_topics ?: 40
-    def n_cpu       = params.pycistopic?.n_cpu           ?: task.cpus
+    def sel_topics  = params.pycistopic?.selected_topics
+    def sel_flag    = sel_topics != null ? "--selected-topics ${sel_topics}" : ''
+    def n_cpu       = params.pycistopic?.n_cpu ?: task.cpus
     def do_gene_act = params.pycistopic?.do_gene_activity ? '--do-gene-activity' : ''
     """
     set -euo pipefail
@@ -53,7 +54,7 @@ process PYCISTOPIC_FINALIZE_LDA {
         --blacklist       '${blacklist}' \\
         --cell-type-col   cell_type_safe \\
         --condition-col   ${params.pycistopic?.condition_col ?: 'condition'} \\
-        --selected-topics ${sel_topics} \\
+        ${sel_flag} \\
         --n-cpu           ${n_cpu} \\
         --species         ${species} \\
         ${do_gene_act} \\

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-Shared CELLTYPIST_BROAD_MAP for hierarchical condensation of
-CellTypist Immune_All_Low predictions to ~10 broad cell types.
+Shared CELLTYPIST_BROAD_MAP for hierarchical condensation of CellTypist
+predictions to broad cell types.
+
+Covers two model families:
+  - Immune_All_Low.pkl  (PBMC / immune-enriched tissues)
+  - Kidney-specific model (abbreviation labels: PTS1, Endo, ATL, etc.)
 
 Used by both RNA (plot_postscanvi.py) and ATAC (merge_annotations.py)
 annotation pipelines.
 """
 
-# Broad cell type mapping for CellTypist Immune_All_Low predictions.
+# Broad cell type mapping.
 # Used adaptively: only when <50% of fine-grained types pass min_cells threshold.
 CELLTYPIST_BROAD_MAP = {
     # CD4+ T cells
@@ -75,4 +79,46 @@ CELLTYPIST_BROAD_MAP = {
     "Epithelial cells": "Progenitors/Other",
     "Fibroblasts": "Progenitors/Other",
     "ELP": "Progenitors/Other",
+
+    # -----------------------------------------------------------------------
+    # Kidney-specific CellTypist model (abbreviation labels)
+    # Broad scheme harmonised with scATAnno ATAC predictions:
+    #   RNA "Stromal" ≈ ATAC "Stromal 1"  (Endo + Mesangial + Fib lumped by ATAC ref)
+    #   RNA "Proximal Tubule"              ≈ ATAC "Proximal Tubule"
+    # Groups passing ≥100-cell threshold at 2144 total cells:
+    #   Proximal Tubule (1074), Stromal (478), Distal Tubule (257), Loop of Henle (205)
+    # -----------------------------------------------------------------------
+    # Proximal tubule segments
+    "PTS1":   "Proximal Tubule",
+    "PTS2":   "Proximal Tubule",
+    "PTS3":   "Proximal Tubule",
+    "PTS3T2": "Proximal Tubule",
+    # Distal tubule + connecting
+    "DCT":    "Distal Tubule",
+    "CNT":    "Distal Tubule",
+    "DCT-CNT": "Distal Tubule",
+    "MD":     "Distal Tubule",   # macula densa
+    # Loop of Henle (thin + thick limbs)
+    "ATL":    "Loop of Henle",
+    "DTL":    "Loop of Henle",
+    "DTL-ATL": "Loop of Henle",
+    "LOH":    "Loop of Henle",
+    "CTAL":   "Loop of Henle",
+    "MTAL":   "Loop of Henle",
+    # Collecting duct
+    "PC":     "Collecting Duct",
+    "ICB":    "Collecting Duct",
+    "ICA":    "Collecting Duct",
+    # Stromal / vascular — maps to ATAC "Stromal 1" (ATAC ref cannot resolve these)
+    "Endo":         "Stromal",
+    "Vas-Afferens": "Stromal",
+    "MC":           "Stromal",   # mesangial
+    "Fib":          "Stromal",
+    "Per":          "Stromal",   # pericyte
+    # Immune
+    "Macro":  "Immune",
+    "Neutro": "Immune",
+    # Glomerular
+    "Podo":   "Podocyte",
+    "PEC":    "Podocyte",        # parietal epithelial cell
 }
