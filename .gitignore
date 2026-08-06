@@ -17,6 +17,7 @@ singularity_cache/
 
 # HPC job logs
 slurm-*.out
+container_build_*.log
 
 # Data files (too large for git)
 *.h5
