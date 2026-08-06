@@ -1,0 +1,94 @@
+site_name: FORGE
+site_description: >-
+  A Nextflow pipeline for end-to-end single-cell and single-nucleus multiome
+  (RNA + ATAC) analysis on HPC infrastructure.
+site_url: https://swaruplabUCI.github.io/FORGE/
+repo_url: https://github.com/swaruplabUCI/FORGE
+repo_name: swaruplabUCI/FORGE
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - search.highlight
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.keys
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Verifying FORGE works: verification.md
+  - The three core files:
+      - core/index.md
+      - The manifest CSV: core/manifest.md
+      - nextflow.config: core/config.md
+      - main.nf architecture: core/architecture.md
+  - Setup:
+      - Installation: setup/install.md
+      - Containers: setup/containers.md
+      - Reference files: setup/references.md
+      - Adapting to your cluster: setup/cluster.md
+  - Guides:
+      - RNA arm: guides/rna.md
+      - ATAC arm: guides/atac.md
+      - Regulatory analysis: guides/regulatory.md
+      - Multiome integration: guides/integration.md
+      - Visualization: guides/visualization.md
+  - On-ramps & resuming: onramps.md
+  - Troubleshooting: troubleshooting.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/swaruplabUCI/FORGE
+    - icon: fontawesome/solid/flask
+      link: https://swaruplab.bio.uci.edu/

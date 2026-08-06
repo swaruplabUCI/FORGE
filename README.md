@@ -4,6 +4,15 @@
 
 Developed at the [Swarup Lab](https://swaruplab.bio.uci.edu/), University of California, Irvine.
 
+📖 **[Documentation](https://swaruplabUCI.github.io/FORGE/)** — quickstart, the three core files, and per-arm guides.
+
+> **Validate a setup in ~10 seconds, with no containers, references, or GPU:**
+> ```bash
+> nextflow run main.nf -preview -c your_dataset.config
+> ```
+> FORGE's pre-flight checklist reports every configuration and manifest problem at
+> once, before any compute is submitted. See [Verifying FORGE works](docs/verification.md).
+
 ---
 
 ## Pipeline overview
@@ -66,7 +75,7 @@ Raw 10x/BD data
 - SLURM-managed HPC cluster
 - NVIDIA GPU (A30 or equivalent) — required for CellBender, scVI/scANVI, ChromVAR, MOFA+, MultiVI
 - High-memory nodes (≥ 256 GB RAM) — required for SCENIC+ and large reference atlases
-- ~600 GB disk space for reference files (see [docs/references.md](docs/references.md))
+- ~600 GB disk space for reference files (see [docs/setup/references.md](docs/setup/references.md))
 
 ---
 
@@ -77,10 +86,10 @@ Raw 10x/BD data
 git clone https://github.com/swaruplabUCI/FORGE.git
 cd FORGE
 
-# 2. Obtain containers (see docs/install.md)
+# 2. Obtain containers (see docs/setup/install.md)
 #    Place all .sif files in singularity_cache/
 
-# 3. Download reference files (see docs/references.md)
+# 3. Download reference files (see docs/setup/references.md)
 #    Update paths in your dataset config
 
 # 4. Run — PBMC 10x example
@@ -90,7 +99,7 @@ nextflow run main.nf \
     -resume
 ```
 
-Full instructions: [docs/install.md](docs/install.md)
+Full instructions: [docs/setup/install.md](docs/setup/install.md)
 
 ---
 
@@ -103,13 +112,15 @@ FORGE ships with two fully annotated 10x Genomics example configurations (BD con
 | PBMC — healthy adult | Human (hg38) | `examples/nextflow_PBMC_Hs_10X.config` | `examples/main_PBMC_Hs_10X.nf` |
 | Alzheimer's mouse model | Mouse (mm10) | `examples/nextflow_AD_Mm_10X.config` | `examples/main_AD_Mm_10X.nf` |
 
-Data download links and setup: [docs/install.md#example-datasets](docs/install.md#example-datasets)
+Data download links and setup: [docs/setup/install.md#example-datasets](docs/setup/install.md#example-datasets)
 
 ---
 
 ## Containers
 
-FORGE uses five Singularity containers (1.1–4.7 GB each, ~13 GB total). They are too large to host on GitHub. Pre-built `.sif` files are available for download; build-from-source instructions including `.def` files are in [docs/containers.md](docs/containers.md).
+FORGE runs in five Singularity containers. The **build recipes** (`.def` files, ~40 KB total) ship in [docs/defs/](docs/defs/), so the containers are fully reproducible from this repository — you do not need to download anything large. The built `.sif` **images** are 1.8–4.7 GB each (~14 GB total), too large for git.
+
+Building a `.sif` needs root or `--fakeroot`. If your cluster restricts that, either ask your administrators to run the build, or build on a machine where you do have privileges and copy the images across — running a `.sif` requires no elevated privileges. See [docs/setup/containers.md](docs/setup/containers.md).
 
 | Container | Role |
 |-----------|------|
@@ -123,7 +134,7 @@ FORGE uses five Singularity containers (1.1–4.7 GB each, ~13 GB total). They a
 
 ## Reference files
 
-FORGE depends on large external reference atlases and motif databases that cannot be bundled with the repository (~600 GB total). See [docs/references.md](docs/references.md) for:
+FORGE depends on large external reference atlases and motif databases that cannot be bundled with the repository (~600 GB total). See [docs/setup/references.md](docs/setup/references.md) for:
 
 - Complete file manifest with sizes and download sources
 - Notes on custom-built references (scATAnno mouse brain atlas, Allen Brain subsampling)
@@ -157,11 +168,16 @@ FORGE/
 │   └── resource_tiers/        # small / medium / large resource presets
 ├── bin/                       # Standalone Python helper scripts
 ├── examples/                  # Worked 10x example configs & launch scripts
-├── singularity_cache/         # Pre-built .sif containers (not tracked in git)
-└── docs/
-    ├── install.md             # Installation and getting started
-    ├── references.md          # Reference file manifest
-    └── containers.md          # Container build instructions
+├── singularity_cache/         # Built .sif images (not tracked in git)
+├── mkdocs.yml                 # Documentation site config
+└── docs/                      # Documentation site source
+    ├── index.md               # Landing page
+    ├── quickstart.md          # Linear start-to-finish walkthrough
+    ├── verification.md        # How to verify FORGE works
+    ├── core/                  # Manifest CSV, nextflow.config, main.nf architecture
+    ├── setup/                 # Install, containers, references, cluster adaptation
+    ├── guides/                # Per-arm how-tos
+    └── defs/                  # Singularity build recipes (.def)
 ```
 
 ---

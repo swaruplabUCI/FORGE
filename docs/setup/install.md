@@ -84,7 +84,7 @@ The tables below list the minimum references required for each 10x example.
 | ENCODE mm10 blacklist v2 | small | [github.com/Boyle-Lab/Blacklist](https://github.com/Boyle-Lab/Blacklist/tree/master/lists) |
 | cisBP 2.00 mouse.meme | small | bundled with scATAnno (see references.md) |
 | Mouse brain scATAnno atlas | 1.96 GB | custom-built from GEO GSE246791 — see [references.md §scATAnno](references.md#scatanno-reference-atlases) |
-| Allen Brain mouse atlas | 145.7 GB | custom-built from Allen Brain Cell Atlas — see [references.md §Allen](references.md#allen-brain-atlas) |
+| Allen Brain mouse atlas | 145.7 GB | custom-built from Allen Brain Cell Atlas — see [references.md §Allen](references.md#allen-brain-atlas-mouse) |
 | SCENIC+ mm10 rankings (.feather) | 17.8 GB | [aertslab cistarget resources](https://resources.aertslab.org/cistarget/) |
 | SCENIC+ mm10 scores (.feather) | 8.2 GB | [aertslab cistarget resources](https://resources.aertslab.org/cistarget/) |
 | SCENIC+ MGI motif annotations | 113.1 MB | [aertslab cistarget resources](https://resources.aertslab.org/cistarget/) |

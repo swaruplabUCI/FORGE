@@ -1,0 +1,17 @@
+# Documentation site dependencies (MkDocs Material).
+# Pinned so the published site is reproducible; bump deliberately.
+#
+# Pygments is held at 2.18.0 on purpose. mkdocs-material 9.5.x requires
+# `pymdown-extensions~=10.2`, and pymdownx 10.x passes `filename=None` into
+# Pygments' HtmlFormatter. Pygments 2.19+ escapes that value unconditionally,
+# so the pair crashes with
+#   AttributeError: 'NoneType' object has no attribute 'replace'
+# on the first highlighted code block. 2.18.0 predates that change and still
+# satisfies material's `pygments~=2.16` constraint.
+#
+# When bumping mkdocs-material to a release that allows pymdown-extensions >= 11,
+# this Pygments pin can be dropped.
+mkdocs==1.6.1
+mkdocs-material==9.5.49
+pymdown-extensions==10.14
+Pygments==2.18.0

@@ -5,16 +5,63 @@ FORGE single-cell multiomics pipeline (Swarup Lab, UCI). It is intended for
 power users on HPC clusters who want to extend or rebuild the containers from
 scratch.
 
-> **Canonical build recipes** live in [`docs/defs/`](./defs/) — five Singularity
+> **Canonical build recipes** live in [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs) — five Singularity
 > definition files, one per container. Build with `singularity build --fakeroot
 > <name>.sif docs/defs/<name>.def`, or use the `hpc_defs/BUILD_ON_HPC.sh` wrapper
 > to build them all with logging and a SHA256 manifest.
 >
 > Every version pin, GitHub commit, and pitfall in this doc is reproduced from
 > those `.def` files and the v3.4 build logs (`scgpu_build.log`,
-> `seurat_build.log`, `next_build.log`). The earlier sandbox-based builder
-> (`mac_build_containers.sh`) is retained as a Mac convenience wrapper but no
-> longer the authoritative recipe.
+> `seurat_build.log`, `next_build.log`) — the `.def` files remain the
+> authoritative recipes. `mac_build_containers.sh` runs those same builds inside
+> a Lima VM, which is how you build on a laptop when your cluster forbids it, and
+> how you build **your own custom containers to extend FORGE**.
+
+## Three artifacts, three very different sizes
+
+It helps to be precise about what "container" refers to, because only one of
+these three things is large enough to be a distribution problem:
+
+| Artifact | What it is | Size | Distribution |
+|---|---|---|---|
+| **Recipe** (`.def`) | A Singularity definition file — plain text listing the base image, packages, and version pins. The authoritative source. | **4–17 KB** | **Ships in this repository**, under [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs) |
+| **Image** (`.sif`) | The built, immutable single-file image that Singularity executes. Produced from the recipe. | **1.8–4.7 GB each, ~14 GB total** | Too large for git; distributed as a download or built by you |
+| **Container** | The running instance Singularity creates from the image at exec time. | n/a | Not an artifact — created and discarded per task |
+
+The practical consequence is good news: **FORGE's containers are fully
+reproducible from ~40 KB of text in this repository.** You never need to obtain a
+prebuilt image if you can build one yourself.
+
+### If you lack root or `--fakeroot`
+
+Building a `.sif` requires root or `--fakeroot`, and many HPC sites restrict
+both. You have two good options:
+
+1. **Ask your HPC administrators to run the build.** The recipes are small,
+   self-contained, and auditable, which is usually all an admin needs to approve
+   and run `singularity build` on your behalf. Point them at
+   [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs) and [`hpc_defs/BUILD_ON_HPC.sh`](#build-commands).
+2. **Build somewhere you do have privileges, then copy the image over.** A `.sif`
+   is a self-contained file, and *running* one needs no elevated privileges:
+
+```mermaid
+flowchart LR
+    D["docs/defs/*.def<br/><i>~40 KB, in repo</i>"] --> B["build where you<br/>have privileges<br/><i>laptop / workstation</i>"]
+    B --> S["*.sif<br/><i>~14 GB</i>"]
+    S --> T["scp / rsync<br/>to the cluster"]
+    T --> R["singularity exec<br/><i>no privileges needed</i>"]
+```
+
+!!! warning "Your build environment must mimic your cluster's Linux environment"
+    A `.sif` is portable across Linux hosts of the **same CPU architecture**, so
+    a local build has to target what your HPC actually runs — in practice
+    `x86-64` Linux. Check with `uname -m` on a cluster node before you start.
+
+    On Linux with `--fakeroot`, this is automatic. On macOS you build inside a
+    Linux VM, and on Apple Silicon that VM must run x86-64 under emulation —
+    which is precisely what `mac_build_containers.sh` sets up (Lima + Apptainer,
+    with Rosetta on Apple Silicon). A natively-built `arm64` image will not run
+    on an `x86-64` cluster.
 
 ## Container overview
 
@@ -36,7 +83,7 @@ fix), scenicplus 2026-03-30, snapatac 2026-04-08 (scATAnno addition).
 ## Build system
 
 Each container has a standalone Singularity definition file under
-[`docs/defs/`](./defs/). The recommended path is:
+[`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs). The recommended path is:
 
 ```bash
 # On an HPC compute node (NOT a login node)
@@ -131,7 +178,7 @@ GPU Python container: scVI/scANVI, CellBender, CellTypist, scrublet, MOFA+
 
 ### Definition file
 
-The full recipe is in [`docs/defs/scgpu_extended.def`](./defs/scgpu_extended.def). Build with:
+The full recipe is in [`docs/defs/scgpu_extended.def`](https://github.com/swaruplabUCI/FORGE/blob/main/docs/defs/scgpu_extended.def). Build with:
 
 ```bash
 singularity build --fakeroot scgpu_extended.sif docs/defs/scgpu_extended.def
@@ -184,7 +231,7 @@ From the v3.4 build (inferred from the pinned constraints + the actual SIF):
 
 ### Definition file
 
-The full recipe is in [`docs/defs/snapatac_extended.def`](./defs/snapatac_extended.def). Build with:
+The full recipe is in [`docs/defs/snapatac_extended.def`](https://github.com/swaruplabUCI/FORGE/blob/main/docs/defs/snapatac_extended.def). Build with:
 
 ```bash
 singularity build --fakeroot snapatac_extended.sif docs/defs/snapatac_extended.def
@@ -230,7 +277,7 @@ R container: Seurat 5, hdWGCNA, CellChat, MAST, WGCNA.
 
 ### Definition file
 
-The full recipe is in [`docs/defs/seurat_extended.def`](./defs/seurat_extended.def). Build with:
+The full recipe is in [`docs/defs/seurat_extended.def`](https://github.com/swaruplabUCI/FORGE/blob/main/docs/defs/seurat_extended.def). Build with:
 
 ```bash
 singularity build --fakeroot seurat_extended.sif docs/defs/seurat_extended.def
@@ -305,7 +352,7 @@ crashes mid-run on a libxml2 self-upgrade. The crash is *expected* and the
 R install is fine afterwards. Translating the build to a clean `.def` is
 possible but the imperative form below is what we actually ship:
 
-The full recipe is in [`docs/defs/cicero.def`](./defs/cicero.def). Build with:
+The full recipe is in [`docs/defs/cicero.def`](https://github.com/swaruplabUCI/FORGE/blob/main/docs/defs/cicero.def). Build with:
 
 ```bash
 singularity build --fakeroot cicero.sif docs/defs/cicero.def
@@ -355,7 +402,7 @@ SCENIC+ container: pycisTopic + pySCENIC + Mallet LDA + graph-tool.
 
 ### Definition file
 
-The full recipe is in [`docs/defs/scenicplus.def`](./defs/scenicplus.def). Build with:
+The full recipe is in [`docs/defs/scenicplus.def`](https://github.com/swaruplabUCI/FORGE/blob/main/docs/defs/scenicplus.def). Build with:
 
 ```bash
 singularity build --fakeroot scenicplus.sif docs/defs/scenicplus.def
@@ -425,11 +472,37 @@ singularity build --fakeroot singularity_cache/seurat_extended.sif \
     docs/defs/seurat_extended.def
 ```
 
-### From the Mac builder (convenience, not authoritative)
+### From the Mac builder — local builds and custom containers
 
 `mac_build_containers.sh` provisions a Lima VM (Apptainer 1.4.5, Rosetta
-x86_64 emulation on Apple Silicon) and runs the same `.def` builds inside
-it. Use this when preparing `.sif` files on a laptop:
+x86_64 emulation on Apple Silicon) and runs the same `.def` builds inside it. It
+serves two distinct purposes:
+
+- **Building the five stock images on a laptop**, when you cannot build on the
+  cluster — then `scp` the results over (see
+  [If you lack root or `--fakeroot`](#if-you-lack-root-or-fakeroot)).
+- **Building your own custom containers to extend FORGE.** This is the supported
+  way to add functionality: copy a stock `.def`, add the packages your new
+  analysis needs, build it locally, and point FORGE at the result. Because
+  `params.containers` is just a map of names to `.sif` paths, a new or modified
+  image drops in without touching pipeline code:
+
+    ```groovy
+    params.containers = params.containers + [
+        scgpu: '/path/to/my_scgpu_extended_plus_mytool.sif'
+    ]
+    ```
+
+    Extending a stock recipe rather than starting from scratch keeps the version
+    pins that the rest of the pipeline depends on. See
+    [Adapting to your cluster](cluster.md) for overriding container paths, and the
+    per-container **Pitfalls** sections above for the constraints each base image
+    imposes.
+
+The `.def` files under [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs) remain the authoritative recipes;
+this wrapper is a convenience for running those builds on macOS.
+
+Usage:
 
 ```bash
 chmod +x mac_build_containers.sh
