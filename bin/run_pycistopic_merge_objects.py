@@ -61,10 +61,53 @@ def main():
     if len(cistopic_objects) == 1:
         cistopic_obj = cistopic_objects[0]
     else:
+        # pycisTopic's CistopicObject.merge() appends a numeric suffix (_1, _2, …)
+        # to every object's `project` to disambiguate cell_names across the merged
+        # objects. When all per-group objects come from the same sample (the common
+        # single-sample BD/10x case, where each object is one cell type of one sample),
+        # this mangles cell_names from "<bc>-<sample>" to "<bc>-<sample>_N". The RNA
+        # side keeps "<sample>:<bc>", so SCENIC+'s prepare_GEX_ACC later finds zero
+        # shared cells and aborts. Restore the canonical pre-merge names: capture each
+        # source object's cell_names in merge order, then re-apply after the merge.
+        # This is exact (these ARE the original names) and self-verifying — a barcode
+        # belongs to exactly one group, so the concatenated names are globally unique.
+        original_cell_names = [n for obj in cistopic_objects for n in obj.cell_names]
+        original_sample_ids = [
+            s for obj in cistopic_objects
+            for s in (obj.cell_data["sample_id"].astype(str).tolist()
+                      if "sample_id" in obj.cell_data.columns
+                      else [None] * len(obj.cell_names))
+        ]
         cistopic_obj = cistopic_objects[0].merge(
             cistopic_objects[1:],
             is_acc=1, project="merged", copy=True, split_pattern="-",
         )
+        merged_barcodes = cistopic_obj.cell_data["barcode"].astype(str).tolist() \
+            if "barcode" in cistopic_obj.cell_data.columns else None
+        aligned = merged_barcodes is not None and all(
+            name.split("-", 1)[0] == bc
+            for name, bc in zip(original_cell_names, merged_barcodes))
+        if len(original_cell_names) != len(cistopic_obj.cell_names):
+            logger.warning(
+                "Cell count mismatch (%d originals vs %d merged) — leaving merge "
+                "suffixes in place.", len(original_cell_names), len(cistopic_obj.cell_names))
+        elif not aligned:
+            logger.warning(
+                "Merge reordered cells (restored barcode token != merged barcode "
+                "column) — leaving merge suffixes in place to avoid mis-labeling.")
+        else:
+            cistopic_obj.cell_names = list(original_cell_names)
+            cistopic_obj.cell_data.index = pd.Index(
+                original_cell_names, name=cistopic_obj.cell_data.index.name)
+            # Also restore the sample_id column — merge rewrites it to match the
+            # disambiguated project (sample_N), which would otherwise desync from the
+            # restored cell_names and break the barcode+sample_id keys that merge_lda /
+            # finalize_lda reconstruct downstream.
+            if "sample_id" in cistopic_obj.cell_data.columns and None not in original_sample_ids:
+                cistopic_obj.cell_data["sample_id"] = original_sample_ids
+            logger.info(
+                "Restored %d canonical cell_names after merge (stripped pycisTopic "
+                "disambiguation suffix).", len(original_cell_names))
     logger.info("Merged object: %d cells, %d regions.",
                 len(cistopic_obj.cell_names), len(cistopic_obj.region_names))
 
