@@ -190,7 +190,9 @@ include { COMPOSITE_ENHANCER_VIZ      } from './modules/visualization/enhancer_v
 // D1b: B-tier modules absorbed from SDas_nf
 include { POST_QC_REPORT               } from './modules/atac/post_qc_report'
 include { ATAC_DESCRIPTIVE_REPORT      } from './modules/atac/descriptive_report'
-include { ENHANCER_FOOTPRINTING_PER_CT } from './modules/scprint/enhancer_footprinting_per_ct'
+include { ENHANCER_FOOTPRINTING_PER_CT        } from './modules/scprint/enhancer_footprinting_per_ct'
+include { ENHANCER_FOOTPRINTING_PER_CT_STRIP  } from './modules/scprint/enhancer_footprinting_per_ct_strip'
+include { RANK_ENHANCER_STRIP_GENES           } from './modules/scprint/rank_enhancer_strip_genes'
 include { BUILD_VIZ_CANDIDATES         } from './modules/visualization/build_viz_candidates'
 include { AGGREGATE_FP_STATS           } from './modules/visualization/aggregate_fp_stats'
 include { EXPORT_ATAC_BIGWIGS          } from './modules/visualization/export_atac_bigwigs'
@@ -3063,71 +3065,123 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         }
     }
 
-    // 2026-05-26: RENDER_MSFP_ENHANCER_STRIP — per-(CT, TF, target_gene)
-    // multi-scale footprint strip for each Cicero-linked enhancer peak.
-    // Gate: msfp_enabled (footprints must exist) + msfp_strip.enabled.
-    // Decoupled from overlay_enabled/build_network; runs whenever footprints
-    // and target_genes are configured. Cicero connections optional (NO_FILE).
-    // target_genes: prefers msfp_strip.target_genes; falls back to
-    // scprinter.target_genes.
+    // 2026-05-30: MSFP enhancer strip — discovery architecture.
+    // Phase 2.5: RANK_ENHANCER_STRIP_GENES discovers per-(CT, TF) target genes
+    //   from tfbs binding scores × Cicero co-accessibility (ATAC-only, no RNA).
+    // Phase 2.6: ENHANCER_FOOTPRINTING_PER_CT_STRIP re-runs with per-CT gene lists
+    //   to populate obsm in the h5ads (required for render_msfp_enhancer_strip.py).
+    // Phase 5:   RENDER_MSFP_ENHANCER_STRIP renders strips per (CT, TF, gene) using
+    //   h5ads from the strip re-run, joined to per-(CT,TF) gene lists.
+    //
+    // Supersedes the params-driven target_genes list: genes are now discovered
+    // per (CT, TF) rather than applied uniformly, so every rendered strip has
+    // co-accessibility evidence behind it.
+    //
+    // Gating: only fires when msfp_enabled + msfp_strip.enabled.
+    // Cell-count gate is implicit: RANK only receives h5ads from CTs that already
+    // passed the upstream min-cell / ChromVAR z-score gates via ENHANCER_FOOTPRINTING_PER_CT.
+    // CTs with no Cicero-ranked genes produce empty gene lists → filter excludes them
+    // from the STRIP re-run and RENDER, avoiding null-input tasks.
+    //
+    // TODO: pycisTopic ATAC-only split from SCENIC+ — when available, pipe
+    // pycistopic_topics_ch into RANK_ENHANCER_STRIP_GENES for stronger evidence tier.
     if (msfp_enabled && (params.msfp_strip?.enabled ?: false)) {
-        def enh_strip_genes = params.msfp_strip?.target_genes ?:
-                              params.scprinter?.target_genes ?: []
         def _strip_mode_raw = params.msfp_strip?.mode ?: 'absolute'
         // enhancer strip only supports absolute|differential; map all_three → differential
         def enh_strip_mode  = (_strip_mode_raw == 'all_three') ? 'differential' : _strip_mode_raw
         def enh_strip_gtf   = file(params.species == 'human' ?
             params.scprinter.gtf_human : params.scprinter.gtf_mouse)
 
-        if (enh_strip_genes && !enh_strip_genes.isEmpty()) {
-            log.info "RENDER_MSFP_ENHANCER_STRIP: mode=${enh_strip_mode}, " +
-                     "genes=${enh_strip_genes}, n=${enh_strip_genes.size()}"
+        // ── Phase 2.5: rank per-(CT, TF) target genes ──────────────────────
+        RANK_ENHANCER_STRIP_GENES(
+            enh_fp_binding_scores.collect(),
+            cicero_conns_ch.ifEmpty(file('NO_CICERO')).first(),
+            enh_strip_gtf,
+            params.msfp_strip?.top_n_regions ?: 100,
+            params.msfp_strip?.top_k_genes   ?: 5
+        )
 
-            // Build expected filename → (ct, tf) lookup from motif scan manifest.
-            // Reproduces Python sanitize rules from run_enhancer_footprinting.py:
-            //   safe_ct = ct.replace("/", "_")   ← ONLY slashes (spaces preserved!)
-            //   safe_tf = tf.replace("/", "_")
-            // NOTE: run_enhancer_footprinting_per_ct.py uses a stricter _sanitize()
-            // for summary CSV names, but the h5ad files are named by the inner
-            // run_enhancer_footprinting.py which uses the lax replace-only rule.
-            def ch_fp_name_to_ct_tf = MOTIF_SCAN_ENHANCERS.out.manifest
-                .flatMap { manifest_file ->
-                    def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
-                    data.region_sets.collect { entry ->
-                        def safe_ct = (entry.cell_type as String).replace('/', '_')
-                        def safe_tf = (entry.tf as String).replace('/', '_')
-                        def exp_name = "enhancer_footprints_${safe_ct}_${safe_tf}.h5ad"
-                        tuple(exp_name, entry.cell_type as String, entry.tf as String)
+        // ── Phase 2.6: re-run footprinting with per-CT strip gene lists ─────
+        // Build (ct, strip_genes_csv) channel from per_ct_genes.csv.
+        // Filter out CTs with empty gene lists before joining to avoid null-input tasks.
+        def ch_ct_strip_genes = RANK_ENHANCER_STRIP_GENES.out.per_ct_genes
+            .splitCsv(header: true)
+            .filter { row -> row.strip_target_genes && row.strip_target_genes.trim() }
+            .map    { row -> tuple(row.cell_type as String,
+                                   row.strip_target_genes as String) }
+
+        // Join per-CT footprinting inputs with their strip gene list.
+        // ch_per_ct_input = (ct, manifest_json, beds) — same channel used for first pass.
+        def ch_strip_per_ct_input = ch_per_ct_input
+            .join(ch_ct_strip_genes, by: 0)  // (ct, manifest, beds, strip_genes_csv)
+
+        // Pass strip_genes inside the per-CT tuple so it stays synchronized.
+        ENHANCER_FOOTPRINTING_PER_CT_STRIP(
+            ch_strip_per_ct_input,   // (ct, manifest, beds, strip_genes_csv) — 4-element tuple
+            printer,
+            peak_matrix,
+            cell_type_col,
+            enh_ctrl,
+            enh_trt
+        )
+
+        // ── Phase 5: render strips per (CT, TF, gene) ──────────────────────
+        // Build (ct, tf, gene, h5ad) from strip h5ads joined to per-(CT,TF) gene lists.
+        // Both channels are process outputs within this workflow → multicast, no exhaustion.
+        def ch_strip_fp_by_name = ENHANCER_FOOTPRINTING_PER_CT_STRIP.out.footprints
+            .flatMap { files ->
+                (files instanceof List ? files : [files]).collect { f -> tuple(f.name, f) }
+            }
+
+        // Filename → (ct, tf) lookup from the motif scan manifest. Reproduces the
+        // Python sanitize rule from run_enhancer_footprinting.py, which names the
+        // h5ads with a lax replace-only rule: safe = name.replace("/", "_")
+        // (slashes ONLY — spaces are preserved).
+        def ch_strip_name_to_ct_tf = MOTIF_SCAN_ENHANCERS.out.manifest
+            .flatMap { manifest_file ->
+                def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
+                data.region_sets.collect { entry ->
+                    def safe_ct = (entry.cell_type as String).replace('/', '_')
+                    def safe_tf = (entry.tf as String).replace('/', '_')
+                    tuple("enhancer_footprints_${safe_ct}_${safe_tf}.h5ad",
+                          entry.cell_type as String,
+                          entry.tf as String)
+                }
+            }
+
+        // per_ct_tf_genes.json: {ct: {tf: [genes]}} → (ct, tf, [genes]) channel
+        def ch_ct_tf_gene_lists = RANK_ENHANCER_STRIP_GENES.out.per_ct_tf_genes
+            .flatMap { json_file ->
+                def data = new groovy.json.JsonSlurper().parseText(json_file.text)
+                def results = []
+                data.each { ct, tf_map ->
+                    tf_map.each { tf, genes ->
+                        if (genes) results << tuple(ct as String, tf as String, genes as List)
                     }
                 }
+                results
+            }
 
-            // FlatMap per-CT footprint emissions to individual (filename, file) pairs.
-            def ch_fp_by_name = enh_fp_footprints
-                .flatMap { files ->
-                    (files instanceof List ? files : [files]).collect { f ->
-                        tuple(f.name, f)
-                    }
-                }
-
-            // Recover original (ct, tf) labels via filename join; cross with target genes.
-            def ch_enh_strip_in = ch_fp_by_name
-                .join(ch_fp_name_to_ct_tf, by: 0)
-                .map { fname, h5ad, ct, tf -> tuple(ct, tf, h5ad) }
-                .combine(Channel.fromList(enh_strip_genes))
-                .map { ct, tf, h5ad, gene ->
+        def ch_enh_strip_in = ch_strip_fp_by_name
+            .join(ch_strip_name_to_ct_tf, by: 0)         // (fname, h5ad, ct, tf)
+            .map { fname, h5ad, ct, tf -> tuple(ct, tf, h5ad) }
+            .join(ch_ct_tf_gene_lists, by: [0, 1])        // (ct, tf, h5ad, [genes])
+            .flatMap { ct, tf, h5ad, genes ->
+                genes.collect { gene ->
                     tuple(ct, tf, gene, h5ad, file('NO_FILE'), enh_strip_mode)
                 }
+            }
 
-            RENDER_MSFP_ENHANCER_STRIP(
-                ch_enh_strip_in,
-                enh_strip_gtf,
-                enh_ctrl,
-                enh_trt
-            )
-        } else {
-            log.warn "RENDER_MSFP_ENHANCER_STRIP: skipped — msfp_strip.target_genes " +
-                     "(and scprinter.target_genes) is empty"
-        }
+        log.info "RENDER_MSFP_ENHANCER_STRIP: discovery mode, mode=${enh_strip_mode}, " +
+                 "top_n_regions=${params.msfp_strip?.top_n_regions ?: 100}, " +
+                 "top_k_genes=${params.msfp_strip?.top_k_genes ?: 5}"
+
+        RENDER_MSFP_ENHANCER_STRIP(
+            ch_enh_strip_in,
+            enh_strip_gtf,
+            enh_ctrl,
+            enh_trt
+        )
     }
 
     // ================================================================
