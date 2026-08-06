@@ -74,7 +74,7 @@ Raw 10x/BD data
 
 ```bash
 # 1. Clone
-git clone https://github.com/swaruplab/FORGE.git
+git clone https://github.com/swaruplabUCI/FORGE.git
 cd FORGE
 
 # 2. Obtain containers (see docs/install.md)
@@ -138,16 +138,19 @@ FORGE/
 ├── main.nf                    # Pipeline entry point
 ├── nextflow.config            # Base config (all parameter defaults)
 ├── modules/                   # Per-tool Nextflow process definitions
-│   ├── rna/
-│   ├── atac/
-│   ├── multiome/
-│   ├── cicero/
-│   ├── chromvar/
-│   ├── scenicplus/
-│   ├── scprint/
-│   ├── cellchat/
-│   ├── hdwgcna/
-│   └── visualization/
+│   ├── rna/                   # CellBender, QC, scVI/scANVI, MAST
+│   ├── atac/                  # SnapATAC2 QC, peak calling, differential
+│   ├── cellannotator/         # CellTypist, scATAnno, annotation merging
+│   ├── multiome/              # MOFA+, MultiVI, MuData, pycisTopic, SCENIC+
+│   ├── integration/           # Cross-modal integration & validation
+│   ├── cicero/                # Co-accessibility (CCANs)
+│   ├── chromvar/              # TF motif enrichment
+│   ├── scprint/               # scPRINTER footprinting & enhancer strips
+│   ├── cellchat/              # Cell-cell communication
+│   ├── hdwgcna/               # RNA co-expression networks
+│   ├── conversion/            # Format conversion (h5ad/Seurat/MuData)
+│   ├── validation/            # Orthogonal validation (e.g. TF ChIP corroboration)
+│   └── visualization/         # Genome browser, composites, bigWig export
 ├── configs/
 │   ├── datasets/              # Per-experiment parameter overrides
 │   ├── profiles/              # HPC cluster SLURM profile
