@@ -15,6 +15,10 @@ output/
 # Singularity containers (large binaries)
 singularity_cache/
 
+# Tutorial dataset (~79 MB, distributed as a release tarball, not via git).
+# NOTE: test_data/ is deliberately NOT ignored — it is 7 KB and ships in-repo.
+tutorial_data/
+
 # HPC job logs
 slurm-*.out
 container_build_*.log
