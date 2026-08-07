@@ -464,6 +464,8 @@ These are unguarded by pre-flight and produce cryptic errors:
 | `Cannot get property 'run' on null object` | A nested block missing from base config. Fixed in 7d081c2 for `multivi.masking_sweep/driver_factors/gap_fill`; watch for others. |
 | `A process input channel evaluates to null -- Invalid declaration 'val …'` | A Nextflow `val` cannot be null. The disabled sentinel is the **string** `"none"` (e.g. `scenicplus.bc_transform_func`). |
 | Inner gate on, nothing happens | `msfp_strip.enabled` needs `enhancer_footprinting.msfp_enabled` too. Outer gate wins. |
+| **`resource_tier` in a `-c` file is IGNORED** | The `includeConfig` chain at the bottom of `nextflow.config` is evaluated while that file is parsed — **before** `-c` files merge. Verified: a `-c` file declaring `'tutorial'` still got small.config's 200 GB `MULTIVI_INTEGRATE` block. Set the tier in a **profile** (like `test` / `tutorial`) instead. The per-instance `launch.sh` scripts work around it by scraping the tier out of the config and re-passing `--resource_tier` on the CLI. |
+| Clearing `containerOptions` globally | Wipes the `--env R_LIBS_USER=/dev/null` that `nextflow.config` sets for `RUN_CELLCHAT`/`COMPARE_CELLCHAT`, without which basilisk fails on a conda lookup. Clear GPU's `--nv` with a targeted `withName` block, never a wildcard. |
 
 ---
 
@@ -493,25 +495,55 @@ These are unguarded by pre-flight and produce cryptic errors:
 |---|---|
 | 0 — CPU-only viability + explicit `accelerator` | ✅ done, verified |
 | 1 — build chr21+chr22 subset | ✅ done, **all 14 checks pass**, 78.9 MB |
-| **2 — tutorial config + `tutorial` resource tier** | ⬜ **RESUME HERE** |
-| 3 — run end-to-end and iterate | ⬜ |
+| 2 — tutorial config + `tutorial` tier + profile | ✅ done, `-preview` passes (7 checks) |
+| **3 — run end-to-end and iterate** | ⬜ **RESUME HERE** |
 | 4 — on-ramp bundle (optional) | ⬜ |
 | 5 — publish (GitHub Release) + docs | ⬜ |
 
-**Resume at Step 2:**
+**Step 2 shipped** (all verified):
 
-1. `cd /dfs7/swaruplab/lesolano/src_FORGE && git log --oneline -3` — confirm `dev`.
-2. Write `configs/datasets/tutorial_pbmc.config` pointing at
-   `/dfs7/swaruplab/lesolano/FORGE/oneOff/20260806_tutorial/out/` — see the
-   config block in §5 Step 2 for every required setting and why each is there.
-3. Write `configs/resource_tiers/tutorial.config`, add `'tutorial'` to
-   `allowedTiers` in `main.nf` (~line 855) and to the tier `includeConfig` chain
-   at the bottom of `nextflow.config`. **Neutralize GPU by both mechanisms** —
-   see §3b item 4.
-4. `nextflow run main.nf -preview -c configs/datasets/tutorial_pbmc.config`
-   before any real run — 15 s beats a long failure.
-5. **Re-run the §3b regression check** before committing anything that touches
-   shared config, so the four production datasets stay untouched.
+- `configs/datasets/tutorial_pbmc.config` — the dataset config
+- `configs/resource_tiers/tutorial.config` — CPU-only tier, real resources
+- `tutorial` **profile** in `nextflow.config` — this is what selects the tier
+- `'tutorial'` added to `allowedTiers` in `main.nf`
+
+Verified: `-preview` passes 7 checks / no warnings; GPU fully stripped
+(`gres=gpu` 0, non-empty `clusterOptions` 0, the GPU process set resolves to
+`accelerator = null`); containers and CellChat's `R_LIBS_USER` guard preserved;
+and the resolved **production** config is **byte-identical to HEAD** (1351 lines,
+empty diff) with GPU intact (`gres=gpu` 10, `accelerator = 1` 6, `--nv` 10).
+
+**Resume at Step 3 — the first real run:**
+
+```bash
+cd /dfs7/swaruplab/lesolano/src_FORGE
+export PATH=/dfs7/swaruplab/lesolano/tools:$PATH
+nextflow run main.nf -profile tutorial,singularity \
+    -c configs/datasets/tutorial_pbmc.config -resume
+```
+
+Note `-profile tutorial,singularity` — **not** `test` (which disables containers)
+and **not** relying on `resource_tier` in the `-c` file (which does not select a
+tier; see §7). Expect several rounds of genuine failures; record wall-time and
+peak RSS per process from `logs/nextflow/trace.txt` so the published numbers are
+measured rather than guessed.
+
+Before committing anything that touches shared config, **re-run the §3b
+regression check** — ideally the byte-diff form:
+
+```bash
+timeout 400 nextflow -c configs/datasets/pbmc_10x_10k.config config \
+  -profile cluster,gpu,singularity > /tmp/after.txt
+git stash push -q -- nextflow.config main.nf      # tracked files only
+timeout 400 nextflow -c configs/datasets/pbmc_10x_10k.config config \
+  -profile cluster,gpu,singularity > /tmp/before.txt
+git stash pop -q
+diff /tmp/before.txt /tmp/after.txt && echo "no production impact"
+```
+
+(`git stash push` with a pathspec fails outright if any listed path is untracked —
+list only tracked files, or the stash silently isn't created and the diff is
+meaningless.)
 
 Re-run the tests in `dev_notes/phase3/` whenever the containers or scvi-tools
 version change — they are cheap, and they are what proved CPU viability.

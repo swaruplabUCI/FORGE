@@ -852,9 +852,9 @@ def validateStartupParams() {
     // --- MIS-11 / MIS-25 (2026-05-04): resource_tier typo guard.
     // 'auto' is a documented alias for 'small'; case-sensitive match catches
     // typos like 'Medium' that previously fell through silently to small.
-    // 'test' is the minimal tier used by -profile test for stub runs; it asks for
-    // 1 CPU / 1 GB per process so the local executor accepts every task.
-    def allowedTiers = ['small', 'medium', 'large', 'auto', 'test']
+    // 'test'     — minimal tier used by -profile test for -preview (1 CPU / 1 GB).
+    // 'tutorial' — CPU-only tier for the tier-2 tutorial dataset; real work, no GPU.
+    def allowedTiers = ['small', 'medium', 'large', 'auto', 'test', 'tutorial']
     if (params.resource_tier && !(params.resource_tier in allowedTiers)) {
         errors << "params.resource_tier='${params.resource_tier}' is invalid (case-sensitive). " +
                   "Allowed: ${allowedTiers}. Check for typos like capital letters."
