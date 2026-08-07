@@ -17,6 +17,11 @@ def parse_args():
     p.add_argument("--out_mudata", required=True, help="Output MuData .h5mu with MultiVI annotations")
     p.add_argument("--n_epochs", type=int, default=200, help="Number of training epochs")
     p.add_argument("--batch_key", type=str, default="sample_id", help="obs batch key in MuData")
+    p.add_argument("--accelerator", default="auto", choices=["auto", "gpu", "cpu"],
+                   help="Device for scvi-tools training. 'auto' (default) uses a GPU when "
+                        "one is visible and falls back to CPU. 'cpu' forces CPU, which is "
+                        "what CPU-only tutorial runs use. Passed straight through to "
+                        "MULTIVI.train(accelerator=...).")
     p.add_argument(
         "--modality_weights",
         type=str,
@@ -90,6 +95,7 @@ def main():
     mvi.train(
         max_epochs=args.n_epochs,
         adversarial_mixing=True,
+        accelerator=args.accelerator,
     )
 
     # Store joint latent representation back into MuData

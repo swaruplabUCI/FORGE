@@ -25,6 +25,7 @@ process MULTIVI_INTEGRATE {
         --batch_key ${params.multivi.batch_key} \
         --modality_weights ${params.multivi.modality_weights} \
         --modality_penalty ${params.multivi.modality_penalty} \
-        --latent_dim ${params.multivi.n_latent}
+        --latent_dim ${params.multivi.n_latent} \
+        --accelerator ${params.scvi_accelerator ?: 'auto'}
     """
 }

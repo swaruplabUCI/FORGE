@@ -25,6 +25,7 @@ process TRAIN_SCANVI {
         --label_key_file ${label_key_file} \\
         --scvi_model_dir ${scvi_model_dir} \\
         --results_dir . \\
-        --epochs ${params.scanvi_epochs}
+        --epochs ${params.scanvi_epochs} \\
+        --accelerator ${params.scvi_accelerator ?: 'auto'}
     """
 }

@@ -141,27 +141,49 @@ that is Step 0.
 
 ## 5. Phase 3 plan
 
-### Step 0 — verify CPU fallback (BLOCKING, do this first, ~1 h)
+### Step 0 — verify CPU fallback — ✅ **DONE 2026-08-06**
 
-If scvi-tools does not actually fall back to CPU, T2 needs a GPU and the whole
-shape changes. The test is written and ready:
+**Result: T2 can run CPU-only.** Verified on a GPU-less node (`nvidia-smi` absent)
+inside `scgpu_extended.sif` **without `--nv`**, so CUDA was genuinely unavailable
+(`torch.cuda.is_available() == False`, `GPU available: False, used: False`):
 
-```bash
-cd /dfs7/swaruplab/lesolano/src_FORGE
-module load singularity 2>/dev/null || module load apptainer 2>/dev/null || true
-# NOTE: deliberately NO --nv, so no GPU is visible → forces the CPU path
-singularity exec -B /dfs7 -B /tmp --home /tmp \
-  singularity_cache/scgpu_extended.sif \
-  python3 dev_notes/phase3/cpu_fallback_test.py
+| Stage | Result |
+|---|---|
+| scVI | PASS — trained on CPU |
+| scANVI | PASS |
+| MultiVI | PASS (`latent shape: (300, 5)`) |
+| MOFA+ | PASS with `gpu_mode=False` |
+| CellBender | imports; CLI is CPU unless `--cuda`, which FORGE never passes |
+| **ChromVAR** | **hard GPU dep — excluded from T2 by decision** |
+
+Two gotchas found while doing this, both recorded so they are not repeated:
+
+- The first run reported `MultiVI FAIL`. That was a **bug in the test**, not a CPU
+  problem: it used the deprecated `MULTIVI.setup_anndata`. FORGE correctly uses
+  `MULTIVI.setup_mudata` on a MuData with `rna`/`atac` modalities
+  (`bin/run_multivi_integration.py:57`). `dev_notes/phase3/multivi_cpu_test.py`
+  mirrors FORGE's real path and passes.
+- Wrapping a test in a shell command ending in `echo "EXIT=$?"` masks the real
+  exit code from the task notification. Check the script's own reported exit.
+
+**The device is now EXPLICIT rather than inferred** (`accelerator='auto'` was
+being relied on implicitly). New param:
+
+```groovy
+scvi_accelerator = 'auto'   // 'auto' | 'cpu' | 'gpu'
 ```
 
-It exercises scVI, scANVI, MultiVI, MOFA+, and CellBender import on tiny
-synthetic data using FORGE's exact call patterns, and exits non-zero listing
-blockers. Expected: `ALL CLEAR: T2 can run CPU-only.`
+Threaded as `--accelerator` through `bin/train_scvi.py`, `bin/train_scanvi.py`,
+`bin/run_multivi_integration.py` and their three modules
+(`modules/integration/scvi.nf`, `modules/integration/scanvi.nf`,
+`modules/multiome/multivi_integrate.nf`). Default `'auto'` preserves existing GPU
+behaviour exactly; the tutorial config sets `'cpu'`. Both values verified against
+scvi-tools 1.4.2 by `dev_notes/phase3/accelerator_arg_test.py`.
 
-If a stage fails, the fallback options are: pass `accelerator='cpu'` explicitly
-in the relevant `bin/` script (small, safe change), or drop that stage from T2
-and on-ramp it like ChromVAR.
+**Still to handle in Step 2:** `TRAIN_SCVI`, `TRAIN_SCANVI` and
+`MULTIVI_INTEGRATE` carry `label 'process_gpu'`, and the production tiers attach
+GPU `clusterOptions` to them. The `tutorial` tier must override those so a
+CPU-only run does not request a GPU it will not use.
 
 ### Step 1 — build the subset (~2–3 h)
 
@@ -219,6 +241,8 @@ params {
 
     n_epochs_scvi = 20                          // tiny data; keep runtime low
     multivi { n_epochs = 20 }
+
+    scvi_accelerator = 'cpu'                    // explicit CPU; verified in Step 0
 }
 ```
 
@@ -327,10 +351,16 @@ These are unguarded by pre-flight and produce cryptic errors:
 
 ---
 
-## 9. First three actions on resume
+## 9. First actions on resume
+
+Step 0 is **done** — CPU-only is confirmed viable and the accelerator is now an
+explicit param. Resume at **Step 1**:
 
 1. `cd /dfs7/swaruplab/lesolano/src_FORGE && git log --oneline -3` — confirm you
-   are on `dev` at `7d081c2`.
-2. Run the **Step 0** CPU-fallback test (§5). Everything downstream depends on it.
-3. If it passes, start Step 1 in
-   `/dfs7/swaruplab/lesolano/FORGE/oneOff/20260806_tutorial/`.
+   are on `dev`.
+2. Start **Step 1** (build the chr21+chr22 subset) in
+   `/dfs7/swaruplab/lesolano/FORGE/oneOff/20260806_tutorial/`. Remember the two
+   traps: keep ~19,000 empty droplets for CellBender, and keep all genes on the
+   RNA side.
+3. Re-run the tests in `dev_notes/phase3/` any time the container or scvi-tools
+   version changes — they are cheap and they are what proved CPU viability.

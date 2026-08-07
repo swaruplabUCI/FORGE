@@ -23,6 +23,12 @@ def main():
     parser.add_argument('--scvi_model_dir', required=True, help='Directory containing trained SCVI model')
     parser.add_argument('--results_dir', required=True)
     parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--accelerator', default='auto',
+                        choices=['auto', 'gpu', 'cpu'],
+                        help="Device for scvi-tools training. 'auto' (default) uses a GPU "
+                             "when one is visible and falls back to CPU. 'cpu' forces CPU, "
+                             "which is what CPU-only tutorial runs use. Passed straight "
+                             "through to SCANVI.train(accelerator=...).")
     
     args = parser.parse_args()
     
@@ -69,8 +75,10 @@ def main():
         labels_key=SCANVI_LABELS_KEY
     )
     
-    print(f"Training SCANVI for {min(20, args.epochs)} epochs...")
-    scanvi_ref.train(max_epochs=min(20, args.epochs), n_samples_per_label=100)
+    print(f"Training SCANVI for {min(20, args.epochs)} epochs "
+          f"(accelerator={args.accelerator})...")
+    scanvi_ref.train(max_epochs=min(20, args.epochs), n_samples_per_label=100,
+                     accelerator=args.accelerator)
     
     scanvi_model_path = os.path.join(args.results_dir, f"scanvi_{SCANVI_LABELS_KEY}_{args.epochs}e")
     scanvi_ref.save(scanvi_model_path, overwrite=True)
@@ -103,6 +111,7 @@ def main():
     scanvi_query.train(
         max_epochs=args.epochs,
         check_val_every_n_epoch=10,
+        accelerator=args.accelerator,
         **train_kwargs
     )
     

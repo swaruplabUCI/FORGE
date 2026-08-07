@@ -9,7 +9,8 @@ import torch
 from h5ad_compat import sanitize_adata
 torch.set_float32_matmul_precision('medium')
 
-def train_refmap_scvi_model(adata, number_of_epochs, batch_key, results_dir):
+def train_refmap_scvi_model(adata, number_of_epochs, batch_key, results_dir,
+                            accelerator='auto'):
     """
     Trains a scVI model with proper batch key handling
     """
@@ -56,8 +57,8 @@ def train_refmap_scvi_model(adata, number_of_epochs, batch_key, results_dir):
     )
     
     # Train SCVI model
-    print(f"Training scVI for {number_of_epochs} epochs...")
-    scvi_ref.train(max_epochs=number_of_epochs)
+    print(f"Training scVI for {number_of_epochs} epochs (accelerator={accelerator})...")
+    scvi_ref.train(max_epochs=number_of_epochs, accelerator=accelerator)
     
     # Save the SCVI model
     scvi_model_path = os.path.join(results_dir, f"scvi_{number_of_epochs}e")
@@ -96,6 +97,12 @@ def main():
     parser.add_argument('--results_dir', required=True)
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch_key', default='sample', help='Batch key (default: sample)')
+    parser.add_argument('--accelerator', default='auto',
+                        choices=['auto', 'gpu', 'cpu'],
+                        help="Device for scvi-tools training. 'auto' (default) uses a GPU "
+                             "when one is visible and falls back to CPU. 'cpu' forces CPU, "
+                             "which is what CPU-only tutorial runs use. Passed straight "
+                             "through to SCVI.train(accelerator=...).")
     parser.add_argument('--save_adata', action='store_true', help='Save updated adata with embeddings')
     
     args = parser.parse_args()
@@ -112,7 +119,8 @@ def main():
         adata=ref,
         number_of_epochs=args.epochs,
         batch_key=args.batch_key,
-        results_dir=args.results_dir
+        results_dir=args.results_dir,
+        accelerator=args.accelerator
     )
     
     # Optionally save reference with SCVI embedding
