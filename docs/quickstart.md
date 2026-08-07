@@ -214,6 +214,8 @@ coherent, then run. Reasonable order:
 
 ## Where to go next
 
+- [Tutorial](tutorial.md) — run the whole pipeline end to end on a small public
+  dataset, CPU-only, with or without SLURM. The fastest way to see FORGE work.
 - [The three core files](core/index.md) — the manifest, the config, the architecture
 - [Verifying FORGE works](verification.md) — the full verification ladder
 - [On-ramps & resuming](onramps.md) — skip stages you have already computed

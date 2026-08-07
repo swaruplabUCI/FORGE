@@ -19,9 +19,20 @@ singularity_cache/
 # NOTE: test_data/ is deliberately NOT ignored — it is 7 KB and ships in-repo.
 tutorial_data/
 
+# Tutorial on-ramp bundle (~19 MB of h5ads), built by
+# dev_notes/phase3/build_onramp_chromvar.sh. NOT shipped — under the tutorial's
+# own settings it unlocks nothing (see that script's header). Ignored so the
+# artifacts of an exploratory build never land in git.
+tutorial_onramp/
+
+# MkDocs build output (`mkdocs build` writes here; the site deploys from CI).
+site/
+
 # HPC job logs
 slurm-*.out
 container_build_*.log
+forge-tutorial-*.log
+dev_notes/phase3/onramp_chromvar_*.log
 
 # Data files (too large for git)
 *.h5

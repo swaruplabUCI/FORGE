@@ -66,6 +66,7 @@ plugins:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Tutorial — run it end to end: tutorial.md
   - Verifying FORGE works: verification.md
   - The three core files:
       - core/index.md
