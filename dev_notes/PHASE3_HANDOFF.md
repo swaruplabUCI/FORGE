@@ -383,44 +383,40 @@ that is Step 3, and it is where real failures are expected.
 it substantially, but it is unclear which T2 consumers accept `.gz`, so it was
 left plain rather than guessed at. Revisit if release size matters.
 
-### Step 2 — config + resource tier (~1 h)
+### Step 2 — config + resource tier — ✅ **DONE & VERIFIED 2026-08-06**
 
-- `configs/datasets/tutorial_pbmc.config`
-- `configs/resource_tiers/tutorial.config` — a NEW tier. Do **not** reuse the
-  `test` tier: it is deliberately 1 CPU / 1 GB and cannot run real work. Add
-  `tutorial` to the `allowedTiers` list in `main.nf` (~line 855, currently
-  `['small','medium','large','auto','test']`) and to the tier `includeConfig`
-  chain at the bottom of `nextflow.config`.
+Shipped (commit `bf3a5fb`, relocatability fix `286ad3d`):
 
-Required settings (each for a reason found the hard way):
+| File | Role |
+|---|---|
+| `configs/datasets/tutorial_pbmc.config` | dataset config, fully commented |
+| `configs/resource_tiers/tutorial.config` | CPU-only tier, **real** resources |
+| `nextflow.config` → `tutorial` profile | **this is what selects the tier** |
+| `main.nf` | `'tutorial'` added to `allowedTiers` |
+| `.gitignore` | `tutorial_data/` ignored (79 MB ships as a release asset) |
 
-```groovy
-params {
-    species       = 'human'
-    metadata_file = "${projectDir}/tutorial_data/manifest.csv"
-    resource_tier = 'tutorial'
-
-    // ATAC annotation without the 2.76 GB atlas
-    atac { marker_file     = "${projectDir}/configs/marker_genes.json"
-           tissue_type     = 'pbmc'
-           sample_metadata = "${projectDir}/tutorial_data/manifest.csv" }  // REQUIRED, see §7
-
-    chromvar { run = false }                    // hard cupy dependency
-    cicero   { use_chromvar_targets = false }   // defaults true → would demand ChromVAR
-
-    pycistopic { run = false }                  // cisTarget DBs can't be subset
-    scenicplus { run = false }
-    enhancer_footprinting { run = false; msfp_enabled = false }   // 54% of all compute
-
-    // scprinter.gtf_{human,mouse} MUST be set explicitly here — see §7
-    scprinter { gtf_human = '<subset gtf>'; pfms = '<JASPAR>' }
-
-    n_epochs_scvi = 20                          // tiny data; keep runtime low
-    multivi { n_epochs = 20 }
-
-    scvi_accelerator = 'cpu'                    // explicit CPU; verified in Step 0
-}
+```bash
+nextflow run main.nf -profile tutorial,singularity \
+    -c configs/datasets/tutorial_pbmc.config -resume
 ```
+
+**The dataset is relocatable** — this was broken and is now fixed. Data lives at
+`${projectDir}/tutorial_data` (override with `--tutorial_data`), and the manifest's
+`data_dir` column is **blank on purpose** so directories resolve from
+`params.batch_dirs[tutorial]`. An absolute `data_dir`, or the original hardcoded
+`oneOff` path, would have broken for every user but the build machine.
+
+**Verified:**
+
+- `-preview -profile tutorial,singularity` → PRE-FLIGHT PASSED (7 checks), no
+  warnings. Because pre-flight checks `rna_file` existence, this exercises real
+  path resolution rather than just parsing.
+- GPU fully stripped: `gres=gpu` 0, non-empty `clusterOptions` 0, and the GPU
+  process set resolves to `accelerator = null`.
+- Containers preserved (16 sif refs) **and** CellChat's
+  `--env R_LIBS_USER=/dev/null` guard intact.
+- Production untouched: resolved `pbmc_10x_10k` config differs from HEAD by
+  exactly one line, the new `random_seed = 42`.
 
 **In scope for T2:** manifest + pre-flight, CellBender, RNA QC → scVI →
 clustering → CellTypist, ATAC QC → peak calling → clustering → marker
@@ -428,20 +424,44 @@ annotation, Cicero, MOFA+, MultiVI, CellChat, hdWGCNA.
 **Out of scope:** ChromVAR, SCENIC+/pycisTopic, scPRINTER footprinting — all
 demoed via `params.onramp`.
 
-### Step 3 — run and iterate (~half a day)
+Floors lowered for 1,000 cells: `hdwgcna.min_cells` 100 → 50 (a PBMC type here is
+~30–400 cells, so the default would skip most). `qc.cell_type_resolution` stays at
+`max(50, 1% × total)` = 50.
+
+### Step 3 — run and iterate ⬅ **RESUME HERE** (~half a day)
 
 ```bash
 cd /dfs7/swaruplab/lesolano/src_FORGE
 export PATH=/dfs7/swaruplab/lesolano/tools:$PATH
-# always validate first — 15 s vs a long failure
-nextflow run main.nf -preview -c configs/datasets/tutorial_pbmc.config
-# then the real thing
-nextflow run main.nf -profile standard,singularity \
+
+# 1. Always validate first — 15 s beats a long failure.
+nextflow run main.nf -preview -profile tutorial,singularity \
+    -c configs/datasets/tutorial_pbmc.config
+
+# 2. The real run. NOTE -profile tutorial,singularity:
+#      'tutorial'  selects the CPU tier (a -c file CANNOT — see §7)
+#      'singularity' keeps containers ON (unlike -profile test)
+nextflow run main.nf -profile tutorial,singularity \
     -c configs/datasets/tutorial_pbmc.config -resume
 ```
 
-Expect several rounds of genuine failures. Record wall-time and peak RSS per
-process from `logs/nextflow/trace.txt` — publish measured numbers, not guesses.
+Expect several rounds of genuine failures — this is the first time any of it has
+executed. Record wall-time and peak RSS per process from
+`logs/nextflow/trace.txt`; publish measured numbers, not guesses.
+
+**Then run it a SECOND time into a separate outdir and diff the two.** Now that
+scvi-tools is seeded (§3c) the run should be reproducible, so this does double
+duty: it confirms the seeding works end-to-end on real data, and it tells you
+empirically which quantities are stable — which is exactly what the Step 3b
+expected-values contract should be built from, instead of guessed tolerances.
+
+```bash
+nextflow run main.nf -profile tutorial,singularity \
+    -c configs/datasets/tutorial_pbmc.config --outdir results_tutorial_run2
+```
+
+Anything that differs between run 1 and run 2 is environment-sensitive and must
+NOT be an exact-match assertion.
 
 ### Step 3b — output vetting and expected results
 
@@ -530,6 +550,16 @@ them.
 - **Don't follow `-preview` with a bare `-resume`** — the preview's empty
   session gets picked from history. Run previews from a separate directory or
   resume an explicit session id.
+- **`singularity exec --home /tmp` makes the container CWD `/tmp`**, so a relative
+  script path resolves to `/tmp/<path>` and fails with
+  `can't open file '/tmp/dev_notes/...'`. Always pass **absolute** paths to
+  `python3` inside these containers.
+- **`du -sh` under-reports freshly written files on BeeGFS.** A 79 MB directory
+  read as `9.5K` right after an rsync. Sum `stat -c %s` instead before concluding
+  a copy failed.
+- **Piping a long-running command through `tail` buffers all output**, so the task
+  log stays empty until it exits — that is not a hang. Redirect to a file and
+  `grep` it afterwards if you want progress.
 - **Adding a `stub:` block does NOT bust the resume cache** (verified: identical
   task hash, `cached: 2`).
 - **Docs venv:** `/tmp/lesolano/mkdocsvenv` may be gone after a reboot.
@@ -584,22 +614,37 @@ These are unguarded by pre-flight and produce cryptic errors:
 | 0 — CPU-only viability + explicit `accelerator` | ✅ done, verified |
 | 1 — build chr21+chr22 subset | ✅ done, **all 14 checks pass**, 78.9 MB |
 | 2 — tutorial config + `tutorial` tier + profile | ✅ done, `-preview` passes (7 checks) |
+| 2b — reproducibility: seed scvi-tools (§3c) | ✅ done, proven bit-identical |
 | **3 — run end-to-end and iterate** | ⬜ **RESUME HERE** |
+| 3b — expected-values contract | ⬜ deferred by design until after Step 3 |
 | 4 — on-ramp bundle (optional) | ⬜ |
 | 5 — publish (GitHub Release) + docs | ⬜ |
 
-**Step 2 shipped** (all verified):
+**Commits this session** (branch `dev`, none pushed):
 
-- `configs/datasets/tutorial_pbmc.config` — the dataset config
-- `configs/resource_tiers/tutorial.config` — CPU-only tier, real resources
-- `tutorial` **profile** in `nextflow.config` — this is what selects the tier
-- `'tutorial'` added to `allowedTiers` in `main.nf`
+```
+be2d965 FIX: seed scvi-tools — it was FORGE's only non-reproducible step
+286ad3d FIX: make the tutorial dataset relocatable (pinned to a build machine)
+bf3a5fb FEAT: tutorial dataset config + CPU-only tutorial tier and profile
+32201df DOCS: Phase 3 progress — Step 1 dataset built and verified
+1b4027d FEAT: explicit scvi-tools accelerator param; CPU-only viability verified
+9d3b6ec DOCS: Phase 3 handoff plan
+7d081c2 FEAT: dependency-free verification fixture + config-default fixes
+2c96ffb DOCS: MkDocs Material documentation site
+fd79e33 DOCS: fix README clone URL and correct the modules/ layout
+```
 
-Verified: `-preview` passes 7 checks / no warnings; GPU fully stripped
-(`gres=gpu` 0, non-empty `clusterOptions` 0, the GPU process set resolves to
-`accelerator = null`); containers and CellChat's `R_LIBS_USER` guard preserved;
-and the resolved **production** config is **byte-identical to HEAD** (1351 lines,
-empty diff) with GPU intact (`gres=gpu` 10, `accelerator = 1` 6, `--nv` 10).
+**Scripts kept under `dev_notes/phase3/`** (all re-runnable; use ABSOLUTE paths
+inside containers — see §6):
+
+| Script | Proves |
+|---|---|
+| `cpu_fallback_test.py` | scVI/scANVI/MOFA+/CellBender run CPU-only |
+| `multivi_cpu_test.py` | MultiVI via `setup_mudata`, as FORGE calls it |
+| `accelerator_arg_test.py` | explicit `accelerator='cpu'` and `'auto'` both work |
+| `seed_reproducibility_test.py` | same seed → bit-identical; unseeded → diverges |
+| `build_scripts/0{1,2,3,4}_*.py` | rebuild + verify the tutorial dataset |
+| `gen_stubs_REVERTED.py` | reference only — the abandoned stub generator |
 
 **Resume at Step 3 — the first real run:**
 
