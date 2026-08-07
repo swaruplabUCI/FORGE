@@ -9,7 +9,7 @@ a very different cost.
 
 | Tier | Question it answers | Time | Needs |
 |---|---|---|---|
-| **1. Pre-flight** | Does my configuration make sense? Does the DAG wire up? | **~10 seconds** | Nextflow only |
+| **1. Pre-flight + DAG** | Is my configuration coherent? Does the whole graph wire up? | **~15 seconds** | Nextflow only |
 | **2. Tiny dataset** | Does a real analysis arm produce real numbers? | **~15–60 minutes** | ~200 MB data, 2 containers, CPU only |
 | **3. Full datasets** | Does it scale, and reproduce the published figures? | hours–days | Full references, GPU, HPC |
 
@@ -17,10 +17,45 @@ Start at tier 1. It costs nothing and catches most mistakes.
 
 ---
 
-## Tier 1 — pre-flight validation
+## Tier 1 — pre-flight and DAG construction
 
-This requires **no containers, no reference files, and no GPU**. It runs on a
-laptop.
+This requires **no containers, no reference files, no GPU, and no downloads**. It
+runs on a laptop.
+
+### Run it against the shipped fixture
+
+FORGE ships a self-contained fixture — `test_data/` (a few hundred KB of
+placeholder files) plus a config that enables every optional block:
+
+```bash
+nextflow run main.nf -profile test -preview \
+    -c configs/datasets/test_preview.config
+```
+
+Expected result, in about fifteen seconds:
+
+```text
+PRE-FLIGHT CHECKLIST PASSED (9 checks):
+    [OK] Manifest schema (2 rows)
+    [OK] Species/genome consistency
+    [OK] GTF files (5 paths validated)
+    [OK] scATAnno reference atlas (stub_atlas.h5ad)
+    [OK] MOFA mode (high_memory)
+    [OK] scPRINTER genome (hg38)
+    [OK] CellTypist model: Immune_All_Low.pkl
+    [OK] Containers (5 SIF files)
+    [OK] Resource tier (test)
+  No warnings.
+```
+
+`-profile test` strips every site-specific scheduler assumption (SLURM
+partitions, accounts, QOS, `--gres` GPU strings) so this works on any machine,
+and redirects `outdir` to `results_test/` so nothing can touch real results.
+
+This is the artifact to hand a reviewer who wants to confirm the pipeline is real
+without provisioning a cluster.
+
+### Then run it against your own config
 
 ```bash
 nextflow run main.nf -preview -c configs/datasets/my_study.config
@@ -51,11 +86,31 @@ each cycle is seconds.
 builds agree, every reference your enabled modules need exists, your on-ramp
 bundles are complete, and the process graph resolves.
 
+### What tier 1 covers — and what it does not
+
+`-preview` builds the entire workflow graph, so it catches more than parameter
+validation. It surfaces every construction-time defect: an unresolved module
+include, a channel referenced outside the scope where it was declared, a `val`
+input that evaluates to `null`, or a missing nested config block. In practice
+this is where most breakage lives, which is why it is worth running after any
+edit.
+
+What it cannot catch is anything that only happens once tasks run:
+
+| Not covered by tier 1 | Why | Covered by |
+|---|---|---|
+| Runtime channel joins | e.g. the per-sample multiome join keys on output *filenames*, which only exist once processes have run | Tier 2 |
+| Tool behaviour and numerical output | No process body executes | Tier 2 / 3 |
+| Resource sizing (OOM, walltime) | Nothing is scheduled | Tier 3 |
+
+So a clean tier-1 result means "this configuration is coherent and the pipeline
+will start" — not "this run will finish."
+
 You can also confirm what your layered config actually resolved to, without
 launching anything:
 
 ```bash
-nextflow config -profile cluster,singularity -c configs/datasets/my_study.config
+nextflow -c configs/datasets/my_study.config config -profile cluster,singularity
 ```
 
 !!! tip "This is the check to run after any config edit"

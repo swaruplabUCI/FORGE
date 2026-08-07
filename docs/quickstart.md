@@ -31,17 +31,34 @@ git clone https://github.com/swaruplabUCI/FORGE.git
 cd FORGE
 ```
 
-## Step 3 — Confirm the pipeline parses
+## Step 3 — Confirm the pipeline works, before installing anything
 
-Before any data, check that Nextflow can read the pipeline and resolve its
-configuration. This takes about a second and needs nothing else installed:
+FORGE ships a self-contained fixture, so you can verify the whole pipeline
+graph right now — no containers, no reference downloads, no GPU, no cluster:
+
+```bash
+nextflow run main.nf -profile test -preview \
+    -c configs/datasets/test_preview.config
+```
+
+In about fifteen seconds you should see:
+
+```text
+PRE-FLIGHT CHECKLIST PASSED (9 checks):
+    [OK] Manifest schema (2 rows)
+    [OK] Species/genome consistency
+    ...
+  No warnings.
+```
+
+That confirms your Nextflow install, the repository, and the full process graph
+are all sound. If you only do one thing from this page, do this.
+
+You can also print the fully merged configuration at any point:
 
 ```bash
 nextflow config -profile cluster,singularity
 ```
-
-You should see the fully merged parameter set printed. If this works, your
-Nextflow installation and the repository are both sound.
 
 ---
 
@@ -74,9 +91,10 @@ params {
     gtf_human_full = '/refs/gencode.v38.annotation.gtf'
     blacklist_bed  = '/refs/hg38-blacklist.v2.bed'
 
-    // Annotation — CellTypist avoids needing a scATAnno reference atlas
+    // Annotation. RNA uses CellTypist; ATAC requires a scATAnno atlas (or your
+    // own atac.marker_file) — there is no atlas-free ATAC option.
     celltypist { model = 'Immune_All_Low.pkl' }
-    atac       { annotation_method = 'celltypist' }
+    scatanno   { reference_atlas = '/refs/scatanno_pbmc_atlas.h5ad' }
 
     // Leave the expensive arms off for the first pass
     enhancer_footprinting { msfp_enabled = false }

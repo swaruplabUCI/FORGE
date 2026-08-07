@@ -6,12 +6,19 @@ Developed at the [Swarup Lab](https://swaruplab.bio.uci.edu/), University of Cal
 
 📖 **[Documentation](https://swaruplabUCI.github.io/FORGE/)** — quickstart, the three core files, and per-arm guides.
 
-> **Validate a setup in ~10 seconds, with no containers, references, or GPU:**
+> **Verify FORGE works in ~15 seconds — no containers, references, GPU, or downloads:**
 > ```bash
-> nextflow run main.nf -preview -c your_dataset.config
+> nextflow run main.nf -profile test -preview -c configs/datasets/test_preview.config
 > ```
-> FORGE's pre-flight checklist reports every configuration and manifest problem at
-> once, before any compute is submitted. See [Verifying FORGE works](docs/verification.md).
+> This runs against the self-contained `test_data/` fixture that ships with the
+> repository. It validates the manifest, every reference and parameter check, and
+> constructs the complete process graph:
+> ```
+> PRE-FLIGHT CHECKLIST PASSED (9 checks):   No warnings.
+> ```
+> Swap in `-c your_dataset.config` to validate your own setup the same way. FORGE
+> reports every configuration problem at once, before any compute is submitted.
+> See [Verifying FORGE works](docs/verification.md).
 
 ---
 

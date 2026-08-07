@@ -74,7 +74,22 @@ one annotation is performed against.
     This matters for the cross-modal validation step — agreement is a result, not
     a construction.
 
-Three modes:
+**Two** modes — scATAnno, or marker-based super-user mode.
+
+!!! warning "There is no ATAC CellTypist mode"
+    ATAC CellTypist-on-gene-activity was removed. Setting
+    `atac.annotation_method = 'celltypist'` aborts the run:
+
+    ```text
+    ATAC auto_annotate is enabled but no annotation method was selected. Set
+    params.atac.marker_file for super-user marker mode, or
+    params.atac.annotation_method = 'scatanno' for reference-based annotation.
+    ATAC_CELLTYPIST on gene activity has been removed — use scATAnno instead.
+    ```
+
+    `params.celltypist` still governs **RNA** annotation — the two are unrelated.
+    Practically, this means ATAC annotation requires either a scATAnno reference
+    atlas or your own marker file; there is no atlas-free shortcut.
 
 === "scATAnno (default)"
 
@@ -100,18 +115,6 @@ Three modes:
     ```
 
     Labels land in `cell_type_prediction`.
-
-=== "CellTypist on gene activity"
-
-    Computes gene activity from accessibility, then applies a CellTypist model.
-    No atlas needed — the simplest path to a working run.
-
-    ```groovy
-    atac { annotation_method = 'celltypist' }
-    celltypist { model = 'Immune_All_Low.pkl' }
-    ```
-
-    Labels land in `celltypist_prediction`.
 
 === "Marker genes"
 

@@ -852,7 +852,9 @@ def validateStartupParams() {
     // --- MIS-11 / MIS-25 (2026-05-04): resource_tier typo guard.
     // 'auto' is a documented alias for 'small'; case-sensitive match catches
     // typos like 'Medium' that previously fell through silently to small.
-    def allowedTiers = ['small', 'medium', 'large', 'auto']
+    // 'test' is the minimal tier used by -profile test for stub runs; it asks for
+    // 1 CPU / 1 GB per process so the local executor accepts every task.
+    def allowedTiers = ['small', 'medium', 'large', 'auto', 'test']
     if (params.resource_tier && !(params.resource_tier in allowedTiers)) {
         errors << "params.resource_tier='${params.resource_tier}' is invalid (case-sensitive). " +
                   "Allowed: ${allowedTiers}. Check for typos like capital letters."
@@ -2572,6 +2574,11 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
     def enh_fp_footprints     = Channel.empty()
     def enh_fp_binding_scores = Channel.empty()
     def enh_fp_global_plots   = Channel.empty()
+    // Hoisted so ENHANCER_FOOTPRINTING_PER_CT_STRIP (the strip re-run, further
+    // down in its own msfp_strip gate) can join the same per-CT manifest+beds
+    // channel the first pass used. Declared with `def` inside the gate below, it
+    // would not be visible there.
+    def ch_per_ct_input       = Channel.empty()
 
     if (msfp_enabled && enh_use_per_ct) {
         // Per-CT fan-out: one task per ct loads printer/peak matrix once
@@ -2579,7 +2586,7 @@ workflow ENHANCER_FOOTPRINTING_RECIPES {
         def per_ct_manifest_dir = file("${workflow.workDir}/per_ct_manifests")
         per_ct_manifest_dir.mkdirs()
 
-        def ch_per_ct_input = MOTIF_SCAN_ENHANCERS.out.manifest
+        ch_per_ct_input = MOTIF_SCAN_ENHANCERS.out.manifest
             .flatMap { manifest_file ->
                 def data = new groovy.json.JsonSlurper().parseText(manifest_file.text)
                 data.region_sets.collect { entry ->

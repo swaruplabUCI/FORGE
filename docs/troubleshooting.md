@@ -20,7 +20,9 @@ Good news: nothing has run yet, and every problem is reported at once.
 |---|---|
 | `Manifest CSV not found` | Check `params.metadata_file` — a relative path resolves against the launch directory, not the config file. |
 | `missing required columns: [sample_id (did you mean: sample_ID?)]` | Fix the header to match **exactly**. The suggestion tells you which column to correct; FORGE does not accept near-misses. |
-| `atac.annotation_method='scatanno' requires params.scatanno.reference_atlas` | Set the atlas path, or switch to `annotation_method = 'celltypist'`. |
+| `atac.annotation_method='scatanno' requires params.scatanno.reference_atlas` | Set the atlas path, or supply your own `atac.marker_file` instead. There is no ATAC CellTypist fallback. |
+| `ATAC_CELLTYPIST on gene activity has been removed — use scATAnno instead` | You set `atac.annotation_method = 'celltypist'`. Use `'scatanno'` (with an atlas) or `atac.marker_file`. `params.celltypist` governs **RNA** only. |
+| `Argument of \`file()\` function cannot be null` | A gate is on but its companion path is null. Most common: `atac.run = true` without `atac.sample_metadata`, or `differential_rna.run = true` without `differential_rna.group_mapping`. Neither is caught by pre-flight. |
 | `rna.run=true but the manifest contains no rows with a non-null rna_file` | Populate `rna_file`, or set `rna.run = false`. |
 | `Duplicate sample_id in lane rows` | `sample_id` must be unique. |
 | `missing 'condition_group' column but a condition-aware workflow is enabled` | Add the column, or disable the differential/stratified workflows. |
@@ -28,7 +30,7 @@ Good news: nothing has run yet, and every problem is reported at once.
 | `MEX directory for sample 'X' missing files` | A MEX directory needs `matrix.mtx.gz`, `barcodes.tsv.gz`, and `features.tsv.gz`. |
 | `Cicero onramp is an all-or-none triple` | Supply all of `cicero_connections`, `cicero_ccan`, `cicero_cds` — or none. |
 | `params.onramp.X is forward-declared only` | Unset it. That stage runs regardless. |
-| `resource_tier` rejected | Must be lowercase `small`, `medium`, `large`, or `auto`. |
+| `resource_tier` rejected | Must be lowercase `small`, `medium`, `large`, `auto`, or `test`. |
 
 ---
 
@@ -44,7 +46,7 @@ Almost always a gate. Three causes, in order of likelihood:
    is silently ignored. Confirm what actually resolved:
 
     ```bash
-    nextflow config -c my_study.config | grep -A5 msfp_strip
+    nextflow -c my_study.config config | grep -A5 msfp_strip
     ```
 
 3. **A cell type filtered by the resolution floor.** Any per-cell-type fan-out
@@ -160,7 +162,7 @@ Not a crash, but worth checking before you trust results:
 Include the following, which together identify almost any failure:
 
 1. The pre-flight output: `nextflow run main.nf -preview -c my_study.config`
-2. Resolved config: `nextflow config -c my_study.config`
+2. Resolved config: `nextflow -c my_study.config config`
 3. The failing task's `.command.log` and `.command.err` from its work directory
 4. The relevant `logs/nextflow/trace.txt` row
 

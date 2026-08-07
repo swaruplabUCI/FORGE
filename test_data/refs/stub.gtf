@@ -1,0 +1,4 @@
+##description: minimal placeholder GTF for -stub-run only
+chr21	stub	gene	1000	5000	.	+	.	gene_id "STUBG1"; gene_name "STUBG1";
+chr21	stub	transcript	1000	5000	.	+	.	gene_id "STUBG1"; transcript_id "STUBT1"; gene_name "STUBG1";
+chr21	stub	exon	1000	5000	.	+	.	gene_id "STUBG1"; transcript_id "STUBT1"; gene_name "STUBG1";

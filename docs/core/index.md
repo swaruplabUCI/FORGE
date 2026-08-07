@@ -55,5 +55,6 @@ you describe the experiment, and the architecture derives the task graph.
    to it when you want to know *why* a stage did or did not run.
 
 Then confirm your understanding cheaply: a
-[pre-flight run](../verification.md#tier-1-pre-flight-validation) validates a
-manifest and config together in about ten seconds, with no containers and no GPU.
+[pre-flight run](../verification.md#tier-1-pre-flight-and-dag-construction) validates a
+manifest and config together — and constructs the whole process graph — in about
+fifteen seconds, with no containers and no GPU.

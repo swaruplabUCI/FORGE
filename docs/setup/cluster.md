@@ -45,7 +45,7 @@ params {
 Confirm the values resolve before running anything:
 
 ```bash
-nextflow config -profile cluster,singularity -c my_study.config | grep slurm
+nextflow -c my_study.config config -profile cluster,singularity | grep slurm
 ```
 
 ## Step 2 — Check the GPU request syntax
@@ -107,7 +107,7 @@ nextflow run main.nf -profile standard,singularity -c my_study.config
 
 This ignores partitions and QOS entirely. It is appropriate for a small dataset
 on a large workstation, and for the
-[pre-flight validation tier](../verification.md#tier-1-pre-flight-validation) — which
+[pre-flight validation tier](../verification.md#tier-1-pre-flight-and-dag-construction) — which
 needs no containers or GPU at all.
 
 !!! warning "GPU-dependent stages"
@@ -146,7 +146,7 @@ See [Containers](containers.md) for build and bind-path details.
 
 ## A checklist
 
-1. `nextflow config -profile cluster,singularity -c my_study.config` — do the
+1. `nextflow -c my_study.config config -profile cluster,singularity` — do the
    SLURM parameters resolve to your site's values?
 2. `nextflow run main.nf -preview -c my_study.config` — does the pre-flight
    checklist pass?

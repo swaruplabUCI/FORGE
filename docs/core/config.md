@@ -47,7 +47,7 @@ flowchart LR
 Never guess what a layered config resolved to. Ask Nextflow:
 
 ```bash
-nextflow config -profile cluster,singularity -c configs/datasets/my_study.config
+nextflow -c configs/datasets/my_study.config config -profile cluster,singularity
 ```
 
 This prints the fully merged configuration and parses in about a second, without
@@ -134,7 +134,7 @@ happen?" configuration error.
 | Block | Notable keys | Notes |
 |---|---|---|
 | `atac` | `min_fragments`, `initial_min_tsse`, `clustering_resolutions`, `peak_fdr` | QC, clustering, peak calling. |
-| `atac.annotation_method` | `'scatanno'` (default) or `'celltypist'` | `scatanno` **requires** `scatanno.reference_atlas`; pre-flight enforces this. Setting `atac.marker_file` overrides either. |
+| `atac.annotation_method` | `'scatanno'` — the only supported value | `scatanno` **requires** `scatanno.reference_atlas`; pre-flight enforces this. Setting `atac.marker_file` overrides it with marker mode. There is **no** ATAC CellTypist mode (removed); `params.celltypist` applies to RNA only. |
 | `atac.run_mode` | `'broad'` | `'broad'` (~10 classes) or `'fine'` (~30+). Drives per-cell-type granularity downstream. |
 | `scatanno` | `reference_atlas`, `distance_threshold`, `uncertainty_threshold` | Reference-based ATAC annotation. |
 | `qc.cell_type_resolution` | `min_cells` (50), `min_pct` (0.01) | Universal floor for per-cell-type fan-outs: a cell type is skipped unless it has at least `max(min_cells, min_pct × total)` cells. This exists because tiny cell types can OOM footprinting regardless of their size. |
@@ -240,9 +240,10 @@ params {
     gtf_human_full = '/refs/gencode.v38.annotation.gtf'
     blacklist_bed  = '/refs/hg38-blacklist.v2.bed'
 
-    // Annotation
+    // Annotation — RNA via CellTypist, ATAC via scATAnno (an atlas is required;
+    // there is no atlas-free ATAC path)
     celltypist { model = 'Immune_All_Low.pkl' }
-    atac { annotation_method = 'celltypist' }   // avoids needing a scATAnno atlas
+    scatanno   { reference_atlas = '/refs/scatanno_pbmc_atlas.h5ad' }
 
     // Keep the expensive arm off for a first pass
     enhancer_footprinting { msfp_enabled = false }
