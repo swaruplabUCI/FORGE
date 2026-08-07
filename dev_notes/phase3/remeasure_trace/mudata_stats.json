@@ -1,0 +1,17 @@
+{
+  "n_samples": 1,
+  "total_cells": 767,
+  "total_rna_genes": 21014,
+  "total_atac_peaks": 606219,
+  "mean_cells_per_sample": 767.0,
+  "mean_retention_rate": 1.0,
+  "samples": [
+    {
+      "sample_id": "TUTORIAL_PBMC",
+      "n_rna": 767,
+      "n_atac": 767,
+      "n_multiome": 767,
+      "retention_rate": 1.0
+    }
+  ]
+}

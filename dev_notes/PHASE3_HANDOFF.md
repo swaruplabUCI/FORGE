@@ -1,5 +1,93 @@
 # FORGE tutorial — Phase 3 handoff
 
+> ## RESUME HERE — session of 2026-08-07
+>
+> **Read this block first. It supersedes the status tables further down.**
+>
+> ### Where we are
+>
+> Step 3 is **DONE**. The tutorial runs end to end, twice, 94/94 tasks, exit 0.
+> Measured numbers are in `dev_notes/phase3/T2_RESOURCE_BASELINE.md`
+> (authoritative) with raw artifacts in `dev_notes/phase3/remeasure_trace/`.
+> `docs/tutorial.md` exists, is in the nav, and `mkdocs build --strict` passes.
+>
+> | Step | Status |
+> |---|---|
+> | 0 CPU-only viability | done |
+> | 1 chr21+22 subset (78.9 MB) | done |
+> | 2 tutorial config + tier + profile | done |
+> | 2b scvi-tools seeding | done, **proven** — two cold runs identical to 15 s.f. |
+> | **3 run end to end + iterate** | **DONE — 94/94, 1h43m, 6.6 CPU-h** |
+> | 3b expected-values contract | partially done — structural table is in docs/tutorial.md |
+> | 4 on-ramp bundle | **CLOSED, not shipped** — see below |
+> | 5 publish + docs | **IN PROGRESS** — 4 blockers left |
+>
+> ### THE ONE BLOCKING THING: git push auth
+>
+> History was rewritten on 2026-08-07 to strip `Co-Authored-By: Claude` from all
+> 81 commits (journal policy bars LLM co-authorship). **The rewrite is done and
+> verified** — 0 trailers, 81 commits intact, tree hashes byte-identical.
+>
+> Nothing is pushed yet. `dev` is 24 commits ahead of `origin/dev`, and because
+> every hash changed this needs `git push --force origin main dev` (BOTH
+> branches — main's hashes changed too).
+>
+> Auth is failing: fine-grained PAT authenticates (`gh api user` -> lesolano)
+> and sees the org, but returns **404** for `repos/swaruplabUCI/FORGE`, meaning
+> the repo is not in the token's repository-access list. git and gh were proven
+> to use the same token (identical sha256), so it is NOT a stale cache.
+>
+> **Backup before any force-push:**
+> `/dfs7/swaruplab/lesolano/FORGE_git_backup_20260807_152945.bundle`
+> (verified "records a complete history"; recover with `git clone <bundle>`).
+>
+> ### Remaining Step 5 blockers
+>
+> 1. **4 `<!-- FILL: -->` slots in `docs/tutorial.md`** — grep for them.
+>    `download-instructions` and `reference-outputs` need a GitHub Release to
+>    exist first; `concordance` needs computing (see below).
+> 2. **RNA vs ATAC concordance not computed.** This is the single most
+>    informative check in the tutorial — the two arms are annotated by different
+>    tools on different matrices, so agreement is measured, not constructed.
+> 3. **`docs/verification.md` Tier 2 section is factually wrong.** It says
+>    "~200 MB" (it is 78.9 MB) and that tiny and published runs "differ only in
+>    scale" (false — the tutorial needs different ATAC QC thresholds to work at
+>    all). It also still carries a `!!! note "Status"` block saying the dataset
+>    is "being packaged".
+> 4. **Two tier allocations are too tight** (see baseline doc): raise
+>    `ATAC_INITIAL_QC` 8 -> 10 GB and `CELLBENDER` 4 -> 6 GB. Peak RSS is not
+>    stable run to run.
+>
+> ### Step 4 is CLOSED — no on-ramp bundle ships
+>
+> The original plan (trim ChromVAR output from the production PBMC run) is
+> impossible: on-ramp artifacts are keyed to their producing run's barcodes and
+> CCANs. A bundle was instead built from the tutorial dataset itself and
+> verified barcode-compatible (817/817) — but it still ships nothing, because
+> every ChromVAR consumer is gated behind something the tutorial disables
+> (`scprinter.run`, differential conditions, `differential_tf.run`). Full
+> reasoning in the header of `dev_notes/phase3/build_onramp_chromvar.sh`.
+>
+> ### Environment gotchas learned THIS session (add to §6 mentally)
+>
+> - **`trace.tsv` location depends on how outdir is set.** With `--outdir X` on
+>   the CLI it lands in `X/pipeline_info/`. With only the profile setting it,
+>   it goes to `results/pipeline_info/` — because `${params.outdir}` is
+>   interpolated at parse time. A stale `results/pipeline_info/trace.tsv` from
+>   an earlier run WILL fool you; check mtime.
+> - **`singularity exec --contain --home /tmp` makes CWD `/tmp`.** A relative
+>   `--out-prefix` writes inside the container and the files vanish — while the
+>   process still exits 0 and logs "Wrote ...". Always pass absolute paths.
+> - **Counting strings in `nextflow config` output does not verify anything.**
+>   It lists blocks; it does not resolve them per process. Verify from
+>   `trace.tsv` and `.command.run` after a real run.
+> - **`git filter-repo` on DFS7 needs >10 min** for its export scan. Run it
+>   backgrounded, and never pass a callback via `$(cat file)` — if the file is
+>   gone the callback is silently EMPTY and filter-repo exits 0 having done
+>   nothing.
+
+---
+
 **Written:** 2026-08-06. **Purpose:** resume the tutorial/verification work from
 this document alone, with no prior conversation context.
 

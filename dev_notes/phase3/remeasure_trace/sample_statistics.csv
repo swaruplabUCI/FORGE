@@ -1,0 +1,2 @@
+sample,n_cells,median_fragments,median_tsse,fragments_q05,fragments_q95,tsse_q05,tsse_q95,n_cells_after_frag_5_95_and_tsse_q05,fragments_min,fragments_max,tsse_min
+TUTORIAL_PBMC_tutorial,944,1419.5,16.300101023624922,660.15,14886.699999999975,6.30572243680171,26.12499999999999,836,510.0,44730.0,2.4514811031664965

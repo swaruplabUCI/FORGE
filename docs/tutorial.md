@@ -33,9 +33,9 @@ is subsampled to ~1,000 cells. Two consequences worth stating plainly:
   genome. This is also why the tutorial config sets ATAC QC thresholds
   explicitly rather than relying on the defaults — see the caveat section below.
 - **Cell-type labels are over-fit.** CellTypist `Immune_All_Low.pkl` assigns
-  ⟨TBD⟩ distinct labels to ~1,000 cells<!-- FILL:n-celltypist-labels (run 1 gave 45) -->,
-  including classes that cannot exist in peripheral blood (thymocyte and
-  progenitor populations). That is expected at this scale. Judge the pipeline by
+  **45** distinct labels to ~1,000 cells, including classes that cannot exist in
+  peripheral blood — `Double-negative_thymocytes`, `ELP`, `CD8a_a`,
+  `Age-associated_B_cells`. That is expected at this scale. Judge the pipeline by
   whether the stages run and join, not by the labels.
 
 If you want biology, run one of the four published datasets in
@@ -48,13 +48,18 @@ three-tier picture.
 
 | Requirement | Value |
 |---|---|
-| Disk — results | ⟨TBD⟩<!-- FILL:results-size (run 1 gave 3.85 GB) --> |
-| Disk — including `work/` | ⟨TBD⟩<!-- FILL:total-disk; recommend a rounded "have N GB free" --> |
-| RAM — single heaviest task | ⟨TBD⟩<!-- FILL:peak-rss --> |
-| Wall-clock | ⟨TBD⟩<!-- FILL:wallclock; state the CPU count it was measured at --> |
-| CPU-hours | ⟨TBD⟩<!-- FILL:cpu-hours --> |
+| Disk — results | **3.9 GB** |
+| Disk — including `work/` | **~15 GB free** (results 3.9 GB + `work/` 4.8 GB, plus headroom) |
+| RAM — single heaviest task | **8.8 GB** (`ATAC_FINAL_PIPELINE`) |
+| Wall-clock | **1 h 43 min** on 8 CPUs / 48 GB |
+| CPU-hours | **6.6** |
 | GPU | **Not required.** The tutorial is CPU-only. |
 | Network | Required. See the note below. |
+
+Wall-clock is dominated by a handful of long serial tasks, so more cores help
+less than you would expect: 10 CPUs finished in 1 h 33 min, only ten minutes
+faster than 8. What extra cores do buy is the 45-way hdWGCNA and 25-way Cicero
+fan-outs. Summed across all 94 tasks the run is 2 h 49 min of task time.
 
 !!! note "The run reaches the network"
     `RUN_CELLTYPIST` downloads CellTypist models at runtime from
@@ -199,27 +204,40 @@ Both paths run the same pipeline with the same `tutorial` profile.
 
 ## 4. What you should see
 
-<!-- FILL:results-table — populate from the re-measure run's trace.tsv and
-     outputs. Everything here is a STRUCTURAL claim (counts, shapes) that should
-     be stable run to run now that scvi-tools is seeded. Values from run 1 are
-     noted where known; confirm each before publishing. -->
+<!-- Measured from SLURM job 55119808 (results_tutorial_remeasure) and confirmed
+     identical against run 1. Raw artifacts: dev_notes/phase3/remeasure_trace/.
+     Regenerate per dev_notes/phase3/T2_RESOURCE_BASELINE.md. -->
 
 | Stage | Quantity | Expected |
 |---|---|---|
-| Pre-flight | checks passed | ⟨TBD⟩ |
-| CellBender | ambient-corrected counts + report | ⟨TBD⟩ |
-| RNA QC | cells passing | ⟨TBD⟩ |
-| CellTypist | distinct labels | ⟨TBD⟩ *(run 1: 45)* |
-| ATAC initial QC | cells passing | ⟨TBD⟩ *(run 1: 944 of 1,000)* |
-| ATAC | median TSS enrichment | ⟨TBD⟩ *(run 1: 16.30)* |
-| ATAC | peaks called | ⟨TBD⟩ |
-| Cicero | cells / peaks entering | ⟨TBD⟩ *(run 1: 817 / 12,085)* |
-| Cicero | connections, CCANs | ⟨TBD⟩ |
-| MOFA+ | factors, variance explained | ⟨TBD⟩ |
-| MultiVI | joint latent shape | ⟨TBD⟩ |
-| hdWGCNA | cell types with modules | ⟨TBD⟩ *(run 1: 45)* |
-| CellChat | interactions inferred | ⟨TBD⟩ |
-| **Total** | **tasks succeeded** | ⟨TBD⟩ *(run 1: 94/94)* |
+| ATAC initial QC | cells passing | **944** of 1,000 |
+| ATAC | median fragments / cell | **1,419.5** |
+| ATAC | median TSS enrichment | **16.30** |
+| ATAC final | peak matrix | **817 cells × 12,085 peaks** |
+| Cicero | cells / peaks entering | **817 / 12,085** |
+| CellTypist | distinct labels | **45** |
+| MuData | cells in RNA ∩ ATAC | **767** (21,014 genes) |
+| MOFA+ | factors | **3** (seed 42) |
+| hdWGCNA | cell types with modules | **45** |
+| **Total** | **tasks succeeded** | **94 / 94** |
+
+!!! success "These numbers are reproducible"
+    Every value in that table came out **identical** across two independent
+    cold runs — including the median TSS enrichment agreeing to 15 significant
+    figures (`16.300101023624922`). That is the `params.random_seed = 42`
+    seeding of scvi-tools working end to end. If your run differs on a
+    *structural* count, something is genuinely different about your inputs or
+    container, and it is worth investigating rather than shrugging off.
+
+    Runtime and peak memory are **not** equally stable — see the caveats.
+
+!!! warning "Do not trust `atac/final/atac_pipeline_summary.json` thresholds"
+    That file reports `min_counts: 5000, min_tsse: 6` — the Python script's
+    argparse defaults, not what was applied. The module never passes those
+    flags; filtering uses the computed per-sample values in
+    `atac/initial_qc/sample_thresholds.json` (here `min_counts 660.15`,
+    `max_counts 14886.7`, `min_tsse 6.31`), which is what takes 944 cells down
+    to 817. Read the latter file.
 
 ### The single most informative check
 
@@ -327,9 +345,16 @@ It is 15,000 here against 20,000 barcodes. Setting it equal crashes inside
 CellBender's prior computation with an `IndexError`.
 
 **Timings do not extrapolate.** Wall-clock is dominated by a few long serial
-tasks and by how many of the 45-way hdWGCNA and 25-way Cicero fan-outs can run
-at once. More cores help those substantially; they do not help the serial tasks
-at all.
+tasks — `HDWGCNA_ENRICHMENT` 53 min, `CELLBENDER` 23 min, `RUN_CELLCHAT`
+22 min, `MULTIVI_INTEGRATE` 19 min. Going from 8 to 10 CPUs saved only ten
+minutes. Extra cores buy the 45-way hdWGCNA and 25-way Cicero fan-outs and
+nothing else.
+
+**Peak memory varies between runs; the structural counts do not.** Across two
+cold runs `CELLBENDER` peaked at 1.50 GB then 2.90 GB, and `ATAC_INITIAL_QC` at
+5.80 GB then 7.10 GB — while every cell count and cluster count was identical.
+If you are sizing a machine, do not trust a single observation: allow ~50%
+headroom over the numbers above.
 
 ---
 
