@@ -96,6 +96,52 @@ reference only at `dev_notes/phase3/gen_stubs_REVERTED.py`.
 
 ---
 
+## 3b. INVARIANT — the tutorial must never break the working pipeline
+
+The four published datasets are the product of ~1,000 compute-hours. **No
+tutorial-enabling setting may change their behaviour.** Enforce it structurally,
+not by care:
+
+1. **Every tutorial setting lives in the tutorial config or the `tutorial` tier
+   — never in `nextflow.config`'s defaults, never in a module.** Reduced epochs,
+   `scvi_accelerator = 'cpu'`, disabled blocks: all scoped to
+   `configs/datasets/tutorial_pbmc.config`.
+2. **New base-config params must be behaviour-preserving by construction.**
+   `scvi_accelerator` defaults to `'auto'`, which is exactly what scvi-tools did
+   implicitly before. Modules read it as
+   `${params.scvi_accelerator ?: 'auto'}` so an older config lacking the key
+   still works.
+3. **Never edit `small` / `medium` / `large` tiers for tutorial purposes.** Add a
+   separate `tutorial` tier. Note also that adding a `withName:` block to an
+   existing tier shifts the config hash of processes below it and can invalidate
+   cached work on `-resume`.
+4. **GPU is attached by two independent mechanisms** — get both, or a CPU run
+   will queue for a GPU it never uses:
+   - `label 'process_gpu'` on `TRAIN_SCVI` and `TRAIN_SCANVI`
+   - tier `withName:` blocks with `containerOptions = '--nv'` and
+     `accelerator = 1` (this is how `MULTIVI_INTEGRATE` gets one — it has **no**
+     `process_gpu` label)
+
+**Regression check to run after any change in this area** (verified clean at
+commit `1b4027d`):
+
+```bash
+cd /dfs7/swaruplab/lesolano/src_FORGE
+export PATH=/dfs7/swaruplab/lesolano/tools:$PATH
+for c in ad_mm_10x pbmc_10x_10k kidney_mm_bd brain_mm_bd; do
+  nextflow -c configs/datasets/$c.config config -profile cluster,gpu,singularity 2>/dev/null \
+    | grep -E "scvi_accelerator|resource_tier ="
+done
+# Expect: scvi_accelerator = 'auto' for all four, and their original tiers
+# (ad=medium, the rest=small). Anything else is a regression.
+```
+
+Also confirm `git diff` on the three scvi modules shows **only** the added
+`--accelerator` line, and that `label 'process_gpu'` is still present in
+`modules/integration/scvi.nf` and `modules/integration/scanvi.nf`.
+
+---
+
 ## 4. Verified facts (measured, do not re-derive)
 
 **Source data** — `/dfs7/swaruplab/lesolano/FORGE/PBMC_Hs_10X_r5/data/`:
@@ -185,27 +231,117 @@ scvi-tools 1.4.2 by `dev_notes/phase3/accelerator_arg_test.py`.
 GPU `clusterOptions` to them. The `tutorial` tier must override those so a
 CPU-only run does not request a GPU it will not use.
 
-### Step 1 — build the subset (~2–3 h)
+### Step 1 — build the subset — ✅ **DONE & VERIFIED 2026-08-06**
 
-Work in a new dir, e.g. `/dfs7/swaruplab/lesolano/FORGE/oneOff/20260806_tutorial/`
-(**not** the session scratchpad — it is wiped between sessions).
+Everything lives in `/dfs7/swaruplab/lesolano/FORGE/oneOff/20260806_tutorial/`:
 
-1. **Choose barcodes.** From the raw h5, rank barcodes by total UMI; take the top
-   ~1,000 as "cells". Intersect with barcodes present in the chr21/22 fragments
-   so both modalities cover the same cells (`sample_id` is the join key
-   everywhere in FORGE).
-2. **CRITICAL — keep empty droplets.** FORGE feeds CellBender a *raw*
-   (unfiltered) matrix and it needs the ambient background distribution.
-   Retain ~1,000 cells **plus ~19,000 low-count barcodes**. Then set
-   `cellbender.expected_cells = 1000`, `total_droplets = 20000`.
-   Subsetting to cells only would silently break ambient correction.
-3. **RNA:** subset barcodes, **keep all genes** — CellTypist markers are
-   genome-wide, so restricting genes to chr21/22 would wreck annotation.
-   Write 10x-format `.h5` named `<sample_id>_raw_feature_bc_matrix.h5`.
-4. **ATAC:** `tabix frags.tsv.gz chr21 chr22` → filter to the chosen barcodes →
-   `bgzip` → `tabix -p bed` re-index. Estimated well under 100 MB.
-5. **References:** `awk` the GTF and blacklist down to chr21/22; copy cisBP and
-   JASPAR verbatim.
+```
+build/                          # reusable, re-runnable build scripts
+  01_extract_fragments.py       # tabix chr21+22, tally fragments/barcode
+  02_subset_h5.py               # pick barcodes, write subset multiome .h5
+  03_finalize.py                # filter frags, bgzip+index, subset refs, manifest
+  04_verify.py                  # validate the result is a real FORGE input
+  frags_chr21_22.tsv (499 MB)   # intermediate, do NOT ship
+  frag_counts.tsv, selected_barcodes.tsv
+out/                            # ← THIS is the shippable dataset (~79 MB)
+  manifest.csv
+  samples/TUTORIAL_PBMC_raw_feature_bc_matrix.h5        9.1 MB
+  samples/TUTORIAL_PBMC_atac_fragments.tsv.gz          25.1 MB  (+ .tbi)
+  refs/gencode_chr21_22.gtf                            44.7 MB
+  refs/blacklist_chr21_22.bed                            ~KB
+```
+
+**Measured outcome:**
+
+| Quantity | Value |
+|---|---|
+| Features kept | 40,545 = 36,601 GEX + 3,944 chr21/22 peaks |
+| Barcodes kept | 20,000 = **1,000 cells + 19,000 background** |
+| Cell UMI range | 5,291 – 34,244 |
+| Background UMI range | 1 – 99 |
+| Nonzeros | 3,716,357 (2.82% of the source's 131.5 M) |
+| Fragments | 2,805,164 of 11,630,797 on chr21+22 (24.1%) |
+| GTF records | 101,557 of 3,150,424 |
+
+**Design decisions worth not re-litigating:**
+
+- **The source `.h5` is a COMBINED multiome matrix** (36,601 Gene Expression +
+  111,743 Peaks over 733,612 barcodes) — not RNA-only. The subset preserves that
+  structure so it is a drop-in: `bin/rna_qc.py` calls `sc.read_10x_h5`, whose
+  `gex_only=True` default filters to GEX itself, and CellBender consumes the raw
+  `.h5` directly. Peaks are restricted to chr21/22 to stay consistent with the
+  fragment subset; **all** GEX features are kept because annotation markers are
+  genome-wide.
+- **19,000 background barcodes are deliberate, not padding.** CellBender needs the
+  ambient distribution; a cells-only matrix would silently break correction.
+- **The selection validated itself:** 10,023 barcodes cleared "≥200 chr21/22
+  fragments AND UMI>0", which matches the ~10k cells this dataset is named for.
+- Containers: `pysam 0.23.3` is in **snapatac_extended.sif** (used for tabix
+  reads and bgzf writing — neither container ships the `bgzip`/`tabix` CLIs).
+  `h5py`/`scipy` work from **scgpu_extended.sif**. No base-conda tooling needed.
+
+**Re-run the whole build** (idempotent) with the four scripts in order; see the
+`singularity exec` invocations in this file's §6 for the container flags.
+
+**Chromosome choice is a flag, not an edit.** All three build scripts take
+`--chroms` (default `chr21,chr22`, matching what is built and shipped). Passing a
+single chromosome was considered and rejected: the ATAC side is where the subset
+bites, and dropping to one chromosome halves the gene content available to
+gene-activity / marker annotation for only ~25 MB of savings. If you do change
+it, pass the SAME `--chroms` to 01, 02 and 03 — they are independent processes,
+not a shared config.
+
+**Verification** — `build/04_verify.py`. First run reported one FAIL:
+
+```
+[FAIL] tabix range query returns rows — 0 in chr21:1–2Mb
+```
+
+**That was a bug in the test, not the data.** `chr21:1–2 Mb` is the acrocentric
+short arm — N-rich and unmappable, so it legitimately holds zero fragments. The
+real data is fine: chr21 spans 5,030,700–46,699,859 (1,102,772 fragments) and
+chr22 spans 10,519,343–50,808,172 (1,702,392), both sorted, and a query at
+chr21:30–31 Mb returns 19,316 rows.
+
+Two checks after it (`5 columns per row`, `coordinates sorted`) had therefore
+been passing **vacuously** on an empty list. The script now derives its probe
+window from the data (midpoint of the contig's actual coordinate span), guards
+those two checks against an empty result, and adds a whole-contig ordering check.
+
+Re-run it any time the dataset is rebuilt:
+
+```bash
+W=/dfs7/swaruplab/lesolano/FORGE/oneOff/20260806_tutorial
+S=/dfs7/swaruplab/lesolano/src_FORGE/singularity_cache
+singularity exec --contain --home /tmp --bind /dfs7 --bind /tmp \
+  --env PYTHONNOUSERSITE=1 --env HDF5_USE_FILE_LOCKING=FALSE \
+  --env NUMBA_CACHE_DIR=/tmp/nb --env MPLCONFIGDIR=/tmp/mpl --env XDG_CACHE_HOME=/tmp/c \
+  $S/snapatac_extended.sif python3 $W/build/04_verify.py
+```
+
+It checks: scanpy `read_10x_h5` works as `rna_qc.py` uses it; cells AND ambient
+background both present; fragments are bgzf + tabix-queryable + sorted +
+5-column; RNA/ATAC barcodes overlap (the cross-modality join key); GTF is
+non-empty and confined to chr21/22. Exits non-zero listing failures.
+
+**Current result: ALL 14 CHECKS PASSED, exit 0.** Notable values:
+
+```
+[PASS] GEX-only read works — 36,601 genes          (20,000 barcodes)
+[PASS] has real cells (UMI>=1000) — 1,000
+[PASS] has ambient background (0<UMI<100) — 19,000
+[PASS] tabix range query — 23,330 rows in a populated 1 Mb window
+[PASS] whole-contig ordering sorted — 1,102,772 fragments on chr21
+[PASS] ATAC barcodes are a subset of RNA — 0 ATAC-only
+TOTAL DATASET SIZE: 78.9 MB
+```
+
+**The dataset is a valid FORGE input. It is NOT yet a working pipeline run** —
+that is Step 3, and it is where real failures are expected.
+
+**Open size question:** the GTF is 44.7 MB of the ~79 MB total. Gzipping would cut
+it substantially, but it is unclear which T2 consumers accept `.gz`, so it was
+left plain rather than guessed at. Revisit if release size matters.
 
 ### Step 2 — config + resource tier (~1 h)
 
@@ -351,16 +487,31 @@ These are unguarded by pre-flight and produce cryptic errors:
 
 ---
 
-## 9. First actions on resume
+## 9. Progress and first actions on resume
 
-Step 0 is **done** — CPU-only is confirmed viable and the accelerator is now an
-explicit param. Resume at **Step 1**:
+| Step | Status |
+|---|---|
+| 0 — CPU-only viability + explicit `accelerator` | ✅ done, verified |
+| 1 — build chr21+chr22 subset | ✅ done, **all 14 checks pass**, 78.9 MB |
+| **2 — tutorial config + `tutorial` resource tier** | ⬜ **RESUME HERE** |
+| 3 — run end-to-end and iterate | ⬜ |
+| 4 — on-ramp bundle (optional) | ⬜ |
+| 5 — publish (GitHub Release) + docs | ⬜ |
 
-1. `cd /dfs7/swaruplab/lesolano/src_FORGE && git log --oneline -3` — confirm you
-   are on `dev`.
-2. Start **Step 1** (build the chr21+chr22 subset) in
-   `/dfs7/swaruplab/lesolano/FORGE/oneOff/20260806_tutorial/`. Remember the two
-   traps: keep ~19,000 empty droplets for CellBender, and keep all genes on the
-   RNA side.
-3. Re-run the tests in `dev_notes/phase3/` any time the container or scvi-tools
-   version changes — they are cheap and they are what proved CPU viability.
+**Resume at Step 2:**
+
+1. `cd /dfs7/swaruplab/lesolano/src_FORGE && git log --oneline -3` — confirm `dev`.
+2. Write `configs/datasets/tutorial_pbmc.config` pointing at
+   `/dfs7/swaruplab/lesolano/FORGE/oneOff/20260806_tutorial/out/` — see the
+   config block in §5 Step 2 for every required setting and why each is there.
+3. Write `configs/resource_tiers/tutorial.config`, add `'tutorial'` to
+   `allowedTiers` in `main.nf` (~line 855) and to the tier `includeConfig` chain
+   at the bottom of `nextflow.config`. **Neutralize GPU by both mechanisms** —
+   see §3b item 4.
+4. `nextflow run main.nf -preview -c configs/datasets/tutorial_pbmc.config`
+   before any real run — 15 s beats a long failure.
+5. **Re-run the §3b regression check** before committing anything that touches
+   shared config, so the four production datasets stay untouched.
+
+Re-run the tests in `dev_notes/phase3/` whenever the containers or scvi-tools
+version change — they are cheap, and they are what proved CPU viability.
