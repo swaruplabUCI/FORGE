@@ -26,6 +26,7 @@ process TRAIN_SCANVI {
         --scvi_model_dir ${scvi_model_dir} \\
         --results_dir . \\
         --epochs ${params.scanvi_epochs} \\
-        --accelerator ${params.scvi_accelerator ?: 'auto'}
+        --accelerator ${params.scvi_accelerator ?: 'auto'} \\
+        --seed ${params.random_seed ?: 42}
     """
 }

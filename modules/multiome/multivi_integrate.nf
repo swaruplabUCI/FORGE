@@ -26,6 +26,7 @@ process MULTIVI_INTEGRATE {
         --modality_weights ${params.multivi.modality_weights} \
         --modality_penalty ${params.multivi.modality_penalty} \
         --latent_dim ${params.multivi.n_latent} \
-        --accelerator ${params.scvi_accelerator ?: 'auto'}
+        --accelerator ${params.scvi_accelerator ?: 'auto'} \
+        --seed ${params.random_seed ?: 42}
     """
 }

@@ -17,6 +17,9 @@ def parse_args():
     p.add_argument("--out_mudata", required=True, help="Output MuData .h5mu with MultiVI annotations")
     p.add_argument("--n_epochs", type=int, default=200, help="Number of training epochs")
     p.add_argument("--batch_key", type=str, default="sample_id", help="obs batch key in MuData")
+    p.add_argument("--seed", type=int, default=42,
+                   help="Random seed for scvi-tools training; scvi.settings.seed is None "
+                        "(unseeded) unless set. Seeds torch/numpy/lightning globally.")
     p.add_argument("--accelerator", default="auto", choices=["auto", "gpu", "cpu"],
                    help="Device for scvi-tools training. 'auto' (default) uses a GPU when "
                         "one is visible and falls back to CPU. 'cpu' forces CPU, which is "
@@ -47,6 +50,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Seed before setup_mudata / model construction / training (see --seed help).
+    scvi.settings.seed = args.seed
+    print(f"scvi.settings.seed = {args.seed}")
 
     # Load MuData produced by BUILD_MUDATA
     mdata = mu.read_h5mu(args.mudata)

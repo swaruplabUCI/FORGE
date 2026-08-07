@@ -97,6 +97,12 @@ def main():
     parser.add_argument('--results_dir', required=True)
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch_key', default='sample', help='Batch key (default: sample)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help="Random seed for scvi-tools training. scvi.settings.seed "
+                             "defaults to None (unseeded), which makes scVI the only "
+                             "non-reproducible step in FORGE — Leiden (random_state=0) "
+                             "and MOFA+ (seed=42) are already deterministic. Setting it "
+                             "seeds torch, numpy and lightning globally.")
     parser.add_argument('--accelerator', default='auto',
                         choices=['auto', 'gpu', 'cpu'],
                         help="Device for scvi-tools training. 'auto' (default) uses a GPU "
@@ -106,9 +112,15 @@ def main():
     parser.add_argument('--save_adata', action='store_true', help='Save updated adata with embeddings')
     
     args = parser.parse_args()
-    
+
+    # Seed BEFORE any model construction or training. This is the only
+    # non-reproducible step in FORGE by default: scvi.settings.seed is None unless
+    # set, whereas Leiden (random_state=0) and MOFA+ (seed=42) already are.
+    scvi.settings.seed = args.seed
+    print(f"scvi.settings.seed = {args.seed}")
+
     os.makedirs(args.results_dir, exist_ok=True)
-    
+
     # Load prepared reference
     print(f"Loading prepared reference from {args.prepared_ref}")
     ref = sc.read_h5ad(args.prepared_ref)

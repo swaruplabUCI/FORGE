@@ -142,6 +142,46 @@ Also confirm `git diff` on the three scvi modules shows **only** the added
 
 ---
 
+## 3c. Reproducibility — seed audit (2026-08-06)
+
+Audited every stochastic step. **Almost all of FORGE was already deterministic;
+there was exactly one gap.**
+
+| Component | Status before | Evidence |
+|---|---|---|
+| Leiden — all 8 call sites | ✅ already deterministic | `random_state` **defaults to 0** in scanpy 1.11.5 *and* snapatac2 2.8.0. No call passes it, but the default covers them. |
+| MOFA+ | ✅ already seeded | `bin/mofa_int.py --seed` default 42 → `set_train_options(seed=)` |
+| hdWGCNA ×3, Cicero target plots | ✅ already seeded | `set.seed()` in the R scripts |
+| MOFA UMAP | ✅ seeded | `random_state=42` in `mofa_vis.py` |
+| **scVI / scANVI / MultiVI** | ❌ **UNSEEDED** | `scvi.settings.seed` defaults to `None`; zero seed refs in all three scripts |
+
+**Fixed:** `params.random_seed = 42` (matching MOFA's existing default), threaded as
+`--seed` into `TRAIN_SCVI`, `TRAIN_SCANVI`, `MULTIVI_INTEGRATE`, applied as
+`scvi.settings.seed = args.seed` **before** any model construction. Confirmed in
+the container that this seeds torch/numpy/lightning globally
+(`[rank: 0] Seed set to 42`, `torch.initial_seed() == 42`).
+
+Reproducibility test: `dev_notes/phase3/seed_reproducibility_test.py` — asserts
+same-seed runs are bit-identical, different-seed runs differ, and documents that
+unseeded runs may diverge.
+
+**Caveats to state in any reproducibility claim:**
+
+- The guarantee is *same inputs + same container + same device class → same
+  output*. GPU and CPU numerics differ, so a GPU run will not match a CPU run bit
+  for bit even with an identical seed. The tutorial is CPU-only, so it is
+  self-consistent.
+- Library version changes break it. Pin the container.
+- **This edits three `bin/` scripts, so it invalidates the Nextflow cache for
+  those three processes on any resumed production run.** Nothing else changes:
+  the resolved production config is byte-identical (§3b regression check).
+
+This substantially strengthens the validation story below — with scvi-tools seeded
+the tutorial is largely reproducible, so expected values can be tight rather than
+loose statistical bands.
+
+---
+
 ## 4. Verified facts (measured, do not re-derive)
 
 **Source data** — `/dfs7/swaruplab/lesolano/FORGE/PBMC_Hs_10X_r5/data/`:
@@ -402,6 +442,54 @@ nextflow run main.nf -profile standard,singularity \
 
 Expect several rounds of genuine failures. Record wall-time and peak RSS per
 process from `logs/nextflow/trace.txt` — publish measured numbers, not guesses.
+
+### Step 3b — output vetting and expected results
+
+**Decision (user, 2026-08-06): design this AFTER the first successful run, from
+evidence, not in advance.** Run the pipeline, see what it actually emits and how
+much it varies between two runs, then write the contract.
+
+**Where outputs land:** `results_tutorial/` in the launch directory (the
+`tutorial` profile sets `params.outdir`), mirroring the production layout —
+`rna_qc/`, `integration/`, `atac/final/`, `cicero/`, `multiome/{mudata,mofa,multivi}/`,
+`cellchat/`, `hdwgcna/`, plus `logs/nextflow/{trace.txt,report.html,timeline.html}`.
+
+**What is actually vettable** (the enabled stages):
+
+| Output | Quantity worth checking |
+|---|---|
+| CellBender | per-sample ambient-corrected counts + report |
+| RNA QC → scVI → Leiden | cells passing QC, cluster count, latent embedding |
+| CellTypist | cell-type labels — should recover recognizable PBMC classes |
+| ATAC QC → peaks → clustering | computed thresholds, peak count, clusters |
+| ATAC marker annotation | ATAC cell types, derived independently of RNA |
+| Cicero | connection and CCAN counts |
+| MOFA+ / MultiVI | factors, variance explained, joint latent |
+| CellChat / hdWGCNA | interaction networks, co-expression modules |
+
+The single most informative check is **RNA vs ATAC concordance** — the two arms are
+annotated independently (different tools, different matrices, different `obs`
+columns), so agreement is a measured result rather than a construction.
+
+**Ship (user decision): metrics plus reference figures** — a small
+`expected_results.json` of numbers plus a handful of reference PNGs (UMAPs, QC
+plots) for visual sanity check. **Not** the full h5ad/h5mu objects: hundreds of MB
+that go stale on every pipeline change.
+
+**Now that scvi-tools is seeded (§3c), expected values can be tight.** Suggested
+tiering when the contract is written:
+
+- **Structural** — exact. Files exist, shapes match, required `obs` columns present.
+- **Deterministic numeric** — exact or ±1%. Cells passing QC at fixed thresholds,
+  peak count, fragments per cell, and (post-seeding) cluster counts and latent
+  dimensions.
+- **Environment-sensitive** — ranges. Anything that could shift with a container
+  or hardware change. Keep this bucket as small as the evidence allows.
+
+**First thing to measure in Step 3:** run the pipeline **twice** and diff the
+outputs. That tells you empirically which quantities are stable and which are not,
+which is exactly what the contract should be built from — rather than guessing
+tolerances.
 
 ### Step 4 — on-ramp bundle (optional)
 

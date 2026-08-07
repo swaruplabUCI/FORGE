@@ -23,6 +23,9 @@ def main():
     parser.add_argument('--scvi_model_dir', required=True, help='Directory containing trained SCVI model')
     parser.add_argument('--results_dir', required=True)
     parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--seed', type=int, default=42,
+                        help="Random seed for scvi-tools training; scvi.settings.seed "
+                             "is None (unseeded) unless set. Seeds torch/numpy/lightning.")
     parser.add_argument('--accelerator', default='auto',
                         choices=['auto', 'gpu', 'cpu'],
                         help="Device for scvi-tools training. 'auto' (default) uses a GPU "
@@ -31,9 +34,13 @@ def main():
                              "through to SCANVI.train(accelerator=...).")
     
     args = parser.parse_args()
-    
+
+    # Seed before any model construction or training (see --seed help).
+    scvi.settings.seed = args.seed
+    print(f"scvi.settings.seed = {args.seed}")
+
     os.makedirs(args.results_dir, exist_ok=True)
-    
+
     # Read label key
     with open(args.label_key_file) as f:
         SCANVI_LABELS_KEY = f.read().strip()

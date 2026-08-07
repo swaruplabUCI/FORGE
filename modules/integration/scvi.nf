@@ -25,6 +25,7 @@ process TRAIN_SCVI {
         --epochs ${params.n_epochs_scvi ?: 100} \\
         --batch_key sample \\
         --accelerator ${params.scvi_accelerator ?: 'auto'} \\
+        --seed ${params.random_seed ?: 42} \\
         --save_adata
     """
 }
