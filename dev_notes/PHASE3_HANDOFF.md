@@ -22,41 +22,45 @@
 > | 4 on-ramp bundle | **CLOSED, not shipped** — see below |
 > | 5 publish + docs | **IN PROGRESS** — 4 blockers left |
 >
-> ### THE ONE BLOCKING THING: git push auth
+> ### History rewrite — DONE and PUSHED
 >
-> History was rewritten on 2026-08-07 to strip `Co-Authored-By: Claude` from all
-> 81 commits (journal policy bars LLM co-authorship). **The rewrite is done and
-> verified** — 0 trailers, 81 commits intact, tree hashes byte-identical.
+> History was rewritten on 2026-08-07 to strip `Co-Authored-By: Claude` from
+> every commit (journal policy bars LLM co-authorship), then force-pushed to
+> both branches the same day. `dev` and `main` are both 0/0 against origin, all
+> 53 `main` commits kept byte-identical trees, and 0 trailer mentions remain.
+> The earlier push-auth failure was a token without write permission; resolved.
 >
-> Nothing is pushed yet. `dev` is 24 commits ahead of `origin/dev`, and because
-> every hash changed this needs `git push --force origin main dev` (BOTH
-> branches — main's hashes changed too).
->
-> Auth is failing: fine-grained PAT authenticates (`gh api user` -> lesolano)
-> and sees the org, but returns **404** for `repos/swaruplabUCI/FORGE`, meaning
-> the repo is not in the token's repository-access list. git and gh were proven
-> to use the same token (identical sha256), so it is NOT a stale cache.
->
-> **Backup before any force-push:**
-> `/dfs7/swaruplab/lesolano/FORGE_git_backup_20260807_152945.bundle`
-> (verified "records a complete history"; recover with `git clone <bundle>`).
+> **Backup**, keep until the rewrite is settled:
+> `/dfs7/swaruplab/lesolano/FORGE_git_backup_20260807_152945.bundle` — verified
+> "records a complete history", holds the pre-rewrite tips `origin/main`
+> e3a3465 and `origin/dev` e7940a5. Recover with `git clone <bundle>`.
 >
 > ### Remaining Step 5 blockers
 >
-> 1. **4 `<!-- FILL: -->` slots in `docs/tutorial.md`** — grep for them.
+> 1. **3 `<!-- FILL: -->` slots in `docs/tutorial.md`** — grep for them.
 >    `download-instructions` and `reference-outputs` need a GitHub Release to
 >    exist first; `concordance` needs computing (see below).
 > 2. **RNA vs ATAC concordance not computed.** This is the single most
 >    informative check in the tutorial — the two arms are annotated by different
 >    tools on different matrices, so agreement is measured, not constructed.
-> 3. **`docs/verification.md` Tier 2 section is factually wrong.** It says
->    "~200 MB" (it is 78.9 MB) and that tiny and published runs "differ only in
->    scale" (false — the tutorial needs different ATAC QC thresholds to work at
->    all). It also still carries a `!!! note "Status"` block saying the dataset
->    is "being packaged".
-> 4. **Two tier allocations are too tight** (see baseline doc): raise
->    `ATAC_INITIAL_QC` 8 -> 10 GB and `CELLBENDER` 4 -> 6 GB. Peak RSS is not
->    stable run to run.
+>
+> ~~3. `docs/verification.md` Tier 2 section is factually wrong.~~
+> **DONE 2026-08-07** (`e2cba66`). Corrected size (78.9 MB), runtime
+> (1h42m45s / 6.6 CPU-h), the false "differ only in scale" claim, the coverage
+> list (scVI training and ChromVAR were claimed but do not run; hdWGCNA,
+> CellChat and ATAC annotation do run and were unmentioned), the on-ramp
+> exclusions table (it promised bundles that ship nothing), and the stale
+> "being packaged" status block. The same on-ramp/scale errors in the
+> `tutorial_pbmc.config` header were fixed too. `mkdocs build --strict` passes.
+>
+> ~~4. Two tier allocations are too tight.~~
+> **DONE 2026-08-07** (`99413b3`). `ATAC_INITIAL_QC` 8 -> 10 GB,
+> `CELLBENDER` 4 -> 6 GB, both verified to resolve via
+> `nextflow config -profile tutorial`.
+>
+> So Step 5 is down to **the GitHub Release and the concordance number.** Those
+> two are coupled: `reference-outputs` wants the expected-values artifact, which
+> is the natural place to record concordance once computed.
 >
 > ### Step 4 is CLOSED — no on-ramp bundle ships
 >
