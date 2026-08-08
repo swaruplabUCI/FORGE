@@ -1,0 +1,19 @@
+{
+  "n_cells_multivi": 767,
+  "n_cells_scored": 766,
+  "n_agree": 29,
+  "L1_concordance": 0.0379,
+  "chance_floor": 0.0379,
+  "n_rna_labels_raw": 35,
+  "n_atac_labels_raw": 1,
+  "n_rna_broad_classes": 10,
+  "n_atac_broad_classes": 1,
+  "atac_degenerate": true,
+  "atac_only_label": "Plasma_cells",
+  "rna_source": "celltypist",
+  "atac_source": "scatanno",
+  "unmapped_rna_labels": [
+    "B cells"
+  ],
+  "unmapped_atac_labels": []
+}

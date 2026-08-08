@@ -239,17 +239,56 @@ Both paths run the same pipeline with the same `tutorial` profile.
     `max_counts 14886.7`, `min_tsse 6.31`), which is what takes 944 cells down
     to 817. Read the latter file.
 
-### The single most informative check
+### RNA vs ATAC concordance — a wiring check, not a result
 
-**RNA vs ATAC concordance.** The two arms are annotated *independently* —
-different tools, different matrices, different `obs` columns. The ATAC side never
-sees the RNA labels. So agreement between them is a measured result rather than
-something the pipeline constructed, and it is the best evidence that the run is
-genuinely working.
+The two arms are annotated *independently* — different tools, different matrices,
+different `obs` columns. The ATAC side never sees the RNA labels. So the fact that
+both labels land on a common cell index is real evidence the cross-modal join
+works.
 
-⟨TBD⟩<!-- FILL:concordance — report the RNA-vs-ATAC agreement and say how it was
-     computed. State the honest expectation: at 2.6% of the genome and ~1,000
-     cells this will be modest. Do not oversell it. -->
+The *agreement* between them, at this scale, is not evidence of anything. Here is
+the measured outcome, so you can check your own run against it rather than wonder:
+
+| Quantity | Value |
+|---|---|
+| Cells carrying both labels | 767 (766 scored) |
+| RNA labels (CellTypist) | 35 raw → 10 broad classes |
+| ATAC labels (marker path) | **1 raw → 1 broad class** |
+| L1 broad-class agreement | **3.79%** |
+| Chance floor | **3.79%** |
+
+**Agreement equals the chance floor exactly, and that is the expected result.**
+The ATAC arm assigns `Plasma_cells` to all 817 cells, so its labels carry no
+information and "agreement" collapses to whatever share of RNA cells happen to
+fall in the matching broad class (29/766). This is not a pipeline failure — it is
+the direct consequence of restricting ATAC to `chr21`+`chr22`: the marker panel
+driving ATAC annotation is genome-wide, and on 2.6% of the genome it has almost
+nothing to score against.
+
+Everything upstream of the labelling is healthy, which is the part worth checking:
+ATAC clustering resolves **4 / 7 / 9 Leiden clusters** at resolutions 0.5 / 1.0 /
+2.0, and the RNA side produces a sensible PBMC composition (448 monocytes, 105
+CD4+ T, 91 DC, 34 CD8+ T, …). The structure is there; only the label assignment
+degenerates.
+
+!!! warning "Do not quote this number as a quality metric"
+    It measures the subset's genome restriction, not FORGE's cross-modal
+    agreement. The published datasets — run on whole genomes with the scATAnno
+    atlas — are where concordance is meaningful; PBMC scores **0.917** there.
+    Reproduce the number below to confirm your run matches, and nothing more.
+
+Reproduce it with:
+
+```bash
+singularity exec --bind /dfs7,/tmp singularity_cache/snapatac_extended.sif \
+    python3 dev_notes/phase3/tutorial_concordance.py \
+        --h5mu results/multiome/multivi/multivi_integrated.h5mu \
+        --outdir dev_notes/phase3/concordance
+```
+
+It reads only `obs` from the h5mu (never materialises a matrix), maps both
+vocabularies onto the same 10 broad classes used for the published datasets, and
+writes `summary.json`, `L1_confusion_matrix.csv` and `per_cell_results.csv`.
 
 ### Reference outputs
 
