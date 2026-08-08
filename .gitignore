@@ -59,3 +59,10 @@ __pycache__/
 # Secrets
 .env
 dev_notes/phase3/concordance/per_cell_results.csv
+
+# Release assets are staged locally and uploaded to a GitHub Release, never
+# committed. The manifests that describe them (checksums, expected_results.json,
+# RELEASE_NOTES.md) ARE committed, so the release stays reproducible from the repo.
+dev_notes/phase3/release_assets/*.tar.gz
+dev_notes/phase3/release_assets/figures/*.png
+dev_notes/phase3/release_assets/figures/*.pdf

@@ -1,0 +1,68 @@
+{
+  "dataset": "forge_tutorial_pbmc_v1",
+  "description": "Structural contract for the FORGE T2 tutorial run. Counts under \"structural\" are deterministic and safe to assert on; \"informational\" values vary run to run and must not be asserted.",
+  "pipeline_profile": "tutorial,singularity",
+  "random_seed": 42,
+  "structural": {
+    "n_tasks_completed": 94,
+    "rna": {
+      "n_cells_annotated": 924,
+      "n_genes": 21014,
+      "annotation_method": "celltypist"
+    },
+    "atac": {
+      "n_cells_prefilter": 944,
+      "n_cells_final": 817,
+      "n_peaks_final": 12085,
+      "leiden_resolutions": [
+        0.5,
+        1.0,
+        2.0
+      ],
+      "n_cell_types_assigned": 1,
+      "computed_thresholds": {
+        "TUTORIAL_PBMC_tutorial": {
+          "min_counts": 660.15,
+          "max_counts": 14886.699999999975,
+          "min_tsse": 6.30572243680171
+        }
+      }
+    },
+    "multiome": {
+      "n_paired_cells": 767,
+      "n_rna_genes": 21014,
+      "n_atac_peaks": 606219
+    },
+    "mofa": {
+      "n_factors": 3,
+      "n_rna_features": 5000,
+      "n_atac_features": 10000
+    },
+    "cicero": {
+      "n_connections": 3498,
+      "n_ccan_assignments": 166,
+      "n_triplets": 531088
+    },
+    "cellchat": {
+      "n_interactions": 2029
+    },
+    "hdwgcna": {
+      "n_cell_types_with_output": 45
+    },
+    "concordance": {
+      "n_cells_scored": 766,
+      "L1_concordance": 0.0379,
+      "chance_floor": 0.0379,
+      "note": "Equal to the chance floor by construction \u2014 the ATAC arm yields a single label on a chr21+22 subset. Wiring check only; not a quality metric."
+    }
+  },
+  "informational": {
+    "note": "NOT stable run to run. Recorded for scale only \u2014 do not assert.",
+    "wall_clock": "1h42m45s on 8 CPUs",
+    "cpu_hours": 6.6,
+    "peak_single_task_rss_gb": 8.8,
+    "results_dir_size": "3.88 GB",
+    "work_dir_size": "4.81 GB",
+    "recommended_free_disk": "~15 GB"
+  }
+}
