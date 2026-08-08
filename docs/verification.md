@@ -10,7 +10,7 @@ a very different cost.
 | Tier | Question it answers | Time | Needs |
 |---|---|---|---|
 | **1. Pre-flight + DAG** | Is my configuration coherent? Does the whole graph wire up? | **~15 seconds** | Nextflow only |
-| **2. Tiny dataset** | Does a real analysis arm produce real numbers? | **~15–60 minutes** | ~200 MB data, 2 containers, CPU only |
+| **2. Tiny dataset** | Does a real analysis arm produce real numbers? | **~1 h 45 m** on 8 CPUs | 78.9 MB data, real containers, CPU only, ~15 GB free disk |
 | **3. Full datasets** | Does it scale, and reproduce the published figures? | hours–days | Full references, GPU, HPC |
 
 Start at tier 1. It costs nothing and catches most mistakes.
@@ -129,30 +129,55 @@ nextflow -c configs/datasets/my_study.config config -profile cluster,singularity
 Tier 1 proves the wiring. Tier 2 proves the science runs.
 
 The tiny dataset is a subset of the public **10x Genomics 10k PBMC multiome**
-sample: roughly 1,000 cells with fragments restricted to two chromosomes, about
-200 MB in total. It is the same dataset as the full PBMC example, so the tiny run
-and the published run differ *only in scale* — which makes it a genuine test of
-the pipeline rather than a separate toy path.
+sample: roughly 1,000 cells with fragments restricted to `chr21` and `chr22`,
+**78.9 MB** in total. It is drawn from the same source data as the full PBMC
+example, so it exercises the real code paths rather than a separate toy path.
 
-**What it covers:** manifest parsing and pre-flight, RNA QC → scVI → clustering →
-CellTypist annotation, ATAC QC → peak calling → clustering, Cicero
-co-accessibility, ChromVAR motif enrichment, and MOFA+/MultiVI integration.
+It is *not* simply the published run at smaller scale. Two things genuinely
+differ, and both are necessary rather than cosmetic:
+
+- **ATAC QC thresholds are set explicitly.** The shipped auto-thresholds are
+  derived from whole-genome fragment counts and reject nearly every cell when
+  fragments are restricted to two chromosomes.
+- **Downstream cell-count floors are lowered** (`hdwgcna.min_cells = 50`). At
+  1,000 cells a PBMC cell type is ~30–400 cells, so the shipped default of 100
+  would skip most cell types.
+
+**What it covers:** manifest parsing and pre-flight, RNA QC → CellBender →
+CellTypist annotation, ATAC QC → peak calling → clustering → ATAC cell-type
+annotation, Cicero co-accessibility, hdWGCNA (whole-dataset and per-cell-type),
+CellChat, and MOFA+/MultiVI integration. Measured: **94/94 tasks, exit 0,
+1 h 42 m 45 s wall-clock, 6.6 CPU-hours** on 8 CPUs.
+
+Note that scVI/scANVI training does **not** run here — annotation goes through
+CellTypist (`rna.annotation_method = 'celltypist'`), so `TRAIN_SCVI` and
+`TRAIN_SCANVI` are not part of the 94 tasks. scvi-tools CPU viability and
+seeding were verified separately.
 
 **What it deliberately does not cover, and why:**
 
-| Stage | Why it is excluded | How it is demonstrated instead |
+| Stage | Config | Why it is excluded |
 |---|---|---|
-| SCENIC+ / pycisTopic | Needs cisTarget databases that cannot be meaningfully subset to two chromosomes | Precomputed outputs injected via [on-ramps](onramps.md) |
-| scPRINTER enhancer footprinting | Single most expensive process in FORGE — 54% of all compute across the four published datasets | Precomputed outputs injected via on-ramps |
+| SCENIC+ / pycisTopic | `scenicplus.run`, `pycistopic.run` = `false` | Needs cisTarget databases that cannot be meaningfully subset to two chromosomes |
+| scPRINTER enhancer footprinting | `scprinter.run`, `enhancer_footprinting.run` = `false` | Single most expensive process in FORGE — 54% of all compute across the four published datasets |
+| ChromVAR | `chromvar.run` = `false` | `bin/gpu_chromvar_nf.py` imports `cupy`/`rmm` at module scope — a hard GPU dependency, and this tier is CPU-only |
+| Differential workflows | `differential*.run` = `false` | The subset is a single-condition design, so every condition-aware workflow has nothing to contrast |
 
-Using on-ramps for those two is not a workaround bolted on for the tutorial —
-it is the same mechanism FORGE uses in production to resume from checkpoints, so
-exercising it here is itself part of the verification.
+**No precomputed on-ramp bundle ships with the tutorial.** This was evaluated and
+deliberately dropped: on-ramp artifacts are keyed to their producing run's
+barcodes and CCANs, so a bundle from the published PBMC run cannot be injected
+into the subset. A bundle *was* built from the tutorial dataset itself and
+verified barcode-compatible, but it still ships nothing useful, because every
+ChromVAR consumer is gated behind a toggle the tutorial turns off
+(`scprinter.run`, differential conditions, `differential_tf.run`). The
+[on-ramp mechanism](onramps.md) is documented on its own terms instead.
 
 !!! note "Status"
-    The tiny dataset is being packaged for release with a citable DOI. Until it
-    lands, tier 1 is fully available today against any dataset config, and tier 3
-    is reproducible from the published configs in `configs/datasets/`.
+    The tiny dataset is **built and verified** — it runs end to end, twice,
+    94/94 tasks, exit 0. What is still pending is publication: the download
+    lives behind a GitHub Release that has not been cut yet. Tier 1 is fully
+    available today against any dataset config, and tier 3 is reproducible from
+    the published configs in `configs/datasets/`.
 
 ---
 
