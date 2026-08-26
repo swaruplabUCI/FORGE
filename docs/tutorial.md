@@ -4,18 +4,6 @@ This is the fastest honest way to see FORGE actually work. You run the real
 pipeline — real containers, real tools, real numbers — on a deliberately small
 slice of a public 10x PBMC multiome dataset.
 
-!!! warning "Draft — measured values pending"
-    Every value written as **⟨TBD⟩** below is waiting on a completed
-    re-measurement run. They are marked in the source with `<!-- FILL:... -->`
-    comments so they can be found with a single grep:
-
-    ```bash
-    grep -rn "FILL:" docs/tutorial.md
-    ```
-
-    Do not publish this page with any **⟨TBD⟩** remaining. See
-    [Regenerating the numbers on this page](#regenerating-the-numbers-on-this-page).
-
 ---
 
 ## What this is, and what it is not
@@ -78,11 +66,20 @@ repository.
 
 ```bash
 cd /path/to/FORGE
-# ⟨TBD⟩ download command + checksum verification
+
+REL=https://github.com/swaruplabUCI/FORGE/releases/download/tutorial-data-v1
+curl -LO $REL/forge_tutorial_pbmc_v1.tar.gz
+curl -LO $REL/forge_tutorial_pbmc_v1.tar.gz.sha256
+
+sha256sum -c forge_tutorial_pbmc_v1.tar.gz.sha256   # must print: OK
+
+mkdir -p tutorial_data
+tar -xzf forge_tutorial_pbmc_v1.tar.gz -C tutorial_data/
 ```
-<!-- FILL:download-instructions — GitHub Release URL, tarball name, sha256 line,
-     and the `tar xzf` invocation. Keep it Zenodo-swappable (single versioned
-     tarball + README + checksums.txt). -->
+
+Verify the checksum before unpacking rather than after. A truncated download
+still extracts, and the failure surfaces hours later as an unreadable fragment
+file rather than as a bad download.
 
 Unpacked, it must land at `tutorial_data/` in the repository root:
 
@@ -292,10 +289,38 @@ writes `summary.json`, `L1_confusion_matrix.csv` and `per_cell_results.csv`.
 
 ### Reference outputs
 
-⟨TBD⟩<!-- FILL:reference-outputs — link the expected_results.json + reference
-     PNGs release asset, and say how to diff against it. Ship metrics and figures
-     only, NOT the h5ad/h5mu objects: they are hundreds of MB and go stale on
-     every pipeline change. -->
+The same release carries two artifacts for checking your run against ours:
+
+```bash
+REL=https://github.com/swaruplabUCI/FORGE/releases/download/tutorial-data-v1
+curl -LO $REL/expected_results.json
+curl -LO $REL/figures.tar.gz
+```
+
+`expected_results.json` splits into two blocks, and the split is the point:
+
+- **`structural`** — cell counts, peak counts, task count, factor counts. These
+  are deterministic. Two cold runs with `params.random_seed = 42` reproduced them
+  exactly. A difference here means something real changed about your inputs or
+  your containers, and is worth chasing.
+- **`informational`** — wall-clock, peak RSS, directory sizes. These are *not*
+  stable between runs. They are recorded so you know the scale to expect. Do not
+  assert on them.
+
+Compare the structural block against the numbers your own run printed:
+
+```bash
+python3 -c "import json; d=json.load(open('expected_results.json')); print(json.dumps(d['structural'], indent=2))"
+```
+
+`figures.tar.gz` holds 12 reference figures spanning every arm — RNA QC and UMAPs,
+ATAC QC, MultiVI, MOFA+ and Cicero — plus a `CHECKSUMS.txt` you can verify with
+`sha256sum -c`. They are for eyeballing shape and sanity, not for pixel diffing:
+figure rendering is not byte-reproducible across matplotlib versions.
+
+Deliberately **not** shipped: the `.h5ad` and `.h5mu` objects. They are hundreds
+of megabytes and go stale on every pipeline change, which would make them a
+liability rather than a reference.
 
 ---
 
@@ -399,7 +424,7 @@ headroom over the numbers above.
 
 ## Regenerating the numbers on this page
 
-Every ⟨TBD⟩ above comes from one clean run:
+Every measured number above comes from one clean run:
 
 ```bash
 sbatch -A <account> -p <partition> launch_tutorial.sh \
