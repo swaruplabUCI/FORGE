@@ -277,9 +277,9 @@ degenerates.
 Reproduce it with:
 
 ```bash
-singularity exec --bind /dfs7,/tmp singularity_cache/snapatac_extended.sif \
+singularity exec --bind "$PWD" singularity_cache/snapatac_extended.sif \
     python3 bin/tutorial_concordance.py \
-        --h5mu results/multiome/multivi/multivi_integrated.h5mu \
+        --h5mu results_tutorial/multiome/multivi/multivi_integrated.h5mu \
         --outdir concordance
 ```
 

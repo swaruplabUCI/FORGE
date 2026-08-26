@@ -34,6 +34,8 @@
 #
 # Options:
 #   --outdir DIR   publish results to DIR       (default: results_tutorial)
+#   --tutorial_data DIR
+#                  where the unpacked dataset lives (default: <repo>/tutorial_data)
 #   --no-resume    ignore the cache, run cold   (default: -resume)
 #   --preview      build the DAG and exit, ~15s (no compute, no containers run)
 # =========================================================================
@@ -43,13 +45,18 @@ set -euo pipefail
 OUTDIR=""
 RESUME="-resume"
 PREVIEW=""
+TUTORIAL_DATA_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --outdir)    OUTDIR="$2"; shift 2 ;;
+        --tutorial_data) TUTORIAL_DATA_ARG="$2"; shift 2 ;;
         --no-resume) RESUME="";   shift ;;
         --preview)   PREVIEW="-preview"; RESUME=""; shift ;;
-        -h|--help)   sed -n '14,40p' "$0"; exit 0 ;;
+        # Print the header block up to its closing rule. Anchored on the rule
+        # rather than a line number, which silently truncates the help the next
+        # time a line is added above it.
+        -h|--help)   awk 'NR>=14 { if (/^# ={10,}/) exit; print }' "$0"; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -85,7 +92,7 @@ export HDF5_USE_FILE_LOCKING=FALSE
 export SINGULARITY_BINDPATH="${SINGULARITY_BINDPATH:-$PROJECT_DIR,$TMPDIR}"
 
 # --- Input check ---------------------------------------------------------
-TUTORIAL_DATA="${PROJECT_DIR}/tutorial_data"
+TUTORIAL_DATA="${TUTORIAL_DATA_ARG:-${PROJECT_DIR}/tutorial_data}"
 if [[ ! -f "${TUTORIAL_DATA}/manifest.csv" ]]; then
     echo "ERROR: tutorial dataset not found at ${TUTORIAL_DATA}" >&2
     echo "Download and unpack the tutorial data release asset first;" >&2
@@ -107,11 +114,15 @@ fi
 OUTDIR_ARG=()
 [[ -n "$OUTDIR" ]] && OUTDIR_ARG=(--outdir "$OUTDIR")
 
+DATA_ARG=()
+[[ -n "$TUTORIAL_DATA_ARG" ]] && DATA_ARG=(--tutorial_data "$TUTORIAL_DATA")
+
 echo "========================================="
 echo "FORGE tier-2 tutorial"
 echo "  Project dir: ${PROJECT_DIR}"
 echo "  Mode:        ${MODE}"
 echo "  Outdir:      ${OUTDIR:-results_tutorial (profile default)}"
+echo "  Dataset:     ${TUTORIAL_DATA}"
 echo "  Resume:      ${RESUME:-disabled}"
 [[ -n "$PREVIEW" ]] && echo "  *** PREVIEW ONLY — no compute ***"
 echo "========================================="
@@ -122,4 +133,5 @@ nextflow run main.nf \
     "${CONFIGS[@]}" \
     ${PREVIEW} \
     ${RESUME} \
-    "${OUTDIR_ARG[@]}"
+    "${OUTDIR_ARG[@]}" \
+    "${DATA_ARG[@]}"
