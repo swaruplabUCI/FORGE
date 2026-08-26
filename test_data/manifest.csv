@@ -1,3 +1,3 @@
-sample_id,batch,sample_type,original_lane_id,rna_file,fragment_file,condition_group,data_dir
-STUB_A,stubbatch,lane,L1,STUB_A_raw_feature_bc_matrix.h5,STUB_A_atac_fragments.tsv.gz,Control,/dfs7/swaruplab/lesolano/src_FORGE/test_data/samples
-STUB_B,stubbatch,lane,L1,STUB_B_raw_feature_bc_matrix.h5,STUB_B_atac_fragments.tsv.gz,Treatment,/dfs7/swaruplab/lesolano/src_FORGE/test_data/samples
+sample_id,batch,sample_type,original_lane_id,rna_file,fragment_file,condition_group
+STUB_A,stubbatch,lane,L1,STUB_A_raw_feature_bc_matrix.h5,STUB_A_atac_fragments.tsv.gz,Control
+STUB_B,stubbatch,lane,L1,STUB_B_raw_feature_bc_matrix.h5,STUB_B_atac_fragments.tsv.gz,Treatment

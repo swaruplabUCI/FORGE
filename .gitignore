@@ -47,6 +47,14 @@ dev_notes/phase3/onramp_chromvar_*.log
 *.bigWig
 *.bw
 
+# The verification fixture is deliberately exempt from the rules above. Every
+# file is a few hundred bytes of placeholder content, and the repository's
+# headline check (`-profile test -preview`) cannot run without them.
+!test_data/samples/
+!test_data/samples/*
+!test_data/refs/
+!test_data/refs/*
+
 # Python cache
 __pycache__/
 *.pyc

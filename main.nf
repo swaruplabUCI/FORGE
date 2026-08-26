@@ -832,6 +832,10 @@ def validateStartupParams() {
     }
 
     // FIX-R1-7: Validate container files exist (derived from params.containers)
+    // Skipped under -preview, which constructs the process graph but never
+    // launches a task, so no container is ever entered. Demoting this to a
+    // warning is what lets someone validate a fresh clone, or their own config,
+    // before spending anything on image pulls.
     if (params.containers) {
         def uniqueSifs = params.containers.values().collect { it.toString() }.unique()
         def containerMissing = []
@@ -842,8 +846,13 @@ def validateStartupParams() {
             }
         }
         if (containerMissing) {
-            errors << "Missing container files: ${containerMissing}. " +
-                      "Expected in singularity_cache/. Run container build/pull first."
+            if (workflow.preview) {
+                warnings << "Missing container files: ${containerMissing}. " +
+                            "Not required for -preview, but a real run needs them in singularity_cache/."
+            } else {
+                errors << "Missing container files: ${containerMissing}. " +
+                          "Expected in singularity_cache/. Run container build/pull first."
+            }
         } else {
             checks_passed << "Containers (${uniqueSifs.size()} SIF files)"
         }
