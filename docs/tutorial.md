@@ -205,8 +205,8 @@ Both paths run the same pipeline with the same `tutorial` profile.
 ## 4. What you should see
 
 <!-- Measured from SLURM job 55119808 (results_tutorial_remeasure) and confirmed
-     identical against run 1. Raw artifacts: dev_notes/phase3/remeasure_trace/.
-     Regenerate per dev_notes/phase3/T2_RESOURCE_BASELINE.md. -->
+     identical against run 1. Regenerate by re-running the tutorial and reading
+     pipeline_info/trace.tsv. -->
 
 | Stage | Quantity | Expected |
 |---|---|---|
@@ -281,9 +281,9 @@ Reproduce it with:
 
 ```bash
 singularity exec --bind /dfs7,/tmp singularity_cache/snapatac_extended.sif \
-    python3 dev_notes/phase3/tutorial_concordance.py \
+    python3 bin/tutorial_concordance.py \
         --h5mu results/multiome/multivi/multivi_integrated.h5mu \
-        --outdir dev_notes/phase3/concordance
+        --outdir concordance
 ```
 
 It reads only `obs` from the h5mu (never materialises a matrix), maps both
@@ -418,5 +418,5 @@ Then:
 4. **Confirm allocations landed** — check `trace.tsv`'s `cpus`/`memory` columns
    against the tier. This failure mode is silent, so do not assume.
 
-Working notes and the previous measured baseline live in
-`dev_notes/phase3/T2_RESOURCE_BASELINE.md`.
+The measured baseline for the reference run is summarised in the table at the
+top of this page and, in full, in the `expected_results.json` release asset.

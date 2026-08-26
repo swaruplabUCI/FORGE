@@ -1,9 +1,0 @@
-{
-  "mode": "high_memory",
-  "n_cells": 767,
-  "n_factors": 3,
-  "n_rna_features": 5000,
-  "n_atac_features": 10000,
-  "convergence_mode": "fast",
-  "seed": 42
-}

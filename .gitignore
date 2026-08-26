@@ -55,6 +55,12 @@ dev_notes/phase3/onramp_chromvar_*.log
 !test_data/refs/
 !test_data/refs/*
 
+# Internal working notes, kept locally and re-added deliberately when a piece of
+# them is ready to be public. The tutorial's one genuinely user-facing script
+# from this tree now lives in bin/tutorial_concordance.py.
+dev_notes/
+AUDIT_2026-05-04.md
+
 # Python cache
 __pycache__/
 *.pyc
