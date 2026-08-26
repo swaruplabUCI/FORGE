@@ -62,9 +62,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- Locate the repo -----------------------------------------------------
-# $0 is unreliable under sbatch (SLURM copies the script), so prefer the
-# submit directory when SLURM tells us what it was.
-PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# Two cases, and neither source alone is right for both:
+#   sbatch      — SLURM copies the script, so $BASH_SOURCE points into SLURM's
+#                 spool directory. SLURM_SUBMIT_DIR is the repo.
+#   interactive — including a shell inside an unrelated salloc/srun allocation,
+#                 where SLURM_SUBMIT_DIR is set to wherever THAT job was
+#                 submitted from. Following it lands somewhere arbitrary (a home
+#                 directory, typically) and the run dies before it starts.
+# So trust SLURM_SUBMIT_DIR only when it actually holds the repo, and otherwise
+# fall back to where the script itself lives.
+_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/main.nf" ]]; then
+    PROJECT_DIR="$SLURM_SUBMIT_DIR"
+else
+    PROJECT_DIR="$_script_dir"
+fi
 cd "$PROJECT_DIR"
 
 if [[ ! -f main.nf || ! -f nextflow.config ]]; then
