@@ -129,7 +129,7 @@ nextflow run main.nf -preview \
     -c configs/datasets/tutorial_pbmc.config
 ```
 
-You should see `PRE-FLIGHT CHECKLIST PASSED` with no warnings. If not, stop and
+You should see `PRE-FLIGHT CHECKLIST PASSED`. If not, stop and
 fix it — see [Troubleshooting](troubleshooting.md).
 
 !!! warning "Do not follow `-preview` with a bare `-resume`"

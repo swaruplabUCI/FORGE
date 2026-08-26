@@ -14,7 +14,7 @@ Developed at the [Swarup Lab](https://swaruplab.bio.uci.edu/), University of Cal
 > repository. It validates the manifest, every reference and parameter check, and
 > constructs the complete process graph:
 > ```
-> PRE-FLIGHT CHECKLIST PASSED (9 checks):   No warnings.
+> PRE-FLIGHT CHECKLIST PASSED (8 checks):   Warnings: 1 (containers absent)
 > ```
 > Swap in `-c your_dataset.config` to validate your own setup the same way. FORGE
 > reports every configuration problem at once, before any compute is submitted.

@@ -44,12 +44,15 @@ nextflow run main.nf -profile test -preview \
 In about fifteen seconds you should see:
 
 ```text
-PRE-FLIGHT CHECKLIST PASSED (9 checks):
+PRE-FLIGHT CHECKLIST PASSED (8 checks):
     [OK] Manifest schema (2 rows)
     [OK] Species/genome consistency
     ...
-  No warnings.
+  Warnings: 1 (see above)
 ```
+
+The one warning says the container images are missing. On a fresh clone that is
+expected — a preview launches no task, so nothing is ever run inside an image.
 
 That confirms your Nextflow install, the repository, and the full process graph
 are all sound. If you only do one thing from this page, do this.

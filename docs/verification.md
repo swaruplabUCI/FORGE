@@ -35,7 +35,10 @@ nextflow run main.nf -profile test -preview \
 Expected result, in about fifteen seconds:
 
 ```text
-PRE-FLIGHT CHECKLIST PASSED (9 checks):
+WARN: Missing container files: [...]. Not required for -preview, but a real
+      run needs them in singularity_cache/.
+
+PRE-FLIGHT CHECKLIST PASSED (8 checks):
     [OK] Manifest schema (2 rows)
     [OK] Species/genome consistency
     [OK] GTF files (5 paths validated)
@@ -43,10 +46,14 @@ PRE-FLIGHT CHECKLIST PASSED (9 checks):
     [OK] MOFA mode (high_memory)
     [OK] scPRINTER genome (hg38)
     [OK] CellTypist model: Immune_All_Low.pkl
-    [OK] Containers (5 SIF files)
     [OK] Resource tier (test)
-  No warnings.
+  Warnings: 1 (see above)
 ```
+
+The container warning is expected on a fresh clone and is not a failure. A
+preview builds the process graph but launches no task, so no image is ever
+entered; the check becomes an error only for a real run. If you have already
+built the containers you will see nine checks and no warnings instead.
 
 `-profile test` strips every site-specific scheduler assumption (SLURM
 partitions, accounts, QOS, `--gres` GPU strings) so this works on any machine,
