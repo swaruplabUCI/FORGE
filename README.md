@@ -46,26 +46,42 @@ Raw 10x/BD data
 
 ## Key capabilities
 
-| Stage | Tools |
-|-------|-------|
-| Ambient RNA correction | CellBender |
-| RNA QC, integration, batch correction | scanpy, scVI |
-| Reference-based cell-type annotation (RNA) | scANVI, CellTypist |
-| ATAC QC, peak calling, clustering | SnapATAC2 |
-| Reference-based cell-type annotation (ATAC) | scATAnno |
-| Co-accessibility networks | Cicero (R) |
-| TF motif enrichment | ChromVAR (GPU-accelerated, cisBP) |
-| Gene regulatory networks | SCENIC+ / pycisTopic |
-| TF footprinting at enhancers | scPRINTER (JASPAR 2022) |
-| RNA co-expression networks | hdWGCNA |
-| Cell-cell communication | CellChat |
-| Multi-modal integration | MOFA+, MultiVI |
-| Differential expression | MAST |
-| Differential accessibility | SnapATAC2 |
+| Stage | Tool | Docs | Paper |
+|-------|------|------|-------|
+| Ambient RNA correction | CellBender | [docs](https://cellbender.readthedocs.io/) | [Fleming et al. 2023, *Nat Methods*](https://doi.org/10.1038/s41592-023-01943-7) |
+| RNA QC, clustering | scanpy | [docs](https://scanpy.readthedocs.io/) | [Wolf et al. 2018, *Genome Biol*](https://doi.org/10.1186/s13059-017-1382-0) |
+| RNA integration, batch correction | scVI | [scvi-tools](https://docs.scvi-tools.org/) | [Lopez et al. 2018, *Nat Methods*](https://doi.org/10.1038/s41592-018-0229-2) |
+| Reference-based annotation (RNA) | scANVI | [scvi-tools](https://docs.scvi-tools.org/) | [Xu et al. 2021, *Mol Syst Biol*](https://doi.org/10.15252/msb.20209620) |
+| Reference-based annotation (RNA) | CellTypist | [celltypist.org](https://www.celltypist.org/) | [Domínguez Conde et al. 2022, *Science*](https://doi.org/10.1126/science.abl5197) |
+| ATAC QC, peak calling, clustering | SnapATAC2 | [docs](https://kzhang.org/SnapATAC2/) | [Zhang et al. 2024, *Nat Methods*](https://doi.org/10.1038/s41592-023-02139-8) |
+| Reference-based annotation (ATAC) | scATAnno | [PyPI](https://pypi.org/project/scATAnno/) | [Jiang et al. 2025, *Genom Proteom Bioinform*](https://doi.org/10.1093/gpbjnl/qzaf108) |
+| Co-accessibility networks | Cicero | [docs](https://cole-trapnell-lab.github.io/cicero-release/) | [Pliner et al. 2018, *Mol Cell*](https://doi.org/10.1016/j.molcel.2018.06.044) |
+| TF motif enrichment | chromVAR | [docs](https://greenleaflab.github.io/chromVAR/) | [Schep et al. 2017, *Nat Methods*](https://doi.org/10.1038/nmeth.4401) |
+| Gene regulatory networks | SCENIC+ | [docs](https://scenicplus.readthedocs.io/) | [Bravo González-Blas et al. 2023, *Nat Methods*](https://doi.org/10.1038/s41592-023-01938-4) |
+| Topic modelling of ATAC | pycisTopic | [docs](https://pycistopic.readthedocs.io/) | [Bravo González-Blas et al. 2023, *Nat Methods*](https://doi.org/10.1038/s41592-023-01938-4) |
+| TF footprinting at enhancers | scPRINTER | [GitHub](https://github.com/buenrostrolab/scPrinter) | [Hu et al. 2025, *Nature*](https://doi.org/10.1038/s41586-024-08443-4) |
+| RNA co-expression networks | hdWGCNA | [docs](https://smorabit.github.io/hdWGCNA/) | [Morabito et al. 2023, *Cell Rep Methods*](https://doi.org/10.1016/j.crmeth.2023.100498) |
+| Cell–cell communication | CellChat | [GitHub](https://github.com/jinworks/CellChat) | [Jin et al. 2021, *Nat Commun*](https://doi.org/10.1038/s41467-021-21246-9) |
+| Multi-modal integration | MOFA+ | [docs](https://biofam.github.io/MOFA2/) | [Argelaguet et al. 2020, *Genome Biol*](https://doi.org/10.1186/s13059-020-02015-1) |
+| Multi-modal integration | MultiVI | [scvi-tools](https://docs.scvi-tools.org/) | [Ashuach et al. 2023, *Nat Methods*](https://doi.org/10.1038/s41592-023-01909-9) |
+| Differential expression | MAST | [GitHub](https://github.com/RGLab/MAST) | [Finak et al. 2015, *Genome Biol*](https://doi.org/10.1186/s13059-015-0844-5) |
+| Differential accessibility | SnapATAC2 | [docs](https://kzhang.org/SnapATAC2/) | [Zhang et al. 2024, *Nat Methods*](https://doi.org/10.1038/s41592-023-02139-8) |
+
+**Motif databases.** Footprinting scores against
+[JASPAR 2022](https://jaspar.elixir.no/)
+([Castro-Mondragon et al. 2022, *NAR*](https://doi.org/10.1093/nar/gkab1113));
+motif enrichment uses [CIS-BP](https://cisbp.ccbr.utoronto.ca/)
+([Weirauch et al. 2014, *Cell*](https://doi.org/10.1016/j.cell.2014.08.009)).
 
 ---
 
-## Supported genomes
+## Validated genomes
+
+These are the assemblies FORGE has been run and validated against. They are not
+a whitelist — the pipeline takes genome, annotation, and motif resources as
+configurable paths, so other assemblies work once you supply the matching
+reference set. See [docs/setup/references.md](docs/setup/references.md) for what a new
+assembly needs.
 
 | Assembly | Species | Annotation |
 |----------|---------|------------|
@@ -80,9 +96,24 @@ Raw 10x/BD data
 - [Nextflow](https://www.nextflow.io/) ≥ 23.04
 - [Singularity](https://sylabs.io/singularity/) or [Apptainer](https://apptainer.org/) ≥ 3.8
 - SLURM-managed HPC cluster
-- NVIDIA GPU (A30 or equivalent) — required for CellBender, scVI/scANVI, ChromVAR, MOFA+, MultiVI
+- **GPU — optional.** FORGE runs CPU-only end to end. See the GPU tiers below.
 - High-memory nodes (≥ 256 GB RAM) — required for SCENIC+ and large reference atlases
 - ~600 GB disk space for reference files (see [docs/setup/references.md](docs/setup/references.md))
+
+### GPU tiers
+
+FORGE is CPU-only by default and no stage requires a GPU to produce results — the
+[tutorial](docs/tutorial.md) completes the full 94-task pipeline without one. Where a
+GPU is available, these are the stages that use it:
+
+| Tier | Stages | Notes |
+|---|---|---|
+| **A30-class** (≥ 24 GB VRAM) | `TRAIN_SCVI`, `TRAIN_SCANVI` | The only genuine A30 requirement. Latent-space training on full atlases exhausts smaller cards. |
+| **V100-class** (16 GB VRAM) | `CELLBENDER`, `GPU_CHROMVAR`, `MULTIVI_*`, `MOFA_INTEGRATE` | Ample at these sizes; the shipped resource tiers already pin V100 for most MultiVI processes. |
+| **CPU-only** | everything else (~100 of ~108 processes) | No GPU code path at all. |
+
+Set `params.slurm_gpu_type` to whatever your site provides — see
+[docs/setup/cluster.md](docs/setup/cluster.md) for the `--gres` syntax.
 
 ---
 
@@ -209,7 +240,9 @@ params {
 
 If you use FORGE in your research, please cite:
 
-> Solano LE, Swarup V, et al. FORGE: a Nextflow pipeline for end-to-end single-cell multiomics analysis. *[manuscript in preparation]*, 2026.
+> Solano LE, Swarup V, et al. Flow Orchestrated Regulatory Genomics Engine
+> (FORGE): A Configurable Nextflow Pipeline for End-to-End snMultiome
+> Analysis. *[manuscript in preparation]*, 2026.
 
 ---
 

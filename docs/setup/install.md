@@ -8,11 +8,11 @@
 | [Singularity](https://sylabs.io/singularity/) or [Apptainer](https://apptainer.org/) | 3.8 | Must be on `$PATH` |
 | Java | 11 | Required by Nextflow |
 | SLURM | any | HPC job submission |
-| NVIDIA GPU | A30 or equivalent | CellBender, scVI, scANVI, ChromVAR, MOFA+, MultiVI |
+| NVIDIA GPU | **optional** — A30-class only for scVI/scANVI | FORGE runs CPU-only end to end (see the [Tutorial](../tutorial.md)). V100-class is ample for CellBender, ChromVAR, MOFA+ and MultiVI. See [GPU tiers](../index.md#gpu-tiers). |
 | High-memory node | ≥ 256 GB RAM | SCENIC+, large reference atlas loading |
 | Disk space | ~600 GB (references) + ~13 GB (containers) | See reference manifest |
 
-> **HPC note:** FORGE is designed for SLURM-managed clusters with Singularity/Apptainer. Local execution works for development and dry-runs but is not practical for full datasets. Steps requiring GPU or high memory will fail locally unless those resources are available.
+> **HPC note:** FORGE is designed for SLURM-managed clusters with Singularity/Apptainer. Local execution works for development, dry-runs, and the tutorial, but is not practical for full datasets. Stages that need high memory will fail locally unless that memory is available; GPU stages fall back to CPU rather than failing.
 
 ---
 
