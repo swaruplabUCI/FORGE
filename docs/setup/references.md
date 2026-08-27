@@ -255,7 +255,7 @@ scPRINTER maintains a persistent local cache of genome files, dispersion models,
 | `CisBP_Mouse_FigR/` | — | Pre-formatted mouse cisBP motifs |
 | `JASPAR2022_core_nonredundant.jaspar` | small | (also referenced directly — see above) |
 
-Set `params.scprinter.cache_dir` to a directory with sufficient disk space. On first run, scPRINTER will populate the cache automatically by downloading from its CDN. For air-gapped or restricted-network environments, pre-populate the cache manually following the [scPRINTER documentation](https://github.com/pinellolab/scPRINTER).
+Set `params.scprinter.cache_dir` to a directory with sufficient disk space. On first run, scPRINTER will populate the cache automatically by downloading from its CDN. For air-gapped or restricted-network environments, pre-populate the cache manually following the [scPRINTER documentation](https://github.com/buenrostrolab/scPrinter).
 
 **HPC3 path:** `/dfs7/swaruplab/lesolano/ref/scprinter/`
 

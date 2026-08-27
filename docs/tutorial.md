@@ -42,19 +42,42 @@ three-tier picture.
 | Wall-clock | **1 h 43 min** on 8 CPUs / 48 GB |
 | CPU-hours | **6.6** |
 | GPU | **Not required.** The tutorial is CPU-only. |
-| Network | Required. See the note below. |
+| Network | Required. **`RUN_CELLTYPIST` over-downloads models** — see the note below. |
+
+**A known inefficiency, stated up front:** `RUN_CELLTYPIST` downloads all 61
+CellTypist models to use one, which costs 20–30 minutes of pure transfer time and
+is the single largest avoidable cost in the run. A one-line tool-side fix is
+written and pending verification; it is deliberately not applied yet, so the
+published numbers keep matching the shipped code. Nothing about your results
+changes either way — see the note below for how to skip the download entirely.
 
 Wall-clock is dominated by a handful of long serial tasks, so more cores help
 less than you would expect: 10 CPUs finished in 1 h 33 min, only ten minutes
 faster than 8. What extra cores do buy is the 45-way hdWGCNA and 25-way Cicero
-fan-outs. Summed across all 94 tasks the run is 2 h 49 min of task time.
+fan-outs. Summed across all 94 tasks the run is 2 h 49 min of task time. Because
+the model download dominates the serial portion and depends on the upstream
+server, total wall-clock varies more between runs than the task work does — we
+have measured 1 h 43 min and 2 h 20 min on identical inputs.
 
 !!! note "The run reaches the network"
-    `RUN_CELLTYPIST` fetches its model at runtime from
-    `celltypist.cog.sanger.ac.uk` — `Immune_All_Low.pkl`, 2.7 MB, a few seconds.
-    It is not bundled in the container, so on an air-gapped cluster this step
-    fails. Pass an absolute path to a pre-staged `.pkl` via `celltypist.model`
-    to skip the fetch entirely.
+    `RUN_CELLTYPIST` fetches CellTypist models at runtime from
+    `celltypist.cog.sanger.ac.uk`. It currently downloads **all 61 available
+    models** (several hundred MB) in order to load the one it needs, which
+    measured **32 min** in our run — longer than CellBender, the heaviest
+    analysis stage. It is pure transfer time and it is included in the
+    wall-clock figures quoted above.
+
+    Two ways to avoid it, both recommended:
+
+    - Pass an absolute path to a pre-staged `.pkl` via `celltypist.model` and the
+      download is skipped entirely. This is also the only way to run the step on
+      an air-gapped cluster, where it otherwise fails.
+    - For human PBMC the model is `Immune_All_Low.pkl`, 2.7 MB.
+
+    Narrowing the download to the single requested model is a known one-line
+    change, tracked as `TODO(celltypist-single-model)` in
+    `bin/run_cell_typist.py`. It is gated behind a verification test rather than
+    applied, so that the published numbers keep matching the shipped code.
 
 You also need Nextflow and Singularity/Apptainer, and the FORGE containers. See
 [Installation](setup/install.md) and [Containers](setup/containers.md).
@@ -291,11 +314,13 @@ writes `summary.json`, `L1_confusion_matrix.csv` and `per_cell_results.csv`.
 
 ### Reference outputs
 
-The same release carries two artifacts for checking your run against ours:
+The same release carries three artifacts for checking your run against ours — a
+structural contract, per-file checksums, and reference figures:
 
 ```bash
 REL=https://github.com/swaruplabUCI/FORGE/releases/download/tutorial-data-v1
 curl -LO $REL/expected_results.json
+curl -LO $REL/checksums_data.txt
 curl -LO $REL/figures.tar.gz
 ```
 
@@ -315,10 +340,61 @@ Compare the structural block against the numbers your own run printed:
 python3 -c "import json; d=json.load(open('expected_results.json')); print(json.dumps(d['structural'], indent=2))"
 ```
 
+### Checksums — verify the numbers, eyeball the figures
+
 `figures.tar.gz` holds 12 reference figures spanning every arm — RNA QC and UMAPs,
-ATAC QC, MultiVI, MOFA+ and Cicero — plus a `CHECKSUMS.txt` you can verify with
-`sha256sum -c`. They are for eyeballing shape and sanity, not for pixel diffing:
-figure rendering is not byte-reproducible across matplotlib versions.
+ATAC QC, MultiVI, MOFA+ and Cicero. They are for **eyeballing shape and sanity,
+and nothing more.** Do not checksum them:
+
+!!! warning "Figures never hash-match, even when they are correct"
+    PDF figures embed `/CreationDate` and `/ModDate`. Two runs that produce
+    pixel-identical plots still hash differently — we confirmed that 7 of the 12
+    reference figures are byte-identical *after* stripping those two fields, and
+    differ before it. A `sha256sum -c` over the figure set therefore reports
+    `FAILED` forever, which only teaches you to ignore it.
+
+Checksum the **numeric** outputs instead. `checksums_data.txt` covers **168
+files** — every `.json`, `.csv`, `.tsv` and `.tsv.gz` the run publishes,
+including the ATAC thresholds and QC summaries, the CellTypist labels, all 45
+hdWGCNA module tables, the MuData/MOFA+ stats and factors, the CellChat
+interaction table, and the Cicero connections, CCANs and triplets:
+
+```bash
+REL=https://github.com/swaruplabUCI/FORGE/releases/download/tutorial-data-v1
+curl -LO $REL/checksums_data.txt
+
+python3 bin/verify_tutorial_outputs.py \
+    --results results_tutorial \
+    --checksums checksums_data.txt
+```
+
+Expected output is `168/168 matched`. That is not an aspiration: we diffed two
+independent cold runs file by file, and **168 of the 170** text outputs were
+byte-identical. The two that were not are excluded by name, with the reason, in
+the manifest header.
+
+#### Verify the rest by eye
+
+The outputs that carry a timestamp cannot be checksummed, so they get a human
+check rather than a machine one. There are only two places this applies:
+
+| Output | How to verify |
+|---|---|
+| The 12 reference figures in `figures.tar.gz` | Open yours side by side with ours. You are looking for the same *shape* — cluster structure in the UMAPs, the same QC distributions, comparable MOFA+ variance bars. Colours and cluster numbering can differ; gross structural disagreement cannot. |
+| `mofa_visualization/mofa_integration_summary.json` | Ignore the `timestamp` and `output_file` fields, which differ every run by design. Read the numbers beside them and check them against the `mofa` block of `expected_results.json`. |
+
+If the 168 checksums pass and those two look right, your run reproduced ours.
+
+!!! note "Why a script and not `sha256sum -c`"
+    gzip embeds the source mtime in its member header, so
+    `cicero_connections.tsv.gz` hashes differently between runs even when the TSV
+    inside is byte-identical. The script hashes gzip members **decompressed**,
+    which is stable — that is the whole reason it exists. It also tolerates the
+    pre-fix Cicero location, so a run made before Cicero's output moved into
+    `results_tutorial/` still verifies.
+
+    Regenerate the manifest after a legitimate pipeline change with
+    `--write`.
 
 Deliberately **not** shipped: the `.h5ad` and `.h5mu` objects. They are hundreds
 of megabytes and go stale on every pipeline change, which would make them a
