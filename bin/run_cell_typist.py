@@ -84,13 +84,18 @@ def run_celltypist_annotation(adata, species, model_name=None, majority_voting=T
         model_name = DEFAULT_MODELS.get(species, "Immune_All_Low.pkl")
     logger.info(f"Using CellTypist model: {model_name}")
 
-    # Load model — skip bulk download when an absolute path is provided
+    # Load model — skip the download entirely when an absolute path is provided
     import os, scipy.sparse as sp
     if os.path.isabs(model_name) or os.path.exists(model_name):
         logger.info(f"Loading model from path: {model_name}")
     else:
-        logger.info("Downloading CellTypist models...")
-        models.download_models(force_update=False)
+        # Pass model= explicitly. download_models() defaults to model=None,
+        # which means "download every available model" — 61 of them, several
+        # hundred MB, for the one we are about to load. Measured on the tutorial
+        # dataset: the bulk download took longer than CellBender, the single
+        # heaviest analysis stage in the run.
+        logger.info(f"Downloading CellTypist model: {model_name}")
+        models.download_models(force_update=False, model=model_name)
     model = models.Model.load(model=model_name)
 
     # CellTypist expects log-normalized data

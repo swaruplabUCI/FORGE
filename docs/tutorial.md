@@ -50,9 +50,11 @@ faster than 8. What extra cores do buy is the 45-way hdWGCNA and 25-way Cicero
 fan-outs. Summed across all 94 tasks the run is 2 h 49 min of task time.
 
 !!! note "The run reaches the network"
-    `RUN_CELLTYPIST` downloads CellTypist models at runtime from
-    `celltypist.cog.sanger.ac.uk`. This is not optional and it is not cached in
-    the container. If you are on an air-gapped cluster this step will fail.
+    `RUN_CELLTYPIST` fetches its model at runtime from
+    `celltypist.cog.sanger.ac.uk` — `Immune_All_Low.pkl`, 2.7 MB, a few seconds.
+    It is not bundled in the container, so on an air-gapped cluster this step
+    fails. Pass an absolute path to a pre-staged `.pkl` via `celltypist.model`
+    to skip the fetch entirely.
 
 You also need Nextflow and Singularity/Apptainer, and the FORGE containers. See
 [Installation](setup/install.md) and [Containers](setup/containers.md).
