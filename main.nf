@@ -406,6 +406,18 @@ def validateStartupParams() {
                     }
 
                     // P0-7 (A2): Warn on non-standard sample_type values
+                    //
+                    // TODO(sample_type): retire 'lane'/'demux' in favour of
+                    // 'rna'/'atac'. normalizeSampleType() above ALREADY accepts
+                    // the new names as case-insensitive aliases, so the routing
+                    // layer needs no change — this validator is the only thing
+                    // still rejecting them. Widening the accepted set below to
+                    //     ['lane', 'demux', 'rna', 'atac']
+                    // is a two-line change, but it must not land until every
+                    // shipped manifest, dataset config and doc example has been
+                    // swept and a full run re-validated, because 'lane' is the
+                    // documented contract users are writing against today.
+                    // Documented for users in docs/core/manifest.md#sample_type.
                     def nonStandard = types.findAll { !(it in ['lane', 'demux']) }
                     if (nonStandard) {
                         def couldBe = nonStandard.findAll { it.toLowerCase() in ['lane', 'demux', 'rna', 'atac'] }

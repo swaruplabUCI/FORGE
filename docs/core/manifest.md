@@ -45,7 +45,7 @@ WT_2p5_rep2,AD_multiome,lane,L1,WT_2p5_rep2_raw_feature_bc_matrix.h5,WT_2p5_rep2
 | Column | Required | Meaning |
 |---|---|---|
 | `sample_id` | **yes** | Unique identifier for the sample. Becomes the key that joins RNA and ATAC across the whole pipeline, and the prefix on nearly every output file. Rows with a blank `sample_id` are silently skipped. Duplicates are a pre-flight error. |
-| `sample_type` | **yes** | Always `lane`, lowercase. |
+| `sample_type` | **yes** | Always `lane`, lowercase. Vestigial — see [below](#sample_type). |
 | `batch` | **yes** in practice | Batch/group label. Used for batch correction, and as the lookup key into `params.batch_dirs` when `data_dir` is not given. |
 | `rna_file` | for RNA runs | Filename (not a path) of the RNA count matrix, resolved relative to the row's data directory. 10x: `*_raw_feature_bc_matrix.h5`. BD Rhapsody: `*_RSEC_MolsPerCell_MEX.zip`. May also name a MEX **directory**. |
 | `fragment_file` | for ATAC runs | Filename of the ATAC fragments file. 10x: `*_atac_fragments.tsv.gz`. BD: `*_ATAC_Fragments.bed.gz`. If you give a value with no extension, FORGE appends `.bed.gz`. |
@@ -58,6 +58,22 @@ WT_2p5_rep2,AD_multiome,lane,L1,WT_2p5_rep2_raw_feature_bc_matrix.h5,WT_2p5_rep2
 
 Set this to exactly **`lane`**, lowercase. The value is validated
 case-sensitively, so capitalized variants fail the pre-flight check.
+
+!!! warning "This column is vestigial, and `lane` is a poor name for it"
+    `lane` does not mean a sequencing lane. It means "this row is a paired
+    RNA+ATAC sample to be processed through the main path" — which is every row
+    in a normal multiome run. The name is a holdover from an earlier demultiplexing
+    workflow (`demux`, now archival).
+
+    **Write `lane` today.** It is the only value the pre-flight check accepts, and
+    a manifest using anything else will be rejected before any work starts.
+
+    The intended convention is `rna` / `atac`, and the routing layer *already*
+    implements it: `normalizeSampleType()` in `main.nf` accepts `rna` and `atac`
+    as aliases, case-insensitively. The blocker is only the pre-flight validator,
+    which still rejects any value that is not literally `lane` or `demux`. Until
+    that validator is updated and re-validated, `lane` remains required. This is
+    tracked as a TODO in `main.nf` beside the check itself.
 
 ### Paths: `data_dir` vs `batch_dirs`
 
