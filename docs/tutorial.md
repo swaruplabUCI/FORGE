@@ -1,25 +1,21 @@
-# Tutorial — run FORGE end to end in about two hours
+# Tutorial — run FORGE end to end in about three hours
 
 This is the fastest honest way to see FORGE actually work. You run the real
-pipeline — real containers, real tools, real numbers — on a deliberately small
-slice of a public 10x PBMC multiome dataset.
+pipeline with its' real containers which put real tools to work. You'll generate real outputs from a deliberately small slice of the same public 10x PBMC multiome dataset used in the manuscript validation.
 
 ---
 
-## What this is, and what it is not
+## Goals and Caveats
 
-**It is** a wiring-and-plumbing demo. It proves the pipeline is correctly
-connected end to end: that every process runs, every join lands, every container
-resolves, and real files come out the other side.
+**It is** a wiring-and-plumbing demo. It demonstrates the pipeline is correctly
+connected end to end. You'll inspect input formats, observe processes as they run, verify that containers resolve on your local hardware, and will get an idea for what kind of real files will come out the other side.
 
-**It is not** a biological result, and you should not read it as one. The ATAC
+**It is not** intended to generate a meaningful biological result. The ATAC
 side is restricted to **chr21 + chr22 — about 2.6% of hg38** — and the RNA side
-is subsampled to ~1,000 cells. Two consequences worth stating plainly:
+is subsampled to ~1,000 cells.
 
-- **QC distributions will not look like a real run.** TSS enrichment, fragments
-  per cell and the fragment-size distribution are all computed from 2.6% of the
-  genome. This is also why the tutorial config sets ATAC QC thresholds
-  explicitly rather than relying on the defaults — see the caveat section below.
+- **QC distributions will not look like a real run.** (TSS enrichment, fragments
+  per cell, fragment-size distribution, etc) Note this is also why the tutorial config sets ATAC QC thresholds explicitly rather than relying on the defaults. 
 - **Cell-type labels are over-fit.** CellTypist `Immune_All_Low.pkl` assigns
   **45** distinct labels to ~1,000 cells, including classes that cannot exist in
   peripheral blood — `Double-negative_thymocytes`, `ELP`, `CD8a_a`,
@@ -44,20 +40,10 @@ three-tier picture.
 | GPU | **Not required.** The tutorial is CPU-only. |
 | Network | Required. **`RUN_CELLTYPIST` over-downloads models** — see the note below. |
 
-**A known inefficiency, stated up front:** `RUN_CELLTYPIST` downloads all 61
-CellTypist models to use one, which costs 20–30 minutes of pure transfer time and
-is the single largest avoidable cost in the run. A one-line tool-side fix is
-written and pending verification; it is deliberately not applied yet, so the
-published numbers keep matching the shipped code. Nothing about your results
-changes either way — see the note below for how to skip the download entirely.
+**A known inefficiency:** `RUN_CELLTYPIST` downloads the available 61
+CellTypist models despite only needing 1 for the validation. Unfortunately this costs 20–30 minutes of pure transfer time. We are actively testing a tool-side fix that we will ship as soon as we can verify downstream steps do not break.
 
-Wall-clock is dominated by a handful of long serial tasks, so more cores help
-less than you would expect: 10 CPUs finished in 1 h 33 min, only ten minutes
-faster than 8. What extra cores do buy is the 45-way hdWGCNA and 25-way Cicero
-fan-outs. Summed across all 94 tasks the run is 2 h 49 min of task time. Because
-the model download dominates the serial portion and depends on the upstream
-server, total wall-clock varies more between runs than the task work does — we
-have measured 1 h 43 min and 2 h 20 min on identical inputs.
+Wall-clock time is dominated by a handful of long serial tasks, though a few extra cores will be optimized where possible. What extra cores do buy is effeciency during the 45-way hdWGCNA and 25-way Cicero fan-outs. Summed across all 94 tasks the tutorial run is 2 h 49 min of task time. 
 
 !!! note "The run reaches the network"
     `RUN_CELLTYPIST` fetches CellTypist models at runtime from
@@ -67,27 +53,14 @@ have measured 1 h 43 min and 2 h 20 min on identical inputs.
     analysis stage. It is pure transfer time and it is included in the
     wall-clock figures quoted above.
 
-    Two ways to avoid it, both recommended:
-
-    - Pass an absolute path to a pre-staged `.pkl` via `celltypist.model` and the
-      download is skipped entirely. This is also the only way to run the step on
-      an air-gapped cluster, where it otherwise fails.
-    - For human PBMC the model is `Immune_All_Low.pkl`, 2.7 MB.
-
-    Narrowing the download to the single requested model is a known one-line
-    change, tracked as `TODO(celltypist-single-model)` in
-    `bin/run_cell_typist.py`. It is gated behind a verification test rather than
-    applied, so that the published numbers keep matching the shipped code.
-
-You also need Nextflow and Singularity/Apptainer, and the FORGE containers. See
+You also need Nextflow and Singularity/Apptainer installed, and the FORGE containers built. See
 [Installation](setup/install.md) and [Containers](setup/containers.md).
 
 ---
 
 ## 1. Get the tutorial dataset
 
-The dataset is **78.9 MB** and ships as a release asset — it is not in the git
-repository.
+The dataset is **78.9 MB** and ships as a release asset.
 
 ```bash
 cd /path/to/FORGE
@@ -102,9 +75,7 @@ mkdir -p tutorial_data
 tar -xzf forge_tutorial_pbmc_v1.tar.gz -C tutorial_data/
 ```
 
-Verify the checksum before unpacking rather than after. A truncated download
-still extracts, and the failure surfaces hours later as an unreadable fragment
-file rather than as a bad download.
+Running the checksum before unpacking rather than after is recommended as it helps prevent errors due to truncated downloads.
 
 Unpacked, it must land at `tutorial_data/` in the repository root:
 
@@ -244,12 +215,10 @@ Both paths run the same pipeline with the same `tutorial` profile.
 | **Total** | **tasks succeeded** | **94 / 94** |
 
 !!! success "These numbers are reproducible"
-    Every value in that table came out **identical** across two independent
-    cold runs — including the median TSS enrichment agreeing to 15 significant
-    figures (`16.300101023624922`). That is the `params.random_seed = 42`
-    seeding of scvi-tools working end to end. If your run differs on a
+    Every value in that table should be **identical** across all independent tutorial runs. That is our controlled `params.random_seed = 42`
+    seeding working as intended. If your run differs on a
     *structural* count, something is genuinely different about your inputs or
-    container, and it is worth investigating rather than shrugging off.
+    container.
 
     Runtime and peak memory are **not** equally stable — see the caveats.
 
