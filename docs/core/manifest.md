@@ -22,16 +22,15 @@ sample_id,batch,sample_type,original_lane_id,rna_file,fragment_file,condition_gr
 10k_PBMC,PBMC,lane,L1,10k_PBMC_raw_feature_bc_matrix.h5,10k_PBMC_atac_fragments.tsv.gz,ConditionA,/data/pbmc
 ```
 
-And this is a two-condition mouse experiment — note that the *only* thing that
-changes is the number of rows:
+And this is a 4 sample, two-condition mouse experiment. Note these columns for critical highlighted changes:
+- sample_id
+- condition
 
-```csv
-sample_id,batch,sample_type,original_lane_id,rna_file,fragment_file,condition_group,data_dir
-AD_17p9_rep4,AD_multiome,lane,L1,AD_17p9_rep4_raw_feature_bc_matrix.h5,AD_17p9_rep4_atac_fragments.tsv.gz,TG,/data/ad
-AD_2p5_rep2,AD_multiome,lane,L1,AD_2p5_rep2_raw_feature_bc_matrix.h5,AD_2p5_rep2_atac_fragments.tsv.gz,TG,/data/ad
-WT_13p4_rep2,AD_multiome,lane,L1,WT_13p4_rep2_raw_feature_bc_matrix.h5,WT_13p4_rep2_atac_fragments.tsv.gz,WT,/data/ad
-WT_2p5_rep2,AD_multiome,lane,L1,WT_2p5_rep2_raw_feature_bc_matrix.h5,WT_2p5_rep2_atac_fragments.tsv.gz,WT,/data/ad
-```
+<pre><code>sample_id,batch,sample_type,original_lane_id,rna_file,fragment_file,condition_group,data_dir
+<mark style="background-color: #d1fae5; color: #065f46;">AD_17p9_rep4</mark>,AD_multiome,lane,L1,AD_17p9_rep4_raw_feature_bc_matrix.h5,AD_17p9_rep4_atac_fragments.tsv.gz,<mark style="background-color: #fef3c7; color: #92400e; font-weight: bold;">TG</mark>,/data/ad
+<mark style="background-color: #d1fae5; color: #065f46;">AD_2p5_rep2</mark>,AD_multiome,lane,L1,AD_2p5_rep2_raw_feature_bc_matrix.h5,AD_2p5_rep2_atac_fragments.tsv.gz,<mark style="background-color: #fef3c7; color: #92400e; font-weight: bold;">TG</mark>,/data/ad
+<mark style="background-color: #d1fae5; color: #065f46;">WT_13p4_rep2</mark>,AD_multiome,lane,L1,WT_13p4_rep2_raw_feature_bc_matrix.h5,WT_13p4_rep2_atac_fragments.tsv.gz,<mark style="background-color: #dbeafe; color: #1e40af; font-weight: bold;">WT</mark>,/data/ad
+<mark style="background-color: #d1fae5; color: #065f46;">WT_2p5_rep2</mark>,AD_multiome,lane,L1,WT_2p5_rep2_raw_feature_bc_matrix.h5,WT_2p5_rep2_atac_fragments.tsv.gz,<mark style="background-color: #dbeafe; color: #1e40af; font-weight: bold;">WT</mark>,/data/ad</code></pre>
 
 !!! tip "Scaling is a manifest edit, not a code edit"
     FORGE has been run on 1 sample and on 11 samples with the same `main.nf`.
@@ -59,29 +58,20 @@ WT_2p5_rep2,AD_multiome,lane,L1,WT_2p5_rep2_raw_feature_bc_matrix.h5,WT_2p5_rep2
 Set this to exactly **`lane`**, lowercase. The value is validated
 case-sensitively, so capitalized variants fail the pre-flight check.
 
-!!! warning "This column is vestigial, and `lane` is a poor name for it"
-    `lane` does not mean a sequencing lane. It means "this row is a paired
-    RNA+ATAC sample to be processed through the main path" — which is every row
-    in a normal multiome run. The name is a holdover from an earlier demultiplexing
-    workflow (`demux`, now archival).
+!!! warning "This column is vestigial, and `lane` is not the best name for it"
+    `lane` does not mean a sequencing lane. The name is a holdover from an earlier 
+    workflow and will eventually be removed in a pending update.
 
     **Write `lane` today.** It is the only value the pre-flight check accepts, and
     a manifest using anything else will be rejected before any work starts.
 
-    The intended convention is `rna` / `atac`, and the routing layer *already*
-    implements it: `normalizeSampleType()` in `main.nf` accepts `rna` and `atac`
-    as aliases, case-insensitively. The blocker is only the pre-flight validator,
-    which still rejects any value that is not literally `lane` or `demux`. Until
-    that validator is updated and re-validated, `lane` remains required. This is
-    tracked as a TODO in `main.nf` beside the check itself.
-
 ### Paths: `data_dir` vs `batch_dirs`
 
-FORGE gives you two ways to say where files live, and they compose:
+FORGE gives you two ways to say where files live:
 
 === "Per-row (simple)"
 
-    Put an absolute `data_dir` on every row. Best for one or two directories.
+    Put an absolute full file path `data_dir` on every row. Best for one or two directories.
 
     ```csv
     sample_id,batch,sample_type,rna_file,data_dir
@@ -115,12 +105,8 @@ with `No directory configured for batch '<batch>'`.
 ## What FORGE checks before it runs
 
 FORGE validates the manifest in its **pre-flight checklist**, before a single
-compute task is submitted. A typo in a manifest should cost you nine seconds,
-not nine hours into a run.
-
-Whitespace in every field is trimmed automatically and blank trailing rows are
-dropped, so a stray newline or a space after a comma will not break path
-resolution.
+compute task is submitted. A typo in a manifest will get flagged in seconds,
+not crash several hours into a run.
 
 The checklist covers:
 
@@ -132,7 +118,7 @@ The checklist covers:
 - **`.h5` files are not truncated** — a size probe warns on suspiciously small files
 - **`condition_group` is present** whenever a condition-aware workflow is enabled
 - **Config agrees with the manifest** — e.g. `rna.run = true` against a manifest
-  with no `rna_file` values is an error, not a silent no-op
+  with no `rna_file` values is an error
 
 A failure looks like this, with every problem reported at once rather than one
 per re-run:
@@ -152,30 +138,25 @@ PRE-FLIGHT CHECKLIST FAILED (3 error(s)):
 
 ### Misspelled column names are flagged, not accepted
 
-If a required column is missing, FORGE looks for near-misses in your header
-(Levenshtein distance ≤ 3) and names them in the error:
+If a required column is missing, FORGE looks for near-misses in your header and names them in the error:
 
 ```text
 Manifest CSV missing required columns: [sample_id (did you mean: sample_ID?)].
 Found: [sample_ID, batch, sample_type, rna_file]
 ```
 
-This is **diagnostic only**. FORGE does not remap `sample_ID` to `sample_id` and
-carry on — column matching is exact, the run fails, and you fix the header so it
-matches exactly. The fuzzy match exists to tell you *which* header to fix, not to
-excuse it.
+This is **diagnostic only**. FORGE does not remap `sample_ID` to `sample_id`. Column matching is exact, the run will fail.
 
 !!! note "`fragment_file` paths are not pre-flight checked"
     Per-row file-existence validation covers `rna_file` only. A missing or
-    misnamed `fragment_file` is not caught by the checklist; it surfaces later,
-    when the ATAC channels are built, as:
+    misnamed `fragment_file` is not caught by the checklist; **but it surfaces later** as ATAC channels are built:
 
     ```text
     Manifest validation failed: ATAC fragment file not found -> /data/pbmc/...
     ```
 
-    That still happens before heavy compute, but it is not part of the
-    all-errors-at-once report, so verify ATAC filenames yourself.
+    That still happens before heavy compute, but it is not part of the initial
+    all-errors-at-once report.
 
 !!! tip "Run the checklist on its own"
     You can exercise all of this with no containers, no references, and no GPU:
@@ -206,8 +187,8 @@ excuse it.
 
 !!! failure "Assuming barcodes match across layers"
     Raw barcodes differ in format between 10x and BD, and between RNA and ATAC
-    (`sample:barcode` vs `barcode-sample`). FORGE normalizes these internally —
-    you should not pre-mangle barcodes to try to help it.
+    (`sample:barcode` vs `barcode-sample`). FORGE normalizes these internally. 
+    Do not adjust barcodes to try to help it.
 
 ---
 
