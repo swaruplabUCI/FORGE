@@ -1,6 +1,6 @@
 # Regulatory analysis
 
-This is the largest and most expensive part of FORGE: co-accessibility, TF motif
+Co-accessibility, TF motif
 enrichment, footprinting, and gene regulatory network inference.
 
 ```mermaid
@@ -129,7 +129,7 @@ scprinter {
 ```
 
 `printer_name` is derived from `params.species` automatically, so mouse runs
-produce `mouse_scprinter.h5ad` rather than a misnamed human file.
+produce `mouse_scprinter.h5ad`.
 
 ## Enhancer footprinting recipes
 
@@ -172,8 +172,7 @@ and `top_k_genes` bound that search.
 
 !!! failure "Enabling only the inner gate"
     `msfp_strip.enabled = true` with `msfp_enabled = false` produces nothing and
-    no error — the strips render from footprints that were never computed. This is
-    the most common configuration mistake in FORGE.
+    no error. The strips attempt to render from footprints that were never computed. This is a common configuration mistake in FORGE.
 
 ---
 
