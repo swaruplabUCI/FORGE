@@ -1,19 +1,16 @@
 # Verifying FORGE works
 
 FORGE's published results come from four datasets that took roughly **1,000
-compute-hours** in total. That demonstrates the pipeline at scale, but it is a
-poor way to convince yourself — or a reviewer — that the pipeline *functions*.
+compute-hours** in total with the goal of demonstrating the pipeline at scale. 
 
-So verification is split into three tiers. Each answers a different question, at
-a very different cost.
+So we've split verification into three tiers. Each answers a different question, at
+increasing costs.
 
 | Tier | Question it answers | Time | Needs |
 |---|---|---|---|
 | **1. Pre-flight + DAG** | Is my configuration coherent? Does the whole graph wire up? | **~15 seconds** | Nextflow only |
-| **2. Tiny dataset** | Does a real analysis arm produce real numbers? | **~1 h 45 m** on 8 CPUs | 78.9 MB data, real containers, CPU only, ~15 GB free disk |
+| **2. Tiny dataset** | Does a real analysis arm produce real numbers? | **~3h** on 8 CPUs | 78.9 MB data, real containers, CPU only, ~15 GB free disk |
 | **3. Full datasets** | Does it scale, and reproduce the published figures? | hours–days | Full references, GPU, HPC |
-
-Start at tier 1. It costs nothing and catches most mistakes.
 
 ---
 
@@ -32,7 +29,7 @@ nextflow run main.nf -profile test -preview \
     -c configs/datasets/test_preview.config
 ```
 
-Expected result, in about fifteen seconds:
+Expected result:
 
 ```text
 WARN: Missing container files: [...]. Not required for -preview, but a real
@@ -50,17 +47,14 @@ PRE-FLIGHT CHECKLIST PASSED (8 checks):
   Warnings: 1 (see above)
 ```
 
-The container warning is expected on a fresh clone and is not a failure. A
+The container warning is expected on a fresh clone. A
 preview builds the process graph but launches no task, so no image is ever
-entered; the check becomes an error only for a real run. If you have already
+entered. The check converts to an error for a real run. If you have already
 built the containers you will see nine checks and no warnings instead.
 
 `-profile test` strips every site-specific scheduler assumption (SLURM
 partitions, accounts, QOS, `--gres` GPU strings) so this works on any machine,
 and redirects `outdir` to `results_test/` so nothing can touch real results.
-
-This is the artifact to hand a reviewer who wants to confirm the pipeline is real
-without provisioning a cluster.
 
 ### Then run it against your own config
 
@@ -86,32 +80,33 @@ PRE-FLIGHT CHECKLIST FAILED (3 error(s)):
 ================================================================================
 ```
 
-Every error is actionable and names the parameter to fix. Fix them and re-run —
-each cycle is seconds.
+Every error is actionable and names the parameter to fix. Fix them and re-run.
 
 **Or a clean graph**, meaning your manifest parses, your species and genome
 builds agree, every reference your enabled modules need exists, your on-ramp
 bundles are complete, and the process graph resolves.
 
-### What tier 1 covers — and what it does not
+### Tier 1 covers:
 
-`-preview` builds the entire workflow graph, so it catches more than parameter
-validation. It surfaces every construction-time defect: an unresolved module
-include, a channel referenced outside the scope where it was declared, a `val`
-input that evaluates to `null`, or a missing nested config block. In practice
-this is where most breakage lives, which is why it is worth running after any
-edit.
+- `-preview` builds the entire workflow graph
+- It surfaces every construction-time defect:
+ a. an unresolved module include
+ b. a channel referenced outside the scope where it was declared
+ c. a `val` input that evaluates to `null`, or a missing nested config block.
+In practice these are specific actionable errors that are quickly fixed with minimal troubleshooting.
 
-What it cannot catch is anything that only happens once tasks run:
+### Tier 1 missess:
 
-| Not covered by tier 1 | Why | Covered by |
+Tier 1 will miss anything that only triggers once tasks run:
+
+| Missed in Tier 1 | Why | Covered by |
 |---|---|---|
-| Runtime channel joins | e.g. the per-sample multiome join keys on output *filenames*, which only exist once processes have run | Tier 2 |
-| Tool behaviour and numerical output | No process body executes | Tier 2 / 3 |
-| Resource sizing (OOM, walltime) | Nothing is scheduled | Tier 3 |
+| Runtime channel joins | e.g. the per-sample multiome join keys on output *filenames* | Tier 2 |
+| Tool behaviour and numerical output | No process body executes | Tier 2 |
+| Resource sizing (OOM, walltime) | Run must crash for these reasons | Tier 3 |
 
 So a clean tier-1 result means "this configuration is coherent and the pipeline
-will start" — not "this run will finish."
+will start.
 
 You can also confirm what your layered config actually resolved to, without
 launching anything:
@@ -121,7 +116,6 @@ nextflow -c configs/datasets/my_study.config config -profile cluster,singularity
 ```
 
 !!! tip "This is the check to run after any config edit"
-    Ten seconds here regularly saves a multi-hour failure at hour three of a run.
 
 !!! warning "Don't follow `-preview` with a bare `-resume`"
     A `-preview` invocation is recorded in Nextflow's run history. A subsequent
@@ -133,15 +127,14 @@ nextflow -c configs/datasets/my_study.config config -profile cluster,singularity
 
 ## Tier 2 — the tiny dataset
 
-Tier 1 proves the wiring. Tier 2 proves the science runs.
+Tier 1 proves the wiring. Tier 2 proves it can move biological information between tools as expected.
 
 The tiny dataset is a subset of the public **10x Genomics 10k PBMC multiome**
 sample: roughly 1,000 cells with fragments restricted to `chr21` and `chr22`,
 **78.9 MB** in total. It is drawn from the same source data as the full PBMC
 example, so it exercises the real code paths rather than a separate toy path.
 
-It is *not* simply the published run at smaller scale. Two things genuinely
-differ, and both are necessary rather than cosmetic:
+The subset allows for efficient testing, but its' premise disallows interpreting pipeline inputs or outputs as meaningful biology. A few examples:
 
 - **ATAC QC thresholds are set explicitly.** The shipped auto-thresholds are
   derived from whole-genome fragment counts and reject nearly every cell when
@@ -161,31 +154,25 @@ CellTypist (`rna.annotation_method = 'celltypist'`), so `TRAIN_SCVI` and
 `TRAIN_SCANVI` are not part of the 94 tasks. scvi-tools CPU viability and
 seeding were verified separately.
 
-**What it deliberately does not cover, and why:**
+### Tier 2 missess:
 
 | Stage | Config | Why it is excluded |
 |---|---|---|
-| SCENIC+ / pycisTopic | `scenicplus.run`, `pycistopic.run` = `false` | Needs cisTarget databases that cannot be meaningfully subset to two chromosomes |
-| scPRINTER enhancer footprinting | `scprinter.run`, `enhancer_footprinting.run` = `false` | Single most expensive process in FORGE — 54% of all compute across the four published datasets |
+| SCENIC+ / pycisTopic | `scenicplus.run`, `pycistopic.run` = `false` | Expensive compute and needs cisTarget databases |
+| scPRINTER enhancer footprinting | `scprinter.run`, `enhancer_footprinting.run` = `false` | Expensive compute |
 | ChromVAR | `chromvar.run` = `false` | `bin/gpu_chromvar_nf.py` imports `cupy`/`rmm` at module scope — a hard GPU dependency, and this tier is CPU-only |
 | Differential workflows | `differential*.run` = `false` | The subset is a single-condition design, so every condition-aware workflow has nothing to contrast |
 
-**No precomputed on-ramp bundle ships with the tutorial.** This was evaluated and
-deliberately dropped: on-ramp artifacts are keyed to their producing run's
-barcodes and CCANs, so a bundle from the published PBMC run cannot be injected
-into the subset. A bundle *was* built from the tutorial dataset itself and
-verified barcode-compatible, but it still ships nothing useful, because every
-ChromVAR consumer is gated behind a toggle the tutorial turns off
-(`scprinter.run`, differential conditions, `differential_tf.run`). The
+**No precomputed on-ramp bundle ships with the tutorial.** The
 [on-ramp mechanism](onramps.md) is documented on its own terms instead.
 
 !!! note "Status"
     The tiny dataset is **built and verified** — it runs end to end, twice,
-    94/94 tasks, exit 0. What is still pending is publication: the download
-    lives behind a GitHub Release that has not been cut yet. Tier 1 is fully
+    94/94 tasks, exit 0. Tier 1 is fully
     available today against any dataset config, and tier 3 is reproducible from
     the published configs in `configs/datasets/`.
 
+TODO: Confirm data is available for Tier 2.
 ---
 
 ## Tier 3 — the published datasets
@@ -208,15 +195,6 @@ Their configs are in `configs/datasets/`. Measured cost across all four:
 | Compute-hours | 1,012 |
 | Node-hours | 6,547 |
 
-The distribution is extremely uneven, which is worth knowing before you enable
-everything: **`ENHANCER_FOOTPRINTING_PER_CT` alone is 54% of all compute-hours.**
-Per-cell-type cost ranged from 1.2 h (AD) to 12.2 h (Brain), tracking cells and
-fragments per cell type rather than any configuration difference — all four runs
-used identical selection caps.
-
-This is why `enhancer_footprinting.msfp_enabled` ships as `false`. Enable it
-knowingly.
-
 ---
 
 ## Recommended order
@@ -228,4 +206,4 @@ knowingly.
 5. **Enable one block at a time**, re-running `-preview` after each config change.
 
 Steps 1 and 2 cost seconds and catch the large majority of problems. Do not skip
-them because the run "should" work.
+them.
