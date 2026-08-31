@@ -9,7 +9,7 @@ are themselves expensive.
 ## What renders by default
 
 With a standard run you get QC plots, UMAPs, annotation summaries, MOFA/MultiVI
-latent-space plots, and Cicero target plots — no extra configuration.
+latent-space plots, and Cicero target plots.
 
 Cicero target plots render at three window/threshold tiers so you can judge how
 much a link depends on the threshold:
@@ -61,8 +61,7 @@ browser_viz {
 Matplotlib-native accessibility tracks per gene. `differential` mode requires
 bigWigs exported with `condition_col` set.
 
-Leaving `max_value = null` auto-scales to the 99.5th percentile, which is usually
-what you want — a single extreme bin otherwise flattens every track.
+Leaving `max_value = null` auto-scales to the 99.5th percentile, otherwise it is possible for a single extreme bin to flatten every track.
 
 ## Composite panels
 
@@ -81,8 +80,7 @@ enhancer_viz {
 ```
 
 `composite_filter` selects (gene, TF, cell type) triples worth plotting. Without
-it, the full cartesian product runs to tens of thousands of panels — the filter is
-what makes this stage useful rather than merely large.
+it, the full cartesian product runs to tens of thousands of panels.
 
 ## Footprint strips
 
@@ -108,7 +106,7 @@ from `scprinter.target_genes`. See
 
 ## Re-rendering without recomputing
 
-Figures usually need several iterations. Do not re-run the pipeline for them —
+Figures often undergo iteration cycles. Do not re-run the whole pipeline for them —
 `VIZ_ONLY` rebuilds plots from persisted artifacts:
 
 ```bash
@@ -131,7 +129,7 @@ The three Cicero keys are required together.
 
 ## Editable figures for publication
 
-FORGE writes PNGs. For figures you intend to edit in Illustrator or Inkscape,
+FORGE writes PNGs by default. For figures you intend to edit in Illustrator or Inkscape,
 re-export as SVG with text kept as text rather than outlines:
 
 ```python
@@ -139,13 +137,10 @@ import matplotlib
 matplotlib.rcParams['svg.fonttype'] = 'none'   # keeps text selectable
 ```
 
-Two practical notes from preparing the published figures:
+A practical note:
 
-- Use **SVG**, not PDF. A rasterized-plus-alpha layer in a PDF becomes an
+- Prefer **SVG**, over PDF. A rasterized-plus-alpha layer in a PDF can become an
   SMask, which many viewers render as a red X.
-- Rasterize only the dense data layer (`rasterized=True` on the heavy artist) and
-  leave axes, labels, and legends as vector. You get an editable figure without a
-  200 MB file.
 
 ---
 
