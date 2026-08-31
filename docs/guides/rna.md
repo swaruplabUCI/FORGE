@@ -78,6 +78,15 @@ Three strategies, selected with `rna.annotation_method`:
         adult mouse brain, for example, use `Mouse_Whole_Brain.pkl`. A mismatched
         model produces confident, plausible, incorrect labels.
 
+=== "scANVI (recommended)"
+
+    Reference-model GPU-based annotation. If a reference atlas directory is configured (`ref_dir_human_integrated` /`ref_dir_mouse_integrated`), FORGE runs GPU-based scANVI for label transfer.
+
+    ```groovy
+    rna { annotation_method = 'celltypist' }
+    celltypist { model = 'Immune_All_Low.pkl' }
+    ```
+
 === "Marker genes"
 
     Score-based annotation from your own marker sets — full control, useful when
@@ -96,9 +105,7 @@ Three strategies, selected with `rna.annotation_method`:
     second-best scores are within the margin, the call collapses to `unknown`
     rather than picking arbitrarily.
 
-If a reference atlas directory is configured (`ref_dir_human_integrated` /
-`ref_dir_mouse_integrated`), FORGE additionally runs GPU-based scANVI for label transfer.
-With no atlas it takes the CellTypist-only path. We recommend scANVI annotations, but provide CellTypist as the default since it has a lower compute burden.
+With no atlas it takes the CellTypist-only path. We anectdotally note the best performance with scANVI and thus we recommend it over CellTypist for annotation trustworthiness. However, we provide the more accessible CellTypist as the default since it does not require a GPU, has a lower compute burden, and pre-loads various models immediately ready for use.
 
 Annotation labels land in the `obs` column that `main.nf` resolves centrally —
 `cell_type` normally, `cell_type_marker` in marker mode. See
@@ -121,7 +128,7 @@ differential_rna {
 ```
 
 Uses MAST, per cell type. Requires at least two distinct `condition_group` values
-in the manifest — the pre-flight checklist enforces this.
+in the manifest. The pre-flight checklist enforces this.
 
 A positive `log2FC` means up in the **treatment** condition, matching the
 `<treatment>_vs_<control>` naming of the output files.
@@ -140,9 +147,9 @@ hdwgcna {
 }
 ```
 
-Tier 1 (network construction per cell type) always runs. Tier 2 — differential
-module eigengene testing and module-trait correlation — activates when you set
-the condition keys.
+By default:
+- **Tier 1** (network construction per cell type) always runs. 
+- **Tier 2** (differential module eigengene testing and module-trait correlation) activates when you set the condition keys.
 
 ## Cell-cell communication
 
