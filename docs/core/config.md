@@ -1,15 +1,13 @@
 # nextflow.config
 
 `nextflow.config` is where you tell FORGE **what to run** and **how much machine
-to give it**. You should almost never edit it. Instead you write a small dataset
-config that overrides the handful of parameters your experiment needs, and layer
-it on top:
+to request** in order to complete the tasks. You should almost never edit it directly. Instead you write a small dataset config that overrides the original file defaults. Nextflow will understand that it should follow all defaults with the exception of the specific contents of the new file:
 
 ```bash
 nextflow run main.nf -profile cluster,singularity -c configs/datasets/my_study.config
 ```
 
-The repository file holds ~1,000 lines of defaults across 30-odd blocks. This
+The repository file holds ~1,000 lines of defaults across dozens of structured blocks. This
 page explains the layering, the conventions that govern those defaults, and what
 each block controls.
 
@@ -38,9 +36,8 @@ flowchart LR
 
 !!! warning "`-c` does not replace, it merges"
     A `-c` file overrides only the keys it mentions. Everything else keeps its
-    default. This is why dataset configs stay short — and why a typo in a key
-    name silently does nothing rather than erroring. When a parameter seems to
-    have no effect, check the spelling against `nextflow.config` first.
+    default. This is why dataset configs stay short. When a parameter seems to
+    have no effect, check the spelling against `nextflow.config`.
 
 ### Seeing the resolved values
 
@@ -67,9 +64,8 @@ msfp_enabled = false   // golden default; instance configs flip true
 ```
 
 This is deliberate. The repository default is a run that completes; opting into
-footprinting, cis-rewiring, or per-cell-type strips is a decision you make
-knowingly. For scale: one process, `ENHANCER_FOOTPRINTING_PER_CT`, accounted for
-**54% of all compute** across the four published FORGE datasets.
+footprinting, cis-rewiring, or per-cell-type strips is a decision you must make
+intentionally. Primarily, this is a safeguard against accidentally spending compute on process such as `ENHANCER_FOOTPRINTING_PER_CT`. 
 
 ### 2. Gates nest, and the outer gate wins
 
@@ -86,7 +82,7 @@ msfp_strip {
 }
 ```
 
-Turning on only the inner gate is the single most common "why did nothing
+Turning on only the inner gate is a common "why did nothing
 happen?" configuration error.
 
 ---
@@ -97,10 +93,10 @@ happen?" configuration error.
 
 | Block / key | Default | What it does |
 |---|---|---|
-| `species` | `null` | **Required.** `'human'` or `'mouse'`. No default on purpose; a wrong genome silently corrupts every downstream result, so FORGE refuses to guess. |
+| `species` | `null` | **Required.** `'human'` or `'mouse'`.  |
 | `metadata_file` | `null` | **Required.** Path to your [manifest CSV](manifest.md). |
 | `outdir` | `'results'` | Where published outputs land. |
-| `resource_tier` | `'auto'` | `small` \| `medium` \| `large` \| `auto` (alias for `small`). Validated at pre-flight, so `'Medium'` errors rather than silently falling through. |
+| `resource_tier` | `'auto'` | `small` \| `medium` \| `large` \| `auto` (alias for `small`). Validated at pre-flight. |
 
 ### Module toggles — what runs at all
 
@@ -134,16 +130,16 @@ happen?" configuration error.
 | Block | Notable keys | Notes |
 |---|---|---|
 | `atac` | `min_fragments`, `initial_min_tsse`, `clustering_resolutions`, `peak_fdr` | QC, clustering, peak calling. |
-| `atac.annotation_method` | `'scatanno'` — the only supported value | `scatanno` **requires** `scatanno.reference_atlas`; pre-flight enforces this. Setting `atac.marker_file` overrides it with marker mode. There is **no** ATAC CellTypist mode (removed); `params.celltypist` applies to RNA only. |
+| `atac.annotation_method` | `'scatanno'` — the only supported value | `scatanno` **requires** `scatanno.reference_atlas`; pre-flight enforces this. |
 | `atac.run_mode` | `'broad'` | `'broad'` (~10 classes) or `'fine'` (~30+). Drives per-cell-type granularity downstream. |
 | `scatanno` | `reference_atlas`, `distance_threshold`, `uncertainty_threshold` | Reference-based ATAC annotation. |
-| `qc.cell_type_resolution` | `min_cells` (50), `min_pct` (0.01) | Universal floor for per-cell-type fan-outs: a cell type is skipped unless it has at least `max(min_cells, min_pct × total)` cells. This exists because tiny cell types can OOM footprinting regardless of their size. |
+| `qc.cell_type_resolution` | `min_cells` (50), `min_pct` (0.01) | Universal floor for per-cell-type fan-outs: a cell type is skipped unless it has at least `max(min_cells, min_pct × total)` cells. This exists because rare cell types can OOM fan-out processes. |
 
 ### Regulatory analysis
 
 | Block | Notable keys | Notes |
 |---|---|---|
-| `cicero` | `connections_cutoff`, `ccan_min_coaccess`, `plot_windows` | Runs **dataset-global** by default — not per cell type, not condition-aware. |
+| `cicero` | `connections_cutoff`, `ccan_min_coaccess`, `plot_windows` | Runs **dataset-global** by default. Must opt in to stratified per cell type and condition-aware. |
 | `cicero.stratified` | `false` | Per-condition Cicero. Auto-activates when `differential.run = true` and a condition key is set. |
 | `cicero_per_ct` | `enabled`, `min_cells_per_stratum` (250) | Per-(cell type × condition) Cicero. The 250-cell stratum floor is separate from `qc.cell_type_resolution`. |
 | `chromvar` | `top_n_per_celltype` (5), `min_motif_zscore` (1.5), `global_top_n` (0) | `global_top_n` caps total unique TFs across all cell types — the main lever on footprinting fan-out cost. |
@@ -156,7 +152,7 @@ happen?" configuration error.
 
 | Block | Notable keys | Notes |
 |---|---|---|
-| `enhancer_footprinting` | `msfp_enabled`, `use_per_ct`, `enhancer_mode`, `build_network` | The expensive one. `use_per_ct = true` collapses ~657 tasks into ~10–33 by loading the printer once per cell type. |
+| `enhancer_footprinting` | `msfp_enabled`, `use_per_ct`, `enhancer_mode`, `build_network` | Can be computationally expensive. `use_per_ct = true` collapses total tasks by loading the printer only once per cell type. |
 | `msfp_strip` | `enabled`, `mode`, `top_n_regions`, `top_k_genes` | Enhancer-strip target genes are **discovered** per (cell type, TF), not configured. |
 | `browser_viz` | `enabled`, `mode`, `window`, `n_bins` | Matplotlib genome browser tracks. |
 | `enhancer_viz` | `target_genes`, `normalization`, `condition_col`, `composite_filter` | BigWig export and composite panels. Set `condition_col` for differential browser modes. |
@@ -164,6 +160,7 @@ happen?" configuration error.
 
 ### Containers
 
+This is how FORGE will know where to look for the right tool for the current job.
 Container paths are declared once and referenced by every process:
 
 ```groovy
@@ -213,7 +210,7 @@ Combine profiles with commas; they are additive.
 |---|---|
 | `small` | ~10k cells, single sample (PBMC-scale). Default via `auto`. |
 | `medium` | Mid-scale multi-sample studies. |
-| `large` | 100+ samples, 100k+ cells (BD-scale). |
+| `large` | 100+ samples, 100k+ cells. |
 
 Each tier is a long series of `withName:` blocks setting `cpus`, `memory`,
 `time`, and `clusterOptions` per process.
@@ -240,8 +237,7 @@ params {
     gtf_human_full = '/refs/gencode.v38.annotation.gtf'
     blacklist_bed  = '/refs/hg38-blacklist.v2.bed'
 
-    // Annotation — RNA via CellTypist, ATAC via scATAnno (an atlas is required;
-    // there is no atlas-free ATAC path)
+    // Annotation — RNA via CellTypist/scANVI/markers, ATAC via scATAnno (an atlas is required)
     celltypist { model = 'Immune_All_Low.pkl' }
     scatanno   { reference_atlas = '/refs/scatanno_pbmc_atlas.h5ad' }
 
