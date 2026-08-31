@@ -1,11 +1,9 @@
 # main.nf architecture
 
-`main.nf` is the pipeline. It is long (~4,200 lines), but it is not complicated —
-it is one validation section followed by thirteen workflow blocks wired together
-with channels. **You should not need to edit it.** Understanding its shape is
-what lets you drive FORGE entirely from a manifest and a dataset config.
+`main.nf` is the pipeline. It is long but structured. It is one validation section followed by thirteen workflow blocks wired together
+with channels. Unless you are ready to extend FORGE functionality to unsupported tooling, **You should not need to edit this file.** Understanding its formatting will help you to drive FORGE efficiently. 
 
-This page explains that shape.
+This page explains that structure and formatting.
 
 ---
 
@@ -22,7 +20,7 @@ flowchart TD
 |---|---|---|
 | Declarations | lines 1–340 | ~108 module `include` statements, cell-type-key resolution, directory/path helper functions |
 | Pre-flight | 340–970 | `validateStartupParams()` — all config and manifest validation |
-| Sub-workflows | 970–3,310 | The named `workflow` blocks that do the work |
+| Sub-workflows | 970–3,310 | The named `workflow` blocks that **route** the work |
 | Entry points | 3,310–4,210 | The unnamed `workflow {}`, plus `VIZ_ONLY` and `SHI_FIGURES`, and the `onComplete` / `onError` handlers |
 
 ---
@@ -51,14 +49,8 @@ It checks, among other things:
 - **Config vs manifest coherence** — asking for an RNA run against an ATAC-only
   manifest is an error
 - **Reference files exist** for every enabled module
-- **On-ramp bundles are complete** — the Cicero triple and ChromVAR pair are
-  all-or-none, and forward-declared-but-unwired keys are rejected if set
-- **`resource_tier` is a legal value** — `'Medium'` errors instead of silently
-  falling through to `small`
-
-This is FORGE's most useful architectural property for day-to-day work: config
-errors cost seconds, not hours. It is also why you can validate a setup with no
-containers, no references, and no GPU — see [Verifying FORGE works](../verification.md).
+- **On-ramp bundles are complete** — onramping can save compute, but inputs must be properly formatted. 
+- **`resource_tier` is strict** — Expect FORGE to loudly error for typos.
 
 ---
 
@@ -109,7 +101,7 @@ ATAC_FINAL(ATAC_INITIAL.out.thresholds)
 
 ## How a manifest row becomes parallel work
 
-This is the mechanism that makes scaling a manifest edit rather than a code edit.
+This is the mechanism for scaling via the manifest.
 
 ```groovy
 Channel.fromPath(params.metadata_file)
@@ -123,14 +115,6 @@ Channel.fromPath(params.metadata_file)
 Each surviving row becomes one tuple in a channel, and each tuple becomes one
 task in every per-sample process. Eleven rows produce eleven parallel CellBender
 jobs with no code change; one row produces one.
-
-Two helpers make this robust rather than brittle:
-
-- **`trimRow`** trims every field, so a space after a comma cannot break path
-  resolution.
-- **`resolveRnaDir`** implements the `data_dir` → `params.batch_dirs[batch]`
-  fallback described in [the manifest chapter](manifest.md#paths-data_dir-vs-batch_dirs),
-  and errors clearly when neither is available.
 
 ### Cell-type keys are resolved once, centrally
 
@@ -149,8 +133,7 @@ def atac_cell_type_key = params.atac.marker_file ? 'cell_type' :
 
 !!! note "RNA and ATAC cell types are independent"
     These are two different keys because they come from two different tools on
-    two different matrices. FORGE deliberately does **not** transfer RNA labels
-    onto ATAC barcodes — ATAC annotation stands on its own so it can be
+    two different matrices. ATAC annotation stands on its own so it can be
     validated against the RNA arm rather than assumed to agree with it.
 
 ---
@@ -186,9 +169,8 @@ FORGE has three entry workflows. The default needs no flag:
 ### Completion handlers
 
 `workflow.onComplete` prints a full map of where every output category was
-written, and `workflow.onError` prints troubleshooting steps. Both fire whether
-the run succeeded or failed — the output-location map at the end of a failed run
-is still an accurate guide to where partial results are.
+written (even partially), and `workflow.onError` prints troubleshooting steps. Both fire whether
+the run succeeded or failed.
 
 ---
 
