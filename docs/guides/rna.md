@@ -8,8 +8,8 @@ communication.
 flowchart LR
     R["raw counts<br/>(.h5 / MEX)"] --> CB["CellBender<br/><i>ambient RNA</i>"]
     CB --> QC["QC filters"]
-    QC --> SCVI["scVI<br/><i>integration</i>"]
-    SCVI --> ANN["scANVI +<br/>CellTypist"]
+    QC --> SCVI["integration"]
+    SCVI --> ANN["Annotation (CPU or GPU)"]
     ANN --> D["MAST DE"]
     ANN --> H["hdWGCNA"]
     ANN --> C["CellChat"]
@@ -62,11 +62,11 @@ denoising step.
 
 ## Annotation
 
-Two strategies, selected with `rna.annotation_method`:
+Three strategies, selected with `rna.annotation_method`:
 
 === "CellTypist (default)"
 
-    Reference-model annotation. Fast, and needs no atlas download beyond the model.
+    Reference-model CPU-based annotation. Fast, and needs no atlas download beyond the model.
 
     ```groovy
     rna { annotation_method = 'celltypist' }
@@ -81,7 +81,7 @@ Two strategies, selected with `rna.annotation_method`:
 === "Marker genes"
 
     Score-based annotation from your own marker sets — full control, useful when
-    no suitable reference model exists.
+    you prefer explicit user-definitions of expression profiles.
 
     ```groovy
     rna {
@@ -97,8 +97,8 @@ Two strategies, selected with `rna.annotation_method`:
     rather than picking arbitrarily.
 
 If a reference atlas directory is configured (`ref_dir_human_integrated` /
-`ref_dir_mouse_integrated`), FORGE additionally runs scANVI for label transfer.
-With no atlas it takes the CellTypist-only path.
+`ref_dir_mouse_integrated`), FORGE additionally runs GPU-based scANVI for label transfer.
+With no atlas it takes the CellTypist-only path. We recommend scANVI annotations, but provide CellTypist as the default since it has a lower compute burden.
 
 Annotation labels land in the `obs` column that `main.nf` resolves centrally —
 `cell_type` normally, `cell_type_marker` in marker mode. See
