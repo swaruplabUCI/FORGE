@@ -5,7 +5,7 @@ pipeline with its' real containers which put real tools to work. You'll generate
 
 ---
 
-## Goals and Caveats
+## Goals and intentions
 
 **It is** a wiring-and-plumbing demo. It demonstrates the pipeline is correctly
 connected end to end. You'll inspect input formats, observe processes as they run, verify that containers resolve on your local hardware, and will get an idea for what kind of real files will come out the other side.
@@ -220,7 +220,7 @@ Both paths run the same pipeline with the same `tutorial` profile.
     *structural* count, something is genuinely different about your inputs or
     container.
 
-    Runtime and peak memory are **not** equally stable — see the caveats.
+    Runtime and peak memory are **not** equally stable.
 
 !!! warning "Do not trust `atac/final/atac_pipeline_summary.json` thresholds"
     That file reports `min_counts: 5000, min_tsse: 6` — the Python script's
@@ -232,13 +232,12 @@ Both paths run the same pipeline with the same `tutorial` profile.
 
 ### RNA vs ATAC concordance — a wiring check, not a result
 
-The two arms are annotated *independently* — different tools, different matrices,
-different `obs` columns. The ATAC side never sees the RNA labels. So the fact that
-both labels land on a common cell index is real evidence the cross-modal join
+A hallmark of FORGE is that the two modality arms are annotated *independently* — different tools, different matrices,
+different `obs` columns. The ATAC side never sees the RNA labels. Ideally,
+both labels land on a common cell index as real convergent evidence the cross-modal join
 works.
 
-The *agreement* between them, at this scale, is not evidence of anything. Here is
-the measured outcome, so you can check your own run against it rather than wonder:
+The *agreement* between them, at this scale, is not meaningful, powered, nor interpretable evidence. Here is the measured outcome:
 
 | Quantity | Value |
 |---|---|
@@ -251,12 +250,11 @@ the measured outcome, so you can check your own run against it rather than wonde
 **Agreement equals the chance floor exactly, and that is the expected result.**
 The ATAC arm assigns `Plasma_cells` to all 817 cells, so its labels carry no
 information and "agreement" collapses to whatever share of RNA cells happen to
-fall in the matching broad class (29/766). This is not a pipeline failure — it is
-the direct consequence of restricting ATAC to `chr21`+`chr22`: the marker panel
+fall in the matching broad class (29/766). This is
+a direct consequence of restricting ATAC to `chr21`+`chr22`. The marker panel
 driving ATAC annotation is genome-wide, and on 2.6% of the genome it has almost
 nothing to score against.
 
-Everything upstream of the labelling is healthy, which is the part worth checking:
 ATAC clustering resolves **4 / 7 / 9 Leiden clusters** at resolutions 0.5 / 1.0 /
 2.0, and the RNA side produces a sensible PBMC composition (448 monocytes, 105
 CD4+ T, 91 DC, 34 CD8+ T, …). The structure is there; only the label assignment
@@ -264,9 +262,8 @@ degenerates.
 
 !!! warning "Do not quote this number as a quality metric"
     It measures the subset's genome restriction, not FORGE's cross-modal
-    agreement. The published datasets — run on whole genomes with the scATAnno
-    atlas — are where concordance is meaningful; PBMC scores **0.917** there.
-    Reproduce the number below to confirm your run matches, and nothing more.
+    agreement. The published datasets are where concordance is meaningful and PBMC scores **0.917** there.
+    Reproduce the number below to confirm your run matches and is wired correctly up to this point.
 
 Reproduce it with:
 
@@ -283,8 +280,10 @@ writes `summary.json`, `L1_confusion_matrix.csv` and `per_cell_results.csv`.
 
 ### Reference outputs
 
-The same release carries three artifacts for checking your run against ours — a
-structural contract, per-file checksums, and reference figures:
+The same release additionally carries three artifacts for checking your run against ours.
+1. A structural contract.
+2. A per-file checksums.
+3. Reference figures.
 
 ```bash
 REL=https://github.com/swaruplabUCI/FORGE/releases/download/tutorial-data-v1
@@ -293,15 +292,12 @@ curl -LO $REL/checksums_data.txt
 curl -LO $REL/figures.tar.gz
 ```
 
-`expected_results.json` splits into two blocks, and the split is the point:
+`expected_results.json` splits into two blocks:
 
 - **`structural`** — cell counts, peak counts, task count, factor counts. These
-  are deterministic. Two cold runs with `params.random_seed = 42` reproduced them
-  exactly. A difference here means something real changed about your inputs or
-  your containers, and is worth chasing.
+  are deterministic. A difference here means something is wrong.
 - **`informational`** — wall-clock, peak RSS, directory sizes. These are *not*
-  stable between runs. They are recorded so you know the scale to expect. Do not
-  assert on them.
+  stable between runs. They are recorded so you know the scale to expect. 
 
 Compare the structural block against the numbers your own run printed:
 
@@ -309,18 +305,15 @@ Compare the structural block against the numbers your own run printed:
 python3 -c "import json; d=json.load(open('expected_results.json')); print(json.dumps(d['structural'], indent=2))"
 ```
 
-### Checksums — verify the numbers, eyeball the figures
+### Checksums — verify the numbers and inspect the figures
 
 `figures.tar.gz` holds 12 reference figures spanning every arm — RNA QC and UMAPs,
-ATAC QC, MultiVI, MOFA+ and Cicero. They are for **eyeballing shape and sanity,
-and nothing more.** Do not checksum them:
+ATAC QC, MultiVI, MOFA+ and Cicero. They are a **sanity check**. Do not checksum them:
 
 !!! warning "Figures never hash-match, even when they are correct"
     PDF figures embed `/CreationDate` and `/ModDate`. Two runs that produce
-    pixel-identical plots still hash differently — we confirmed that 7 of the 12
-    reference figures are byte-identical *after* stripping those two fields, and
-    differ before it. A `sha256sum -c` over the figure set therefore reports
-    `FAILED` forever, which only teaches you to ignore it.
+    pixel-identical plots still hash differently. We confirmed that 7 of the 12
+    reference figures are otherwise byte-identical. A `sha256sum -c` over the figure set confoundingly will report `FAILED`.
 
 Checksum the **numeric** outputs instead. `checksums_data.txt` covers **168
 files** — every `.json`, `.csv`, `.tsv` and `.tsv.gz` the run publishes,
@@ -337,37 +330,31 @@ python3 bin/verify_tutorial_outputs.py \
     --checksums checksums_data.txt
 ```
 
-Expected output is `168/168 matched`. That is not an aspiration: we diffed two
-independent cold runs file by file, and **168 of the 170** text outputs were
-byte-identical. The two that were not are excluded by name, with the reason, in
-the manifest header.
+Expected output is `168/168 matched`. 
 
-#### Verify the rest by eye
+#### Verify the rest by inspection
 
-The outputs that carry a timestamp cannot be checksummed, so they get a human
-check rather than a machine one. There are only two places this applies:
+The outputs that carry a timestamp cannot be checksummed, so we recommend a human
+verification rather than a machine one. There are only two places this applies:
 
 | Output | How to verify |
 |---|---|
-| The 12 reference figures in `figures.tar.gz` | Open yours side by side with ours. You are looking for the same *shape* — cluster structure in the UMAPs, the same QC distributions, comparable MOFA+ variance bars. Colours and cluster numbering can differ; gross structural disagreement cannot. |
+| The 12 reference figures in `figures.tar.gz` | Open yours side by side with ours. You are looking for the same *shape* — cluster structure in the UMAPs, the same QC distributions, comparable MOFA+ variance bars. Colours and cluster numbering can differ; gross structural disagreement should not. |
 | `mofa_visualization/mofa_integration_summary.json` | Ignore the `timestamp` and `output_file` fields, which differ every run by design. Read the numbers beside them and check them against the `mofa` block of `expected_results.json`. |
 
-If the 168 checksums pass and those two look right, your run reproduced ours.
+If the 168 checksums pass and those two look right, your run reproduced ours. You are now ready for a real FORGE run!
 
 !!! note "Why a script and not `sha256sum -c`"
     gzip embeds the source mtime in its member header, so
     `cicero_connections.tsv.gz` hashes differently between runs even when the TSV
     inside is byte-identical. The script hashes gzip members **decompressed**,
-    which is stable — that is the whole reason it exists. It also tolerates the
-    pre-fix Cicero location, so a run made before Cicero's output moved into
-    `results_tutorial/` still verifies.
+    which is stable.
 
     Regenerate the manifest after a legitimate pipeline change with
     `--write`.
 
-Deliberately **not** shipped: the `.h5ad` and `.h5mu` objects. They are hundreds
-of megabytes and go stale on every pipeline change, which would make them a
-liability rather than a reference.
+Note we **deliberately did not** ship the `.h5ad` and `.h5mu` objects. They are hundreds
+of megabytes and go stale on every pipeline change. 
 
 ---
 
@@ -400,47 +387,22 @@ results_tutorial/
 
 ## 6. What the tutorial does not cover
 
-Four stages are switched off, and it is worth being clear about why rather than
-leaving you to discover it:
+Four stages are intentionally switched off:
 
 | Stage | Why it is off |
 |---|---|
 | **ChromVAR** | `bin/gpu_chromvar_nf.py` imports `cupy` and `rmm` at module scope and calls `cp.cuda.set_allocator`. Hard GPU dependency, no CPU fallback. |
-| **scPRINTER footprinting** | The single most expensive stage in FORGE — 54% of all compute across the four published datasets. Wildly out of proportion here. |
+| **scPRINTER footprinting** | The single most expensive stage in FORGE — 54% of all compute across the four published datasets. |
 | **SCENIC+ / pycisTopic** | Needs cisTarget reference databases far larger than the whole tutorial dataset. |
 | **Differential analyses** | The tutorial is one sample with one `condition_group`. There is nothing to contrast. |
 
-!!! note "No ChromVAR on-ramp is shipped, deliberately"
-    An earlier plan was to ship a precomputed ChromVAR bundle so you could
-    exercise the stages downstream of it without a GPU. It was built and it is
-    barcode-compatible — but under the tutorial's own settings it unlocks
-    **nothing**. Every consumer of ChromVAR output is gated behind something the
-    tutorial disables: `VIS_CHROMVAR` needs differential conditions,
-    `EXTRACT_CHROMVAR_MOTIFS` and `MAP_TF_TO_TARGET_GENES` need
-    `scprinter.run`, `DIFFERENTIAL_TF_ACCESSIBILITY` needs
-    `differential_tf.run`, and `ENHANCER_FOOTPRINTING_RECIPES` needs the
-    scPRINTER printer object.
-
-    Shipping it would have meant either turning on the most expensive stage in
-    the pipeline or inventing conditions for a single-condition dataset. Neither
-    is worth it for a wiring demo, so the bundle is not distributed.
-
-On-ramps themselves are a real and useful mechanism — just not one this tutorial
-needs. See [On-ramps & resuming](onramps.md) for what they do, the all-or-none
+On-ramps themselves are a real and useful mechanism. They are just not currently available as a tutorial. See [On-ramps & resuming](onramps.md) for what they do, the all-or-none
 bundle rules, and the pre-flight checks that enforce them.
 
 !!! danger "If you do use on-ramps: artifacts are keyed to the run that produced them"
-    ChromVAR output is a cells × motifs matrix keyed by ATAC barcodes, and its
-    consumers join it back against the same run — per-cell-type motif extraction
-    needs that run's `cell_type` column, and TF-to-target mapping joins against
-    its Cicero CCANs. An artifact from a *different* run overlaps on almost
-    nothing and fails quietly: near-empty results that still look like success.
-    Never substitute ChromVAR output from the published PBMC run into a
-    tutorial-scale run, or vice versa.
-
 ---
 
-## 7. Caveats worth stating plainly
+## 7. Caveats 
 
 **The ATAC QC thresholds are dataset-specific and deliberately set.**
 `configs/datasets/tutorial_pbmc.config` sets `atac.min_counts`, `max_counts`,
@@ -457,15 +419,13 @@ CellBender's prior computation with an `IndexError`.
 
 **Timings do not extrapolate.** Wall-clock is dominated by a few long serial
 tasks — `HDWGCNA_ENRICHMENT` 53 min, `CELLBENDER` 23 min, `RUN_CELLCHAT`
-22 min, `MULTIVI_INTEGRATE` 19 min. Going from 8 to 10 CPUs saved only ten
-minutes. Extra cores buy the 45-way hdWGCNA and 25-way Cicero fan-outs and
-nothing else.
+22 min, `MULTIVI_INTEGRATE` 19 min. Extra cores may buy the 45-way hdWGCNA and 25-way Cicero fan-outs better effeciency.
 
 **Peak memory varies between runs; the structural counts do not.** Across two
 cold runs `CELLBENDER` peaked at 1.50 GB then 2.90 GB, and `ATAC_INITIAL_QC` at
 5.80 GB then 7.10 GB — while every cell count and cluster count was identical.
-If you are sizing a machine, do not trust a single observation: allow ~50%
-headroom over the numbers above.
+If you are sizing a machine, do not trust a single observation; allow for reasonable
+headroom.
 
 ---
 
