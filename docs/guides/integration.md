@@ -21,12 +21,8 @@ Enabled with `run_multiome_integration = true` (the default).
 
 RNA and ATAC are annotated independently, from different tools on different
 matrices, and they land in different `obs` columns
-([details](../core/architecture.md#cell-type-keys-are-resolved-once-centrally)). FORGE
-does not transfer RNA labels onto ATAC barcodes.
-
-That means concordance between the two is a **measurable result** rather than an
-artifact of the workflow. Integration compares two independent estimates; it does
-not manufacture agreement.
+([details](../core/architecture.md#cell-type-keys-are-resolved-once-centrally)). 
+That means concordance between the two is a **measurable result**. Integration can therefore be evaluated by convergent agreement between two independent estimates.
 
 ---
 
@@ -37,11 +33,11 @@ mudata { batch_size = 10 }
 ```
 
 Builds the joint `.h5mu` object. `batch_size` controls how many samples are
-processed at a time — lower it if this step runs out of memory on a large study.
+processed at a time. Consider lowering this value if this step runs out of memory on a large study.
 
 Barcode formats differ between modalities and platforms (`sample:barcode` versus
-`barcode-sample`, and 10x versus BD conventions). FORGE normalizes these when
-matching cells across layers. Do not pre-mangle barcodes to try to help it.
+`barcode-sample`, and 10x versus BD conventions). FORGE accounts for these formats when
+matching cells across layers. Do not adjust barcodes to try to help it.
 
 ## MOFA+
 
@@ -56,8 +52,7 @@ mofa {
 ```
 
 Learns latent factors shared across modalities. The bootstrap block resamples to
-assess factor stability — worth keeping, since it is cheap relative to the rest of
-the pipeline.
+assess factor stability. 
 
 ## MultiVI
 
@@ -76,11 +71,10 @@ multivi {
 ```
 
 A joint variational model producing a shared latent space, plus optional
-imputation of missing modality values. GPU-backed.
+imputation of missing modality values. GPU-required.
 
 !!! note "MultiVI is memory-hungry"
-    On large datasets MultiVI has needed very large host-memory allocations —
-    substantially more than its GPU memory footprint would suggest. If it fails
+    On large datasets MultiVI has needed very large host-memory allocations. If it fails
     with an out-of-memory or exit code 137, raise host memory rather than GPU
     memory. `run_imputation = true` increases this further.
 
@@ -107,7 +101,7 @@ params.onramp { mudata_h5mu = '/prior/results/multiome/mudata/joint.h5mu' }
 ```
 
 If you are on-ramping an integrated RNA object and still want fresh integration,
-you must also supply the per-sample RNA h5ads — the integrated object alone is not
+you must also supply the per-sample RNA h5ads. The integrated object alone is not
 sufficient, and pre-flight will tell you so:
 
 ```text
