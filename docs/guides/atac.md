@@ -26,7 +26,7 @@ ATAC_FINAL(ATAC_INITIAL.out.thresholds)
 
 `ATAC_INITIAL` computes per-sample fragment and TSS-enrichment distributions and
 emits data-driven thresholds; `ATAC_FINAL` applies them. This is why the initial
-filters are loose and the final ones are `null` by default — the defaults are
+filters are loose and the final ones are `null` by default. The defaults are
 *meant* to be derived, not set:
 
 ```groovy
@@ -68,28 +68,11 @@ one annotation is performed against.
 ## Annotation
 
 !!! important "ATAC annotation is independent of RNA"
-    FORGE deliberately does **not** transfer RNA labels onto ATAC barcodes. The
-    ATAC arm annotates from accessibility alone, so the two modalities can be
+    At these early stages, FORGE deliberately keeps RNA information streams isolated from ATAC barcodes. While users are able to accept RNA-based annotations as their runs true labels, the ATAC arm annotates from a model optimized to annotate on accessibility alone (scATAnno); Thus, the two modalities can be
     compared as independent evidence rather than one being assumed from the other.
-    This matters for the cross-modal validation step — agreement is a result, not
-    a construction.
+    This matters for the cross-modal validation step. Agreement and concordance is a result, not a construction.
 
 **Two** modes — scATAnno, or marker-based super-user mode.
-
-!!! warning "There is no ATAC CellTypist mode"
-    ATAC CellTypist-on-gene-activity was removed. Setting
-    `atac.annotation_method = 'celltypist'` aborts the run:
-
-    ```text
-    ATAC auto_annotate is enabled but no annotation method was selected. Set
-    params.atac.marker_file for super-user marker mode, or
-    params.atac.annotation_method = 'scatanno' for reference-based annotation.
-    ATAC_CELLTYPIST on gene activity has been removed — use scATAnno instead.
-    ```
-
-    `params.celltypist` still governs **RNA** annotation — the two are unrelated.
-    Practically, this means ATAC annotation requires either a scATAnno reference
-    atlas or your own marker file; there is no atlas-free shortcut.
 
 === "scATAnno (default)"
 
@@ -116,7 +99,7 @@ one annotation is performed against.
 
     Labels land in `cell_type_prediction`.
 
-=== "Marker genes"
+=== "Marker genes (use with caution)"
 
     Overrides either method above.
 
@@ -137,8 +120,11 @@ atac {
 
 `MERGE_ANNOTATIONS` also writes a condensed broad-class column
 (`cell_type_broad`) by mapping fine labels through a shared broad map. Downstream
-per-cell-type fan-outs are much cheaper at broad resolution — worth using while
-you are still iterating.
+per-cell-type fan-outs are much cheaper at broad resolution.
+
+TODO:
+Link to scATAnno and pre-existing trained model repository.
+Demo scATAnno reference atlas build.
 
 ---
 
@@ -156,10 +142,7 @@ qc {
 ```
 
 A cell type is skipped unless it has at least `max(min_cells, min_pct × total)`
-cells. This is not merely a statistical nicety: very small cell types have caused
-out-of-memory failures in footprinting, because that tool's memory use is driven
-by region and mode counts rather than by cell count. A 7-cell cell type can cost
-as much as a 7,000-cell one.
+cells. Rare cell type populations can explode the number of downstream jobs, particularly footprinting. 
 
 ## Differential accessibility
 
