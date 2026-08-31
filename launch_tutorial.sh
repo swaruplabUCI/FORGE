@@ -38,6 +38,17 @@
 #                  where the unpacked dataset lives (default: <repo>/tutorial_data)
 #   --no-resume    ignore the cache, run cold   (default: -resume)
 #   --preview      build the DAG and exit, ~15s (no compute, no containers run)
+#
+# Environment (all optional — defaults work on a stock install):
+#   FORGE_NEXTFLOW  path to a nextflow binary, if it is not on PATH and not in
+#                   ~/bin, ~/.local/bin, or the repo root
+#   NXF_VER         Nextflow version to run (default 25.10.0 — the tested one;
+#                   FORGE requires >=25.04.0,<26.0.0)
+#
+# Site configuration: --account/--partition are not set (see the top of this
+# file), and no per-process SLURM settings are needed because everything runs
+# under Nextflow's local executor inside the one allocation. Adjust the
+# --cpus-per-task/--mem SBATCH lines above to match your hardware.
 # =========================================================================
 
 set -euo pipefail
@@ -86,17 +97,47 @@ if [[ ! -f main.nf || ! -f nextflow.config ]]; then
 fi
 
 # --- Environment ---------------------------------------------------------
-module load singularity 2>/dev/null || true
+# Singularity is packaged as 'apptainer' on newer systems. Try both, and ignore
+# failure entirely on machines with no module system.
+module load singularity 2>/dev/null || module load apptainer 2>/dev/null || true
 
-# Nextflow must be on PATH. The bundled launcher is preferred when present.
-if [[ -x /dfs7/swaruplab/lesolano/tools/nextflow ]]; then
-    export PATH="/dfs7/swaruplab/lesolano/tools:$PATH"
+# Nextflow must be on PATH. Nothing site-specific is hardcoded here; the search
+# order is:
+#   1. $FORGE_NEXTFLOW   — explicit override, wins over everything
+#   2. whatever is already on PATH
+#   3. common user-level install locations
+if [[ -n "${FORGE_NEXTFLOW:-}" ]]; then
+    if [[ ! -x "$FORGE_NEXTFLOW" ]]; then
+        echo "ERROR: FORGE_NEXTFLOW=$FORGE_NEXTFLOW is not an executable file." >&2
+        exit 1
+    fi
+    export PATH="$(cd "$(dirname "$FORGE_NEXTFLOW")" && pwd):$PATH"
+elif ! command -v nextflow >/dev/null 2>&1; then
+    for _d in "$HOME/bin" "$HOME/.local/bin" "$PROJECT_DIR"; do
+        if [[ -x "$_d/nextflow" ]]; then
+            export PATH="$_d:$PATH"
+            break
+        fi
+    done
 fi
 if ! command -v nextflow >/dev/null 2>&1; then
     echo "ERROR: nextflow not found on PATH." >&2
-    echo "Install it (https://nextflow.io) or add its directory to PATH." >&2
+    echo "" >&2
+    echo "Install it to a directory you own — no sudo, no admin:" >&2
+    echo "    mkdir -p ~/bin && cd ~/bin && curl -s https://get.nextflow.io | bash" >&2
+    echo "    export PATH=\"\$HOME/bin:\$PATH\"" >&2
+    echo "" >&2
+    echo "See docs/quickstart.md Step 1, or point at an existing copy with:" >&2
+    echo "    FORGE_NEXTFLOW=/path/to/nextflow $0" >&2
     exit 1
 fi
+
+# FORGE runs on Nextflow >=25.04.0,<26.0.0 (verified window — see the manifest
+# block in nextflow.config). The get.nextflow.io installer always fetches the
+# NEWEST release, which is outside that window and aborts on a config parse
+# error. Pinning makes the launcher fetch and run the tested runtime instead.
+# Override only if you have deliberately validated another version.
+export NXF_VER="${NXF_VER:-25.10.0}"
 
 export TMPDIR="${TMPDIR:-/tmp}"
 export NXF_TEMP="$TMPDIR"

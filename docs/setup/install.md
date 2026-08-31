@@ -4,9 +4,9 @@
 
 | Requirement | Minimum version | Notes |
 |-------------|-----------------|-------|
-| [Nextflow](https://www.nextflow.io/) | 23.04 | `curl -s https://get.nextflow.io \| bash` |
+| [Nextflow](https://www.nextflow.io/) | **25.10.0** (supported: `>=25.04.0, <26.0.0`) | Install to a user directory, no `sudo` — see [Quickstart Step 1](../quickstart.md). Pin with `export NXF_VER=25.10.0`; the installer otherwise fetches a release too new to run FORGE. |
 | [Singularity](https://sylabs.io/singularity/) or [Apptainer](https://apptainer.org/) | 3.8 | Must be on `$PATH` |
-| Java | 11 | Required by Nextflow |
+| Java | 17 | Required by Nextflow |
 | SLURM | any | HPC job submission |
 | NVIDIA GPU | **optional** — A30-class only for scVI/scANVI | FORGE runs CPU-only end to end (see the [Tutorial](../tutorial.md)). V100-class is ample for CellBender, ChromVAR, MOFA+ and MultiVI. See [GPU tiers](../index.md#gpu-tiers). |
 | High-memory node | ≥ 256 GB RAM | SCENIC+, large reference atlas loading |
@@ -19,7 +19,7 @@
 ## 1. Clone the repository
 
 ```bash
-git clone https://github.com/swaruplab/FORGE.git
+git clone https://github.com/swaruplabUCI/FORGE.git
 cd FORGE
 ```
 

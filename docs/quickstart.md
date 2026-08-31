@@ -11,18 +11,34 @@ or reference downloads. Do those steps first.
 
 ## Step 1 — Install Nextflow
 
+FORGE is developed and tested against **Nextflow 25.10.0**. Pin it. The supported
+window is `>= 25.04.0, < 26.0.0`. Setting `NXF_VER` below is the only thing that
+actually protects you: an out-of-window Nextflow aborts while parsing the config,
+before the pipeline's own version check can produce a friendlier message.
+
+No `sudo` and no system-wide install is needed. Install into a directory you own:
+
 ```bash
-curl -s https://get.nextflow.io | bash
-sudo mv nextflow /usr/local/bin/     # or anywhere on your PATH
-nextflow -version                    # need >= 23.04
+mkdir -p ~/bin
+cd ~/bin
+curl -s https://get.nextflow.io | bash      # writes ./nextflow here
+export PATH="$HOME/bin:$PATH"               # add to ~/.bashrc to persist
+export NXF_VER=25.10.0                      # add to ~/.bashrc too
+nextflow -version                           # should report 25.10.0
 ```
 
-On an HPC system Nextflow is often already available:
+`NXF_VER` matters. The `get.nextflow.io` launcher always fetches the *newest*
+release, which is outside the supported window; setting `NXF_VER` makes it
+download and run the pinned version instead. If you skip it, Step 3 fails with
+`Config parsing failed`.
 
-```bash
-module avail nextflow
-module load nextflow
-```
+Nextflow needs Java 17 (`java -version` to check). Most HPC systems provide it by
+default; if not, `module load java/17`.
+
+> **HPC note:** many clusters have no `nextflow` module — UC Irvine's HPC3, for
+> example, provides `singularity` and `java` but not `nextflow`. Check with
+> `module avail nextflow`, and if there is no hit, use the user-directory install
+> above. It needs no administrator involvement.
 
 ## Step 2 — Clone FORGE
 
