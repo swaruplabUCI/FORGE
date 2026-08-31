@@ -222,7 +222,7 @@ Both paths run the same pipeline with the same `tutorial` profile.
 
     Runtime and peak memory are **not** equally stable.
 
-!!! warning "Do not trust `atac/final/atac_pipeline_summary.json` thresholds"
+!!! warning "`atac/final/atac_pipeline_summary.json` thresholds do not reflect biology"
     That file reports `min_counts: 5000, min_tsse: 6` — the Python script's
     argparse defaults, not what was applied. The module never passes those
     flags; filtering uses the computed per-sample values in
@@ -230,7 +230,7 @@ Both paths run the same pipeline with the same `tutorial` profile.
     `max_counts 14886.7`, `min_tsse 6.31`), which is what takes 944 cells down
     to 817. Read the latter file.
 
-### RNA vs ATAC concordance — a wiring check, not a result
+### RNA vs ATAC concordance. This result is a wiring check
 
 A hallmark of FORGE is that the two modality arms are annotated *independently* — different tools, different matrices,
 different `obs` columns. The ATAC side never sees the RNA labels. Ideally,
@@ -247,13 +247,11 @@ The *agreement* between them, at this scale, is not meaningful, powered, nor int
 | L1 broad-class agreement | **3.79%** |
 | Chance floor | **3.79%** |
 
-**Agreement equals the chance floor exactly, and that is the expected result.**
+**Agreement will equal the chance floor exactly.**
 The ATAC arm assigns `Plasma_cells` to all 817 cells, so its labels carry no
 information and "agreement" collapses to whatever share of RNA cells happen to
 fall in the matching broad class (29/766). This is
-a direct consequence of restricting ATAC to `chr21`+`chr22`. The marker panel
-driving ATAC annotation is genome-wide, and on 2.6% of the genome it has almost
-nothing to score against.
+a direct consequence of restricting ATAC to `chr21`+`chr22`. 
 
 ATAC clustering resolves **4 / 7 / 9 Leiden clusters** at resolutions 0.5 / 1.0 /
 2.0, and the RNA side produces a sensible PBMC composition (448 monocytes, 105
@@ -261,9 +259,8 @@ CD4+ T, 91 DC, 34 CD8+ T, …). The structure is there; only the label assignmen
 degenerates.
 
 !!! warning "Do not quote this number as a quality metric"
-    It measures the subset's genome restriction, not FORGE's cross-modal
-    agreement. The published datasets are where concordance is meaningful and PBMC scores **0.917** there.
-    Reproduce the number below to confirm your run matches and is wired correctly up to this point.
+    It reflects the subset's restricted genome, not FORGE's cross-modal agreement.
+    Reproducing the number below only confirms your run matches and is wired correctly up to this point.
 
 Reproduce it with:
 
@@ -281,8 +278,11 @@ writes `summary.json`, `L1_confusion_matrix.csv` and `per_cell_results.csv`.
 ### Reference outputs
 
 The same release additionally carries three artifacts for checking your run against ours.
+
 1. A structural contract.
+
 2. A per-file checksums.
+
 3. Reference figures.
 
 ```bash
@@ -297,7 +297,7 @@ curl -LO $REL/figures.tar.gz
 - **`structural`** — cell counts, peak counts, task count, factor counts. These
   are deterministic. A difference here means something is wrong.
 - **`informational`** — wall-clock, peak RSS, directory sizes. These are *not*
-  stable between runs. They are recorded so you know the scale to expect. 
+  stable between runs.  
 
 Compare the structural block against the numbers your own run printed:
 
@@ -339,7 +339,7 @@ verification rather than a machine one. There are only two places this applies:
 
 | Output | How to verify |
 |---|---|
-| The 12 reference figures in `figures.tar.gz` | Open yours side by side with ours. You are looking for the same *shape* — cluster structure in the UMAPs, the same QC distributions, comparable MOFA+ variance bars. Colours and cluster numbering can differ; gross structural disagreement should not. |
+| The 12 reference figures in `figures.tar.gz` | Open yours side by side with ours. You are looking for the same *shape* — cluster structure in the UMAPs, the same QC distributions, comparable MOFA+ variance bars. |
 | `mofa_visualization/mofa_integration_summary.json` | Ignore the `timestamp` and `output_file` fields, which differ every run by design. Read the numbers beside them and check them against the `mofa` block of `expected_results.json`. |
 
 If the 168 checksums pass and those two look right, your run reproduced ours. You are now ready for a real FORGE run!
@@ -353,8 +353,7 @@ If the 168 checksums pass and those two look right, your run reproduced ours. Yo
     Regenerate the manifest after a legitimate pipeline change with
     `--write`.
 
-Note we **deliberately did not** ship the `.h5ad` and `.h5mu` objects. They are hundreds
-of megabytes and go stale on every pipeline change. 
+We chose **not** to ship the `.h5ad` and `.h5mu` objects. They are large and go stale on every pipeline change. 
 
 ---
 
@@ -396,36 +395,30 @@ Four stages are intentionally switched off:
 | **SCENIC+ / pycisTopic** | Needs cisTarget reference databases far larger than the whole tutorial dataset. |
 | **Differential analyses** | The tutorial is one sample with one `condition_group`. There is nothing to contrast. |
 
-On-ramps themselves are a real and useful mechanism. They are just not currently available as a tutorial. See [On-ramps & resuming](onramps.md) for what they do, the all-or-none
-bundle rules, and the pre-flight checks that enforce them.
-
-!!! danger "If you do use on-ramps: artifacts are keyed to the run that produced them"
+On-ramps themselves are a real and useful mechanism. The tutorial is meant to quickly get you up and running. For on-ramps, move to full-fledged FORGE. See [On-ramps & resuming](onramps.md) for what they do, the all-or-none bundle rules, and the pre-flight checks that enforce them.
 ---
 
 ## 7. Caveats 
 
-**The ATAC QC thresholds are dataset-specific and deliberately set.**
+**The ATAC QC thresholds.**
 `configs/datasets/tutorial_pbmc.config` sets `atac.min_counts`, `max_counts`,
 `min_tsse` and `min_fragments` explicitly. Leaving them unset does not fall back
-to something sensible — `modules/atac/atac_initial_qc.nf` only passes
+to something sensible. `modules/atac/atac_initial_qc.nf` only passes
 `--min_counts` when the parameter is truthy, so a null goes to the Python
 default of 5,000 fragments. Against chr21+chr22 that retains about 5% of cells
 and the ATAC arm collapses. Do not copy this config's ATAC thresholds to a
-whole-genome dataset; they are ~40× lower than appropriate.
+whole-genome dataset.
 
 **CellBender's `total_droplets` must be strictly below the barcode count.**
 It is 15,000 here against 20,000 barcodes. Setting it equal crashes inside
 CellBender's prior computation with an `IndexError`.
 
-**Timings do not extrapolate.** Wall-clock is dominated by a few long serial
-tasks — `HDWGCNA_ENRICHMENT` 53 min, `CELLBENDER` 23 min, `RUN_CELLCHAT`
-22 min, `MULTIVI_INTEGRATE` 19 min. Extra cores may buy the 45-way hdWGCNA and 25-way Cicero fan-outs better effeciency.
+**Wall-clock is dominated by a few long serial
+tasks.**  — `HDWGCNA_ENRICHMENT` 53 min, `CELLBENDER` 23 min, `RUN_CELLCHAT`
+22 min, `MULTIVI_INTEGRATE` 19 min. 
 
-**Peak memory varies between runs; the structural counts do not.** Across two
-cold runs `CELLBENDER` peaked at 1.50 GB then 2.90 GB, and `ATAC_INITIAL_QC` at
-5.80 GB then 7.10 GB — while every cell count and cluster count was identical.
-If you are sizing a machine, do not trust a single observation; allow for reasonable
-headroom.
+**Peak memory may vary between runs; the structural counts do not.** During our own "tutorial" testing,  `CELLBENDER` peaked between 1.50 GB and 2.90 GB. `ATAC_INITIAL_QC` between
+5.80 GB and 7.10 GB. That said, every cell count and cluster count was identical. On large clusters, we suspect runs landing on slightly different nodes with slightly different hardware configurations will lead to these variations without fundamentally impacting compute outputs. When sizing a run to a cluster, allow for reasonable headroom.
 
 ---
 
