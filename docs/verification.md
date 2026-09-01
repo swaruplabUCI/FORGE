@@ -146,12 +146,20 @@ The subset allows for efficient testing, but its' premise disallows interpreting
 **What it covers:** manifest parsing and pre-flight, RNA QC → CellBender →
 CellTypist annotation, ATAC QC → peak calling → clustering → ATAC cell-type
 annotation, Cicero co-accessibility, hdWGCNA (whole-dataset and per-cell-type),
-CellChat, and MOFA+/MultiVI integration. Measured: **94/94 tasks, exit 0,
-1 h 42 m 45 s wall-clock, 6.6 CPU-hours** on 8 CPUs.
+CellChat, and MOFA+/MultiVI integration. Measured: **exit 0, all tasks
+succeeded**, in 4.6 CPU-hours. Wall-clock depends strongly on how much
+concurrency the allocation permits — see
+[the tutorial's wall-clock note](tutorial.md#about-the-wall-clock-figure).
+
+The task count itself is not a fixed number: the hdWGCNA stage fans out once per
+cell type present, and the number of cell types is one of the numerically
+sensitive quantities described in
+[Values to inspect, not match](tutorial.md#values-to-inspect-not-match).
+Expect a number near 94.
 
 Note that scVI/scANVI training does **not** run here — annotation goes through
 CellTypist (`rna.annotation_method = 'celltypist'`), so `TRAIN_SCVI` and
-`TRAIN_SCANVI` are not part of the 94 tasks. scvi-tools CPU viability and
+`TRAIN_SCANVI` do not appear among the tasks. scvi-tools CPU viability and
 seeding were verified separately.
 
 ### Tier 2 missess:

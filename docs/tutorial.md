@@ -32,29 +32,78 @@ three-tier picture.
 
 | Requirement | Value |
 |---|---|
-| Disk — results | **3.9 GB** |
-| Disk — including `work/` | **~15 GB free** (results 3.9 GB + `work/` 4.8 GB, plus headroom) |
-| RAM — single heaviest task | **8.8 GB** (`ATAC_FINAL_PIPELINE`) |
-| Wall-clock | **1 h 43 min** on 8 CPUs / 48 GB |
-| CPU-hours | **6.6** |
+| Disk — results | **~320 MB** |
+| Disk — including `work/` | **~15 GB free** (results ~320 MB + `work/` ~4.5 GB, plus headroom) |
+| RAM — single heaviest task | **9.1 GB** (`ATAC_FINAL_PIPELINE`) |
+| Wall-clock | **42 min** measured on 50 CPUs / 300 GB; **~1 h 10 min** estimated on 8 CPUs / 48 GB — see below |
+| CPU-hours | **4.6** |
 | GPU | **Not required.** The tutorial is CPU-only. |
-| Network | Required. **`RUN_CELLTYPIST` over-downloads models** — see the note below. |
+| Network | Required — one 2.8 MB CellTypist model is fetched at runtime. |
 
-**A known inefficiency:** `RUN_CELLTYPIST` downloads the available 61
-CellTypist models despite only needing 1 for the validation. Unfortunately this costs 20–30 minutes of pure transfer time. We are actively testing a tool-side fix that we will ship as soon as we can verify downstream steps do not break.
+### About the wall-clock figure
 
-Wall-clock time is dominated by a handful of long serial tasks, though a few extra cores will be optimized where possible. What extra cores do buy is effeciency during the 45-way hdWGCNA and 25-way Cicero fan-outs. Summed across all 94 tasks the tutorial run is 2 h 49 min of task time. 
+Two runs, two very different machines, and the difference is parallelism rather
+than anything about the pipeline:
+
+| Allocation | Concurrency | Wall-clock | |
+|---|---|---|---|
+| 50 CPUs / 300 GB | peak 25 concurrent tasks | **42 min** | measured |
+| 8 CPUs / 48 GB | few tasks at a time | **~1 h 10 min** | *estimated* |
+
+**Plan against the 8-CPU number.** Be aware of exactly what each figure is. The
+42 minutes was measured on a complete 95-task run, but in a 300 GB allocation
+that let Nextflow keep 25 tasks running at once — it is only reachable with
+comparable resources. The ~1 h 10 min is an **estimate, not a measurement**: it
+is the previously measured 1 h 43 min on 8 CPUs less the ~32 min of CellTypist
+download that no longer happens. It has not been re-measured at 8 CPUs.
+
+Extra cores do not speed up the long serial stages; what they buy is throughput
+during the hdWGCNA and 25-way Cicero fan-outs. Summed across every task the run
+is **2 h 0 min** of task time, so even a modest allocation already gets real
+overlap. The two longest single tasks are `RUN_CELLCHAT` (22.7 min) and
+`CELLBENDER` (16.5 min); no amount of extra hardware shortens those.
+
+!!! success "CellTypist no longer over-downloads — about 30 minutes saved"
+    Earlier versions called `celltypist.models.download_models()` without a
+    `model=` argument. That parameter defaults to `None`, and `None` means
+    *download every available model* — all 61, several hundred MB — in order to
+    load the single one the run needs. It measured **32 minutes** of pure
+    transfer, longer than CellBender, the heaviest analysis stage.
+
+    FORGE now requests only the model it is about to load. `RUN_CELLTYPIST`
+    completes in **12 seconds** (of which ~2.5 s is the download of one 2.8 MB
+    file), against 32 minutes before. The loaded model is identical either way —
+    98 cell types — because only the *fetching* changed, never the computation.
+
+    Verified cold on two separate cluster nodes, interactive and batch, each
+    starting with an empty model cache: both fetched exactly one file. The
+    ~30-minute saving holds regardless of which wall-clock figure above applies
+    to your hardware, and it accounts for the drop from 6.6 CPU-hours to 4.6.
 
 !!! note "The run reaches the network"
-    `RUN_CELLTYPIST` fetches CellTypist models at runtime from
-    `celltypist.cog.sanger.ac.uk`. It currently downloads **all 61 available
-    models** (several hundred MB) in order to load the one it needs, which
-    measured **32 min** in our run — longer than CellBender, the heaviest
-    analysis stage. It is pure transfer time and it is included in the
-    wall-clock figures quoted above.
+    `RUN_CELLTYPIST` fetches its model at runtime from
+    `celltypist.cog.sanger.ac.uk` (one file, 2.8 MB). The model cache lives at
+    `/tmp/.celltypist` **on the node executing the task**, because containers run
+    with `--home /tmp`; it is therefore not shared between nodes and not
+    persisted between runs.
 
 You also need Nextflow and Singularity/Apptainer installed, and the FORGE containers built. See
 [Installation](setup/install.md) and [Containers](setup/containers.md).
+
+!!! tip "On a module-based cluster, load Singularity first"
+    `launch_tutorial.sh` loads the module itself, so the pipeline run works
+    without you doing anything. But every command on this page that you type
+    **manually** — the verification steps in sections 4 and 5 — needs
+    `singularity` on your `PATH`, and without it you get
+    `bash: singularity: command not found`.
+
+    ```bash
+    module avail singularity          # see what your site provides
+    module load singularity           # or: module load apptainer
+                                      # or pin a version: module load singularity/3.11.3
+    ```
+
+    Skip this if Singularity is installed system-wide.
 
 ---
 
@@ -249,26 +298,54 @@ Both paths run the same pipeline with the same `tutorial` profile.
      identical against run 1. Regenerate by re-running the tutorial and reading
      pipeline_info/trace.tsv. -->
 
+### Values that must match
+
+These are counts and order statistics over counts. They are invariant to
+hardware, thread count and allocation size, and have been confirmed identical
+across independent runs on different machines. **Check these.**
+
 | Stage | Quantity | Expected |
 |---|---|---|
 | ATAC initial QC | cells passing | **944** of 1,000 |
 | ATAC | median fragments / cell | **1,419.5** |
-| ATAC | median TSS enrichment | **16.30** |
+| ATAC | median TSS enrichment | **16.300101** |
 | ATAC final | peak matrix | **817 cells × 12,085 peaks** |
+| ATAC | Leiden clusters @ 0.5 / 1.0 / 2.0 | **4 / 7 / 9** |
 | Cicero | cells / peaks entering | **817 / 12,085** |
-| CellTypist | distinct labels | **45** |
-| MuData | cells in RNA ∩ ATAC | **767** (21,014 genes) |
-| MOFA+ | factors | **3** (seed 42) |
-| hdWGCNA | cell types with modules | **45** |
-| **Total** | **tasks succeeded** | **94 / 94** |
+| Cicero | triplets | **531,088** |
+| RNA | cells annotated | **924** |
+| MuData | cells in RNA ∩ ATAC | **767** |
+| MOFA+ | factors | **3** |
+| Concordance | ATAC distinct labels | **1** (degenerate — see section 4) |
+| Concordance | L1 agreement vs chance floor | **equal** |
 
-!!! success "These numbers are reproducible"
-    Every value in that table should be **identical** across all independent tutorial runs. That is our controlled `params.random_seed = 42`
-    seeding working as intended. If your run differs on a
-    *structural* count, something is genuinely different about your inputs or
-    container.
+If one of these differs, something is genuinely different about your inputs or
+your containers, and it is worth chasing.
 
-    Runtime and peak memory are **not** equally stable.
+### Values to inspect, not match
+
+The pipeline contains numerically sensitive stages — CellBender's variational
+autoencoder and Cicero's distance-parameter estimation among them — whose
+floating-point results depend on how many threads the underlying BLAS/OpenMP
+libraries use. That thread count currently follows the machine, so these
+quantities shift by small amounts between machines with different core counts.
+The shifts are tiny (order 0.02% in the denoised count matrix) and they do not
+change any structural count above, but they do propagate into derived values.
+
+| Stage | Quantity | Reference run |
+|---|---|---|
+| RNA | genes after filtering | 21,014 |
+| CellTypist | distinct raw labels | 45 |
+| hdWGCNA | cell types with modules | 45 |
+| Cicero | connections / CCAN assignments | 3,498 / 166 |
+| CellChat | interactions | 2,029 |
+| Concordance | cells scored | 766 |
+| Total | tasks succeeded | 94 |
+
+Read these and satisfy yourself they are the same order of magnitude and
+biologically sensible. Small differences here are expected on different
+hardware and are **not** a sign that your run failed. `params.random_seed = 42`
+controls every stage that exposes a seed; these stages do not expose one.
 
 !!! warning "`atac/final/atac_pipeline_summary.json` thresholds do not reflect biology"
     That file reports `min_counts: 5000, min_tsse: 6` — the Python script's
@@ -313,11 +390,20 @@ degenerates.
 Reproduce it with:
 
 ```bash
+module load singularity        # or `module load apptainer` — see note below
 singularity exec --bind "$PWD" singularity_cache/snapatac_extended.sif \
     python3 bin/tutorial_concordance.py \
         --h5mu results_tutorial/multiome/multivi/multivi_integrated.h5mu \
         --outdir concordance
 ```
+
+!!! warning "`singularity: command not found`?"
+    `launch_tutorial.sh` loads the module for you, so the pipeline itself runs
+    without you ever doing it by hand. Commands you run **manually**, like the
+    one above, need it on your `PATH` yourself. On a module-based cluster:
+    `module load singularity` (or `apptainer`). Check what your site provides
+    with `module avail singularity`. If Singularity is installed system-wide,
+    no module is needed.
 
 It reads only `obs` from the h5mu (never materialises a matrix), maps both
 vocabularies onto the same 10 broad classes used for the published datasets, and
