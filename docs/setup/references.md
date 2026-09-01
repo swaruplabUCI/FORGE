@@ -214,6 +214,15 @@ These are large pre-computed region-vs-motif ranking and score matrices from the
 
 ### Mouse (mm39)
 
+!!! warning "These are not downloadable — you build them"
+    aertslab publishes cisTarget databases for hg38 and mm10 only. The mm39 files below
+    were derived locally by UCSC liftOver from the mm10 `v10nr_clust` region-based
+    database (1,110,637 of 1,110,655 regions retained). Full build recipe:
+    [Building mm39 cisTarget databases by liftOver](cistarget_mm39_liftover.md).
+    The build writes `mm39_region_based.scores.feather` and
+    `mm39_region_based.rankings.feather`; the `*_screen_v10_clust_*` names below are the
+    upstream naming convention, reached via symlink.
+
 | File | Size | HPC3 path | Note |
 |------|------|-----------|------|
 | `mm39_screen_v10_clust.regions_vs_motifs.rankings.feather` | 22.6 GB | `/dfs7/swaruplab/lesolano/ref/scenic_plus_resources/mouse/` | `[standard]` |

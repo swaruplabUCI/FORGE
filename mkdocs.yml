@@ -77,6 +77,7 @@ nav:
       - Installation: setup/install.md
       - Containers: setup/containers.md
       - Reference files: setup/references.md
+      - Building mm39 cisTarget DBs: setup/cistarget_mm39_liftover.md
       - Adapting to your cluster: setup/cluster.md
   - Guides:
       - RNA arm: guides/rna.md
