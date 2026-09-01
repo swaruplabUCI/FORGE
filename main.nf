@@ -981,7 +981,16 @@ def validateStartupParams() {
                   "="*80 + "\n" +
                   errors.withIndex().collect { err, i -> "  ${i+1}. ${err}" }.join("\n") + "\n" +
                   "="*80
-        error msg
+        // Print the checklist HERE, while the console logger is still live.
+        // Passing it to error() alone is not enough: with workflow.onError and
+        // workflow.onComplete handlers installed, the exception message never
+        // reaches the terminal -- it lands only in .nextflow.log, and the reader
+        // sees a bare "ERROR ~" plus the generic troubleshooting tips. Verified
+        // empirically: 68 lines of terminal output, zero occurrences of
+        // "PRE-FLIGHT". The thrown message is kept short and single-line so the
+        // console renders it intact whatever Nextflow does with it.
+        log.error msg
+        error "Pre-flight validation failed with ${errors.size()} error(s) -- see the checklist above."
     }
 
     // FIX-16: Enhanced startup banner with pre-flight summary

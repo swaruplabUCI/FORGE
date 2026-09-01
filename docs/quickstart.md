@@ -1,7 +1,16 @@
 # Quickstart
 
-This page is one linear path from an empty directory to a running pipeline. Work
-through it top to bottom.
+This page is one linear path from an empty directory to a running pipeline **on
+your own data**. Work through it top to bottom.
+
+!!! tip "Want to watch FORGE run before committing your own data?"
+    Do the [Tutorial](tutorial.md) instead. It runs the complete pipeline
+    end-to-end on a 79 MB public PBMC dataset in about two hours on 8 CPUs, with
+    **no GPU and no external reference downloads** — everything it needs ships
+    with the dataset. Steps 1-3 below are still worth doing first; they install
+    Nextflow and prove the pipeline graph is sound. After that, the Tutorial is
+    the faster way to see real output, and you can return here when you are
+    ready to point FORGE at your own samples.
 
 The early steps need almost nothing — you can validate a complete FORGE
 configuration with only Nextflow installed, before committing to container builds
@@ -19,18 +28,28 @@ before the pipeline's own version check can produce a friendlier message.
 No `sudo` and no system-wide install is needed. Install into a directory you own:
 
 ```bash
+# NOTE ON `~`: throughout this page, `~` means the root of the directory you
+# intend to house FORGE in -- not necessarily your literal home directory.
+# On most HPC systems $HOME is a small, quota-limited volume, and a full run
+# will not fit there. Pick a workspace with room (scratch, a lab share, a
+# project volume) and treat that as `~` for every step below, e.g.:
+#     cd /path/to/your/workspace
+# If your home directory really is where you want FORGE, `~` works literally.
+
+export NXF_VER=25.10.0                      # set BEFORE the install; add to ~/.bashrc too
 mkdir -p ~/bin
 cd ~/bin
 curl -s https://get.nextflow.io | bash      # writes ./nextflow here
 export PATH="$HOME/bin:$PATH"               # add to ~/.bashrc to persist
-export NXF_VER=25.10.0                      # add to ~/.bashrc too
 nextflow -version                           # should report 25.10.0
 ```
 
-`NXF_VER` matters. The `get.nextflow.io` launcher always fetches the *newest*
-release, which is outside the supported window; setting `NXF_VER` makes it
-download and run the pinned version instead. If you skip it, Step 3 fails with
-`Config parsing failed`.
+`NXF_VER` matters, and it is set *before* the install on purpose. The
+`get.nextflow.io` launcher always fetches the *newest* release, which is outside
+the supported window; exporting `NXF_VER` first makes it download the pinned
+version directly. Set it afterwards instead and the installer still works, but it
+downloads a 26.x release you never use and prints that version at you. If you skip
+it entirely, Step 3 fails with `Config parsing failed`.
 
 Nextflow needs Java 17 (`java -version` to check). Most HPC systems provide it by
 default; if not, `module load java/17`.
@@ -42,7 +61,11 @@ default; if not, `module load java/17`.
 
 ## Step 2 — Clone FORGE
 
+Step 1 left you in `~/bin`. Go back to your workspace root first, or the clone
+lands inside your Nextflow install directory:
+
 ```bash
+cd ~                                        # your workspace root -- see the note in Step 1
 git clone https://github.com/swaruplabUCI/FORGE.git
 cd FORGE
 ```
@@ -83,6 +106,15 @@ nextflow config -profile cluster,singularity
 
 ## Step 4 — Write a manifest
 
+The next two boxes are **file contents, not commands.** Create each file with a
+text editor (`nano my_manifest.csv`, `vim my_manifest.csv`, or whatever you use)
+and paste the box into it. Do not paste them straight into the shell — the line
+wrapping in a browser will corrupt them.
+
+Work from wherever you want this study to live; the commands below assume you
+are inside the cloned `FORGE` directory (`cd ~/FORGE`), but any directory works
+as long as the paths in the config point at the right places.
+
 Create `my_manifest.csv`. One row per sample; filenames go in `rna_file` and
 `fragment_file`, and the directory goes in `data_dir`:
 
@@ -109,6 +141,16 @@ params {
     // References (see docs/setup/references.md)
     gtf_human_full = '/refs/gencode.v38.annotation.gtf'
     blacklist_bed  = '/refs/hg38-blacklist.v2.bed'
+
+    // These three MUST be set explicitly, even though they repeat
+    // gtf_human_full above. nextflow.config interpolates them at parse time,
+    // which happens BEFORE your dataset config merges, so they do not inherit
+    // your value -- they resolve to 'null' and pre-flight rejects the run.
+    cicero    { gtf_full  = '/refs/gencode.v38.annotation.gtf' }
+    scprinter {
+        gtf_human = '/refs/gencode.v38.annotation.gtf'
+        gtf_mouse = '/refs/gencode.vM10.annotation.gtf'
+    }
 
     // Annotation. RNA uses CellTypist; ATAC requires a scATAnno atlas (or your
     // own atac.marker_file) — there is no atlas-free ATAC option.
@@ -140,15 +182,27 @@ submitting any work. Either you get a clean graph, or you get every problem at
 once:
 
 ```text
+ERROR ~
 ================================================================================
-PRE-FLIGHT CHECKLIST FAILED (3 error(s)):
+PRE-FLIGHT CHECKLIST FAILED (5 error(s)):
 ================================================================================
   1. Manifest CSV not found: /path/to/my_manifest.csv
-  2. atac.annotation_method='scatanno' requires params.scatanno.reference_atlas
-     (path to a .h5ad reference). Set this explicitly in your dataset config.
-  3. rna.run=true but the manifest contains no rows with a non-null rna_file.
+  2. scprinter.gtf_human (scPRINTER/enhancer/chromVAR) file does not exist:
+     /refs/gencode.v38.annotation.gtf. Verify the path and ensure the GTF is
+     accessible from the execution host.
+  3. cicero.gtf_full file does not exist: /refs/gencode.v38.annotation.gtf.
+     Verify the path and ensure the GTF is accessible from the execution host.
+  4. scATAnno reference atlas not found: /refs/scatanno_pbmc_atlas.h5ad
+  5. rna.run=true but the manifest contains no rows with a non-null rna_file.
+     Either populate rna_file in the manifest, or set rna.run=false for
+     ATAC-only runs.
 ================================================================================
 ```
+
+That is the real output of the Step 5 config, copied verbatim — five errors, not
+a trimmed illustration. They are all the placeholder paths, working as intended:
+every path is checked for *existence*, not merely for being set. Point them at
+your real files and the list empties out.
 
 Fix, re-run, repeat. Each cycle is seconds. Do not proceed until this is clean.
 
@@ -171,7 +225,19 @@ including CPU-architecture requirements, is in
 [Containers](setup/containers.md#if-you-lack-root-or-fakeroot).
 
 Place the resulting `.sif` files in `singularity_cache/`, or point
-`params.containers` at wherever they live.
+`params.containers` at wherever they live. **The directory does not exist on a
+fresh clone** — it is gitignored, so create it first:
+
+```bash
+mkdir -p singularity_cache
+```
+
+!!! note "This is where the quickstart gets expensive"
+    Steps 7 and 8 are the only heavy parts of setup: five container images
+    (~13 GB) and reference files (up to ~600 GB for the complete set). If your
+    goal right now is to *see FORGE work* rather than to process your own
+    samples, stop here and do the [Tutorial](tutorial.md) — it needs the
+    containers but **none** of the references on this page.
 
 ## Step 8 — Download references
 
