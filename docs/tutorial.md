@@ -35,7 +35,7 @@ three-tier picture.
 | Disk — results | **~320 MB** |
 | Disk — including `work/` | **~15 GB free** (results ~320 MB + `work/` ~4.5 GB, plus headroom) |
 | RAM — single heaviest task | **9.1 GB** (`ATAC_FINAL_PIPELINE`) |
-| Wall-clock | **42 min** measured on 50 CPUs / 300 GB; **~1 h 10 min** estimated on 8 CPUs / 48 GB — see below |
+| Wall-clock | **42 min** measured on 50 CPUs / 300 GB; **~2 h 20 min** estimated on 8 CPUs / 48 GB — see below |
 | CPU-hours | **4.6** |
 | GPU | **Not required.** The tutorial is CPU-only. |
 | Network | Required — one 2.8 MB CellTypist model is fetched at runtime. |
