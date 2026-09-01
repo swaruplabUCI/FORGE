@@ -60,7 +60,13 @@ You also need Nextflow and Singularity/Apptainer installed, and the FORGE contai
 
 ## 1. Get the tutorial dataset
 
-The dataset is **78.9 MB** and ships as a release asset.
+The download is **36 MB**; unpacked it is **78.9 MB**. It ships as a release
+asset.
+
+Run these from inside your cloned `FORGE` directory. Replace the `cd` below with
+your actual path — if you paste it as-is the `cd` fails, and because the shell
+does not stop on that failure the rest of the block still runs, depositing the
+dataset in whatever directory you happened to be in.
 
 ```bash
 cd /path/to/FORGE
@@ -77,7 +83,15 @@ tar -xzf forge_tutorial_pbmc_v1.tar.gz -C tutorial_data/
 
 Running the checksum before unpacking rather than after is recommended as it helps prevent errors due to truncated downloads.
 
-Unpacked, it must land at `tutorial_data/` in the repository root:
+Check what you got against what you should have:
+
+```bash
+tree tutorial_data/          # or, if tree is not installed:
+find tutorial_data -type f | sort
+```
+
+Unpacked, it must land at `tutorial_data/` in the repository root, and your
+output should match this tree exactly — six files, no more:
 
 ```text
 tutorial_data/
@@ -122,8 +136,42 @@ nextflow run main.nf -preview \
     -c configs/datasets/tutorial_pbmc.config
 ```
 
-You should see `PRE-FLIGHT CHECKLIST PASSED`. If not, stop and
-fix it — see [Troubleshooting](troubleshooting.md).
+You should see `PRE-FLIGHT CHECKLIST PASSED (7 checks)` and `No warnings.`
+If not, stop and fix it — see [Troubleshooting](troubleshooting.md).
+
+The process list `-preview` prints is the workflow graph. To inspect it properly,
+ask for the DAG — this still executes nothing:
+
+```bash
+nextflow run main.nf -preview -profile tutorial,singularity \
+    -c configs/datasets/tutorial_pbmc.config \
+    -with-dag tutorial_dag.mmd
+```
+
+`nextflow.config` sets no `dag.file`, so **no DAG is written unless you pass
+`-with-dag`**. The tutorial's graph should contain **25 distinct processes**:
+
+```text
+ATAC_CELLTYPE_ANNOTATION  ATAC_DESCRIPTIVE_REPORT  ATAC_FINAL_PIPELINE
+ATAC_INITIAL_QC           ATAC_MAKE_THRESHOLDS     BUILD_MUDATA
+CELLBENDER                CICERO_ESTIMATE_DP       CICERO_FULL_CHROM
+CICERO_JOIN               CICERO_TRIPLETS          CONCAT_BATCHES
+CONVERT_H5AD_TO_SEURAT    EXPORT_MUDATA_RNA        HDWGCNA_ENRICHMENT
+HDWGCNA_PER_CELLTYPE      MERGE_ANNOTATIONS        MOFA_INTEGRATE
+MOFA_VISUALIZE            MULTIVI_INTEGRATE        MULTIVI_VISUALIZE
+PLOT_POST_SCANVI          RNA_QC                   RUN_CELLCHAT
+RUN_CELLTYPIST
+```
+
+List them from your own DAG with:
+
+```bash
+grep -oE '\["[A-Z][A-Z0-9_]+"\]' tutorial_dag.mmd | tr -d '["]' | sort -u
+```
+
+`.mmd` is Mermaid — GitHub renders it inline, as does <https://mermaid.live>.
+Use `-with-dag tutorial_dag.html` instead for a self-contained interactive
+graph.
 
 !!! warning "Do not follow `-preview` with a bare `-resume`"
     The preview is written to Nextflow's run history, and a subsequent bare

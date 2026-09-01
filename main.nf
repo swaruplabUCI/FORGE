@@ -4264,9 +4264,14 @@ workflow.onComplete {
       - Composite figures:   ${params.outdir}/enhancer_viz/composites/
 
     Logs:
-      - Execution trace:     logs/nextflow/trace.txt
-      - Timeline:            logs/nextflow/timeline.html
-      - Report:              logs/nextflow/report.html
+      - Execution trace:     results/pipeline_info/trace.tsv
+      - Timeline:            results/pipeline_info/timeline.html
+      - Report:              results/pipeline_info/report.html
+      - Nextflow log:        .nextflow.log   (full error detail lands here)
+
+      NOTE: these three are under 'results/', not '${params.outdir}/'.
+      nextflow.config interpolates params.outdir into their paths when it is
+      PARSED, before any dataset config or profile can override outdir.
 
     """.stripIndent()
 
@@ -4275,10 +4280,11 @@ workflow.onComplete {
 
         TROUBLESHOOTING TIPS:
 
-        1. Check error logs: logs/nextflow/trace.txt
-        2. Resume failed run: nextflow run main.nf -resume
+        1. Read the full error: .nextflow.log in the launch directory
+        2. Per-process runtimes: results/pipeline_info/trace.tsv
         3. Check individual process logs in work/ directory
         4. Verify input files exist and are readable
+        5. Resume a failed run: nextflow run main.nf -resume
 
         """
     }
@@ -4295,8 +4301,9 @@ workflow.onError {
     Error message: ${workflow.errorMessage}
     Error report: ${workflow.errorReport}
 
-    Check the logs directory for details:
-      ${params.outdir}/logs/nextflow/
+    Check these for details:
+      .nextflow.log                       (full error detail)
+      results/pipeline_info/trace.tsv     (per-process runtimes)
 
     """
 }
