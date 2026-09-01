@@ -42,43 +42,17 @@ three-tier picture.
 
 ### About the wall-clock figure
 
-Two runs, two very different machines, and the difference is parallelism rather
-than anything about the pipeline:
+The intention here is to give you an idea of gained efficiency from increases in compute resources:
 
 | Allocation | Concurrency | Wall-clock | |
 |---|---|---|---|
 | 50 CPUs / 300 GB | peak 25 concurrent tasks | **42 min** | measured |
-| 8 CPUs / 48 GB | few tasks at a time | **~1 h 10 min** | *estimated* |
-
-**Plan against the 8-CPU number.** Be aware of exactly what each figure is. The
-42 minutes was measured on a complete 95-task run, but in a 300 GB allocation
-that let Nextflow keep 25 tasks running at once — it is only reachable with
-comparable resources. The ~1 h 10 min is an **estimate, not a measurement**: it
-is the previously measured 1 h 43 min on 8 CPUs less the ~32 min of CellTypist
-download that no longer happens. It has not been re-measured at 8 CPUs.
+| 8 CPUs / 48 GB | few tasks at a time | **~2 h 20 min** | measured |
 
 Extra cores do not speed up the long serial stages; what they buy is throughput
 during the hdWGCNA and 25-way Cicero fan-outs. Summed across every task the run
-is **2 h 0 min** of task time, so even a modest allocation already gets real
-overlap. The two longest single tasks are `RUN_CELLCHAT` (22.7 min) and
-`CELLBENDER` (16.5 min); no amount of extra hardware shortens those.
-
-!!! success "CellTypist no longer over-downloads — about 30 minutes saved"
-    Earlier versions called `celltypist.models.download_models()` without a
-    `model=` argument. That parameter defaults to `None`, and `None` means
-    *download every available model* — all 61, several hundred MB — in order to
-    load the single one the run needs. It measured **32 minutes** of pure
-    transfer, longer than CellBender, the heaviest analysis stage.
-
-    FORGE now requests only the model it is about to load. `RUN_CELLTYPIST`
-    completes in **12 seconds** (of which ~2.5 s is the download of one 2.8 MB
-    file), against 32 minutes before. The loaded model is identical either way —
-    98 cell types — because only the *fetching* changed, never the computation.
-
-    Verified cold on two separate cluster nodes, interactive and batch, each
-    starting with an empty model cache: both fetched exactly one file. The
-    ~30-minute saving holds regardless of which wall-clock figure above applies
-    to your hardware, and it accounts for the drop from 6.6 CPU-hours to 4.6.
+is just over **2 h 0 min** of task time. The two longest single tasks are `RUN_CELLCHAT` (22.7 min) and
+`CELLBENDER` (16.5 min). Extra cores won't shorten these times significantly.
 
 !!! note "The run reaches the network"
     `RUN_CELLTYPIST` fetches its model at runtime from
@@ -93,8 +67,8 @@ You also need Nextflow and Singularity/Apptainer installed, and the FORGE contai
 !!! tip "On a module-based cluster, load Singularity first"
     `launch_tutorial.sh` loads the module itself, so the pipeline run works
     without you doing anything. But every command on this page that you type
-    **manually** — the verification steps in sections 4 and 5 — needs
-    `singularity` on your `PATH`, and without it you get
+    **manually** (verification steps in sections 4&5) needs
+    `singularity` on your `PATH`. Without it you get
     `bash: singularity: command not found`.
 
     ```bash
@@ -113,9 +87,7 @@ The download is **36 MB**; unpacked it is **78.9 MB**. It ships as a release
 asset.
 
 Run these from inside your cloned `FORGE` directory. Replace the `cd` below with
-your actual path — if you paste it as-is the `cd` fails, and because the shell
-does not stop on that failure the rest of the block still runs, depositing the
-dataset in whatever directory you happened to be in.
+your actual path.
 
 ```bash
 cd /path/to/FORGE
@@ -302,7 +274,7 @@ Both paths run the same pipeline with the same `tutorial` profile.
 
 These are counts and order statistics over counts. They are invariant to
 hardware, thread count and allocation size, and have been confirmed identical
-across independent runs on different machines. **Check these.**
+across independent runs on different machines. **Start by checking here.**
 
 | Stage | Quantity | Expected |
 |---|---|---|
@@ -319,18 +291,15 @@ across independent runs on different machines. **Check these.**
 | Concordance | ATAC distinct labels | **1** (degenerate — see section 4) |
 | Concordance | L1 agreement vs chance floor | **equal** |
 
-If one of these differs, something is genuinely different about your inputs or
-your containers, and it is worth chasing.
+If one of these differs, something is likely different about your inputs or
+your containers.
 
 ### Values to inspect, not match
 
-The pipeline contains numerically sensitive stages — CellBender's variational
-autoencoder and Cicero's distance-parameter estimation among them — whose
-floating-point results depend on how many threads the underlying BLAS/OpenMP
-libraries use. That thread count currently follows the machine, so these
-quantities shift by small amounts between machines with different core counts.
-The shifts are tiny (order 0.02% in the denoised count matrix) and they do not
-change any structural count above, but they do propagate into derived values.
+The pipeline contains numerically sensitive stages. These
+quantities shift by small amounts between machines with different configurations such as core counts.
+The known shifts are tiny and they do not
+change any structural count above. However, they do propagate into derived values.
 
 | Stage | Quantity | Reference run |
 |---|---|---|
@@ -342,10 +311,8 @@ change any structural count above, but they do propagate into derived values.
 | Concordance | cells scored | 766 |
 | Total | tasks succeeded | 94 |
 
-Read these and satisfy yourself they are the same order of magnitude and
-biologically sensible. Small differences here are expected on different
-hardware and are **not** a sign that your run failed. `params.random_seed = 42`
-controls every stage that exposes a seed; these stages do not expose one.
+Read these and sanity check that they are the same order of magnitude. Small differences here are expected on different hardware configurations. `params.random_seed = 42`
+controls every stage that exposes a seed; these stages do not expose one. Moving forward, if we are able to stabalize these into deterministic values, we will shift them to the values in the table above.
 
 !!! warning "`atac/final/atac_pipeline_summary.json` thresholds do not reflect biology"
     That file reports `min_counts: 5000, min_tsse: 6` — the Python script's
