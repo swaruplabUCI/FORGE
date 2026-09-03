@@ -5,8 +5,8 @@ From: rocker/r-ver:4.4.3
     Author       Luis Solano (Swarup Lab, UCI)
     Project      FORGE single-cell multiomics pipeline
     Container    seurat_extended
-    Version      v3.5
-    Description  R: Seurat 5 + hdWGCNA + CellChat + MAST + WGCNA + Bioconductor + baked basilisk env
+    Version      v3.6
+    Description  R: Seurat 5 + hdWGCNA (+ ggforestplot) + CellChat + MAST + edgeR + WGCNA + Bioconductor + baked basilisk env
 
 %help
     R container for downstream Seurat-based analyses and gene module discovery.
@@ -14,8 +14,12 @@ From: rocker/r-ver:4.4.3
     Major contents:
       R 4.4.3 (from rocker/r-ver:4.4.3, Debian bookworm)
       Seurat 5.4.0, SeuratObject
-      hdWGCNA, CellChat, schard (from GitHub)
-      WGCNA, MAST (DE testing), enrichR
+      hdWGCNA, CellChat, schard, ggforestplot (from GitHub)
+      WGCNA, MAST + edgeR (single-cell and pseudobulk DE), enrichR
+      (ggforestplot is required by hdWGCNA::PlotDMEsLollipop and is NOT on
+      CRAN — only on GitHub at NightingaleHealth/ggforestplot. Without it
+      baked in, PlotDMEsLollipop tries to autoinstall at runtime and fails
+      on the read-only SIF filesystem.)
       ggrepel 0.9.6 (pinned; 0.9.7+ requires R >= 4.5)
       magick (rebuilt from source against HDRI ImageMagick)
       Bioconductor 3.20: ComplexHeatmap, GSVA, UCell, GeneOverlap,
@@ -80,15 +84,32 @@ From: rocker/r-ver:4.4.3
     Rscript -e 'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", repos = "https://cran.r-project.org"); BiocManager::install(c("impute","preprocessCore"), ask = FALSE, update = FALSE, Ncpus = 4)'
 
     # ----------------------------------------------------------------------
-    # Pin ggrepel 0.9.6.
-    # CRAN current (>= 0.9.7) requires R >= 4.5, but we are on R 4.4.3.
+    # Pin CRAN packages that dropped R 4.4 support in their latest releases.
+    # Both would otherwise be pulled by the big install.packages() batch
+    # below (Deriv transitively via ggpubr -> rstatix -> car -> pbkrtest
+    # -> doBy -> Deriv). Pinning them here first means the batch install
+    # sees them already present and skips re-installing.
+    #
+    #   ggrepel >= 0.9.7 uses R 4.5+ features
+    #   Deriv   >= 4.2.0 uses R_ClosureFormals (R 4.5+ C API symbol);
+    #                    fails at compile with:
+    #                    "error: 'R_ClosureFormals' was not declared in this scope"
     # ----------------------------------------------------------------------
     Rscript -e '
     install.packages("remotes", repos = "https://cran.r-project.org", Ncpus = 4)
     if (!requireNamespace("remotes", quietly = TRUE)) stop("FATAL: remotes install failed")
+
     remotes::install_version("ggrepel", version = "0.9.6", repos = "https://cran.r-project.org", upgrade = "never")
     if (!requireNamespace("ggrepel", quietly = TRUE)) stop("FATAL: ggrepel 0.9.6 install failed")
     cat("ggrepel", as.character(packageVersion("ggrepel")), "OK\n")
+
+    remotes::install_version("Deriv", version = "4.1.6", repos = "https://cran.r-project.org", upgrade = "never")
+    if (!requireNamespace("Deriv", quietly = TRUE)) {
+        stop("FATAL: Deriv 4.1.6 install failed. If CRAN archive lookup succeeded but ",
+             "compilation failed, try an earlier version (4.1.5, 4.1.4, 4.1.3). If the ",
+             "archive lookup itself failed, check that install_version can reach CRAN.")
+    }
+    cat("Deriv", as.character(packageVersion("Deriv")), "OK\n")
     '
 
     # ----------------------------------------------------------------------
@@ -181,12 +202,13 @@ From: rocker/r-ver:4.4.3
         "Rhtslib", "Rsamtools", "GenomicAlignments",
         "rtracklayer", "biomaRt", "EnhancedVolcano",
         "rhdf5", "ComplexHeatmap", "NMF", "circlize",
-        "BiocNeighbors", "GSVA", "UCell", "GeneOverlap"
+        "BiocNeighbors", "GSVA", "UCell", "GeneOverlap",
+        "edgeR"
     ), ask = FALSE, update = FALSE, Ncpus = 4)
     pkgs <- c("MAST","SingleCellExperiment","zellkonverter","Rhtslib","Rsamtools",
               "GenomicAlignments","rtracklayer","biomaRt","EnhancedVolcano",
               "rhdf5","ComplexHeatmap","NMF","circlize","BiocNeighbors",
-              "GSVA","UCell","GeneOverlap")
+              "GSVA","UCell","GeneOverlap","edgeR")
     fail <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
     if (length(fail)) stop("FATAL: Bioc packages failed to install: ", paste(fail, collapse = ", "))
     cat("Bioconductor install verified —", length(pkgs), "packages OK\n")
@@ -223,7 +245,11 @@ From: rocker/r-ver:4.4.3
     devtools::install_github("smorabit/hdWGCNA", upgrade = "never", dependencies = TRUE)
     devtools::install_github("jinworks/CellChat", upgrade = "never", dependencies = TRUE)
     devtools::install_github("cellgeni/schard", upgrade = "never", dependencies = TRUE)
-    pkgs <- c("hdWGCNA", "CellChat", "schard")
+    # ggforestplot — required by hdWGCNA::PlotDMEsLollipop, GitHub-only.
+    # Without this, the lollipop plot triggers an autoinstall at runtime that
+    # fails on the read-only SIF filesystem.
+    devtools::install_github("NightingaleHealth/ggforestplot", upgrade = "never", dependencies = TRUE)
+    pkgs <- c("hdWGCNA", "CellChat", "schard", "ggforestplot")
     fail <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
     if (length(fail)) stop("FATAL: GitHub packages failed to install: ", paste(fail, collapse = ", "))
     cat("GitHub install verified —", length(pkgs), "packages OK\n")
@@ -259,8 +285,8 @@ From: rocker/r-ver:4.4.3
               "WGCNA","devtools","reticulate","magick","basilisk",
               "MAST","SingleCellExperiment","zellkonverter","Rhtslib","Rsamtools",
               "GenomicAlignments","rtracklayer","biomaRt","EnhancedVolcano",
-              "rhdf5","ComplexHeatmap","GSVA","UCell","GeneOverlap",
-              "hdWGCNA","CellChat","schard")
+              "rhdf5","ComplexHeatmap","GSVA","UCell","GeneOverlap","edgeR",
+              "hdWGCNA","CellChat","schard","ggforestplot")
     fail <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
     if (length(fail)) stop("MISSING: ", paste(fail, collapse = ", "))
     cat("All", length(pkgs), "packages OK\n")
