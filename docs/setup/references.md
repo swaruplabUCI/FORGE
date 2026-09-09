@@ -73,6 +73,27 @@ Additional available models (not used in current examples):
 
 To use a model not bundled in the container, set `params.celltypist.model` to the full path of a locally downloaded `.pkl` file.
 
+### Custom-trained models
+
+Where the model zoo has no entry for a tissue, a model can be trained from an annotated reference atlas. **One model used by FORGE was custom-built** in this way.
+
+| File | Size | HPC3 path |
+|------|------|-----------|
+| `kidney_atlas_celltypist.pkl` | 1.1 MB | `/dfs7/swaruplab/lesolano/ref/mouse_kidney_snRNA_atlas/` |
+
+**Status:** `[custom-built]`  
+**Used by:** `Kidney_Mm_BD_r5` — `configs/datasets/kidney_mm_bd.config`  
+**Source data:** Mouse kidney snRNA-seq reference atlas, CellxGene Discover dataset `945ee50d-d14e-4e86-baaa-febc7eb00409` ([PMC10238935](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10238935/)) — 141,401 cells pooling eight studies, filtered to 111,904 primary-data cells across 35 `author_cell_type` classes.  
+**Build date:** June 8, 2026.  
+**Why custom:** At the time of development the CellTypist model zoo listed no mouse kidney model. The general-purpose models that could be applied collapse the proximal-tubule segments (PTS1/PTS2/PTS3/PTS3T2) and the vascular subtypes that the kidney analysis depends on. Check the zoo before rebuilding this.
+
+Build scripts: `download.sh`, `train_celltypist.py`, `train_celltypist.sh` in `/dfs7/swaruplab/lesolano/ref/mouse_kidney_snRNA_atlas/`, reproduced in full — with the full parameter set, run record, and known limitations of this model — in [Training a custom CellTypist model](celltypist_custom_model.md).
+
+!!! warning "Custom models are not bundled in the container"
+    Unlike zoo models, a custom `.pkl` lives on the filesystem, must sit inside a bind-mounted path, and must be archived alongside your results — it is not reconstructible from the pipeline alone.
+
+> To build one for your own tissue, see [Training a custom CellTypist model](celltypist_custom_model.md), which follows the upstream [CellTypist supplemental guidance](https://github.com/Teichlab/celltypist#supplemental-guidance-generate-a-custom-model).
+
 ---
 
 ## scATAnno reference atlases

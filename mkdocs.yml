@@ -78,6 +78,7 @@ nav:
       - Containers: setup/containers.md
       - Reference files: setup/references.md
       - Building mm39 cisTarget DBs: setup/cistarget_mm39_liftover.md
+      - Custom CellTypist models: setup/celltypist_custom_model.md
       - Adapting to your cluster: setup/cluster.md
   - Guides:
       - RNA arm: guides/rna.md
