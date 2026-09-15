@@ -1,14 +1,14 @@
 # Tutorial — run FORGE end to end in about three hours
 
-This is the fastest honest way to see FORGE actually work. You run the real
-pipeline with its' real containers which put real tools to work. You'll generate real outputs from a deliberately small slice of the same public 10x PBMC multiome dataset used in the manuscript validation.
+This is the fastest way to see how FORGE actually works. You run the
+pipeline with its' containers which executes real analysis with real tools. You'll generate outputs from a downsampled slice of the same public 10x PBMC multiome dataset used in the manuscript validation.
 
 ---
 
 ## Goals and intentions
 
 **It is** a wiring-and-plumbing demo. It demonstrates the pipeline is correctly
-connected end to end. You'll inspect input formats, observe processes as they run, verify that containers resolve on your local hardware, and will get an idea for what kind of real files will come out the other side.
+connected end to end. You'll inspect input formats, observe processes as they run, verify that containers resolve on your local hardware, and will get an idea for what kind of files comprise outputs.
 
 **It is not** intended to generate a meaningful biological result. The ATAC
 side is restricted to **chr21 + chr22 — about 2.6% of hg38** — and the RNA side
@@ -16,11 +16,10 @@ is subsampled to ~1,000 cells.
 
 - **QC distributions will not look like a real run.** (TSS enrichment, fragments
   per cell, fragment-size distribution, etc) Note this is also why the tutorial config sets ATAC QC thresholds explicitly rather than relying on the defaults. 
-- **Cell-type labels are over-fit.** CellTypist `Immune_All_Low.pkl` assigns
+- **Cell-type labels are not credible.** CellTypist `Immune_All_Low.pkl` assigns
   **45** distinct labels to ~1,000 cells, including classes that cannot exist in
   peripheral blood — `Double-negative_thymocytes`, `ELP`, `CD8a_a`,
-  `Age-associated_B_cells`. That is expected at this scale. Judge the pipeline by
-  whether the stages run and join, not by the labels.
+  `Age-associated_B_cells`. 
 
 If you want biology, run one of the four published datasets in
 `configs/datasets/` — see [Verifying FORGE works](verification.md) for the full
@@ -40,7 +39,7 @@ three-tier picture.
 | GPU | **Not required.** The tutorial is CPU-only. |
 | Network | Required — one 2.8 MB CellTypist model is fetched at runtime. |
 
-### About the wall-clock figure
+### Regarding cores, parallelization, and wall-times
 
 The intention here is to give you an idea of gained efficiency from increases in compute resources:
 
@@ -148,7 +147,7 @@ Put it somewhere else with `--tutorial_data /your/path`.
 
 ## 2. Validate before you run
 
-Fifteen seconds here beats a long failure. This builds the full DAG and runs the
+This builds the full DAG and runs the
 pre-flight checklist without executing anything:
 
 ```bash
@@ -160,8 +159,8 @@ nextflow run main.nf -preview \
 You should see `PRE-FLIGHT CHECKLIST PASSED (7 checks)` and `No warnings.`
 If not, stop and fix it — see [Troubleshooting](troubleshooting.md).
 
-The process list `-preview` prints is the workflow graph. To inspect it properly,
-ask for the DAG — this still executes nothing:
+The process list `-preview` prints is the workflow graph. To inspect it,
+ask for the DAG:
 
 ```bash
 nextflow run main.nf -preview -profile tutorial,singularity \
@@ -299,7 +298,7 @@ your containers.
 The pipeline contains numerically sensitive stages. These
 quantities shift by small amounts between machines with different configurations such as core counts.
 The known shifts are tiny and they do not
-change any structural count above. However, they do propagate into derived values.
+change any structural count above.
 
 | Stage | Quantity | Reference run |
 |---|---|---|
@@ -311,8 +310,7 @@ change any structural count above. However, they do propagate into derived value
 | Concordance | cells scored | 766 |
 | Total | tasks succeeded | 94 |
 
-Read these and sanity check that they are the same order of magnitude. Small differences here are expected on different hardware configurations. `params.random_seed = 42`
-controls every stage that exposes a seed; these stages do not expose one. Moving forward, if we are able to stabalize these into deterministic values, we will shift them to the values in the table above.
+Read these and sanity check that they are the same order of magnitude. Small differences here have been observed on different hardware configurations. 
 
 !!! warning "`atac/final/atac_pipeline_summary.json` thresholds do not reflect biology"
     That file reports `min_counts: 5000, min_tsse: 6` — the Python script's
