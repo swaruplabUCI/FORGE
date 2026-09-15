@@ -3,38 +3,32 @@
 This page is one linear path from an empty directory to a running pipeline **on
 your own data**. Work through it top to bottom.
 
-!!! tip "Want to watch FORGE run before committing your own data?"
+!!! tip "Want to try FORGE on a toy dataset before committing your own?"
     Do the [Tutorial](tutorial.md) instead. It runs the complete pipeline
-    end-to-end on a 79 MB public PBMC dataset in about two hours on 8 CPUs, with
-    **no GPU and no external reference downloads** — everything it needs ships
-    with the dataset. Steps 1-3 below are still worth doing first; they install
+    end-to-end on a 79 MB public PBMC dataset in about two hours on 8 CPUs.
+    **No GPU required and no external reference downloads.** Steps 1-3 below are still worth doing first; they install
     Nextflow and prove the pipeline graph is sound. After that, the Tutorial is
-    the faster way to see real output, and you can return here when you are
-    ready to point FORGE at your own samples.
+    the fastest way to see real output.
 
-The early steps need almost nothing — you can validate a complete FORGE
+Validate a complete FORGE
 configuration with only Nextflow installed, before committing to container builds
-or reference downloads. Do those steps first.
+or reference downloads.
 
 ---
 
 ## Step 1 — Install Nextflow
 
 FORGE is developed and tested against **Nextflow 25.10.0**. Pin it. The supported
-window is `>= 25.04.0, < 26.0.0`. Setting `NXF_VER` below is the only thing that
-actually protects you: an out-of-window Nextflow aborts while parsing the config,
-before the pipeline's own version check can produce a friendlier message.
+window is `>= 25.04.0, < 26.0.0`. 
 
 No `sudo` and no system-wide install is needed. Install into a directory you own:
 
 ```bash
 # NOTE ON `~`: throughout this page, `~` means the root of the directory you
-# intend to house FORGE in -- not necessarily your literal home directory.
-# On most HPC systems $HOME is a small, quota-limited volume, and a full run
-# will not fit there. Pick a workspace with room (scratch, a lab share, a
+# intend to house FORGE in. Not your literal home directory.
+# Pick a workspace with room (scratch, a lab share, a
 # project volume) and treat that as `~` for every step below, e.g.:
 #     cd /path/to/your/workspace
-# If your home directory really is where you want FORGE, `~` works literally.
 
 export NXF_VER=25.10.0                      # set BEFORE the install; add to ~/.bashrc too
 mkdir -p ~/bin
@@ -44,20 +38,13 @@ export PATH="$HOME/bin:$PATH"               # add to ~/.bashrc to persist
 nextflow -version                           # should report 25.10.0
 ```
 
-`NXF_VER` matters, and it is set *before* the install on purpose. The
-`get.nextflow.io` launcher always fetches the *newest* release, which is outside
+`NXF_VER` matters, and it is set *before* the install. The
+`get.nextflow.io` launcher fetches the *newest* release, which is outside
 the supported window; exporting `NXF_VER` first makes it download the pinned
-version directly. Set it afterwards instead and the installer still works, but it
-downloads a 26.x release you never use and prints that version at you. If you skip
-it entirely, Step 3 fails with `Config parsing failed`.
+version directly. If you skip pinning, Step 3 fails with `Config parsing failed`.
 
-Nextflow needs Java 17 (`java -version` to check). Most HPC systems provide it by
-default; if not, `module load java/17`.
-
-> **HPC note:** many clusters have no `nextflow` module — UC Irvine's HPC3, for
-> example, provides `singularity` and `java` but not `nextflow`. Check with
-> `module avail nextflow`, and if there is no hit, use the user-directory install
-> above. It needs no administrator involvement.
+Nextflow needs Java 17 (`java -version` to check). Many HPC systems provide it by
+default or as a loadable module, `module load java/17`.
 
 ## Step 2 — Clone FORGE
 
@@ -73,14 +60,14 @@ cd FORGE
 ## Step 3 — Confirm the pipeline works, before installing anything
 
 FORGE ships a self-contained fixture, so you can verify the whole pipeline
-graph right now — no containers, no reference downloads, no GPU, no cluster:
+graph right now with no containers, reference downloads, GPU, or cluster:
 
 ```bash
 nextflow run main.nf -profile test -preview \
     -c configs/datasets/test_preview.config
 ```
 
-In about fifteen seconds you should see:
+In seconds you should see:
 
 ```text
 PRE-FLIGHT CHECKLIST PASSED (8 checks):
@@ -91,10 +78,10 @@ PRE-FLIGHT CHECKLIST PASSED (8 checks):
 ```
 
 The one warning says the container images are missing. On a fresh clone that is
-expected — a preview launches no task, so nothing is ever run inside an image.
+expected. A preview launches no task, so nothing is ever run inside an image.
 
 That confirms your Nextflow install, the repository, and the full process graph
-are all sound. If you only do one thing from this page, do this.
+are all sound. 
 
 You can also print the fully merged configuration at any point:
 
@@ -108,8 +95,7 @@ nextflow config -profile cluster,singularity
 
 The next two boxes are **file contents, not commands.** Create each file with a
 text editor (`nano my_manifest.csv`, `vim my_manifest.csv`, or whatever you use)
-and paste the box into it. Do not paste them straight into the shell — the line
-wrapping in a browser will corrupt them.
+and paste the box into it. 
 
 Work from wherever you want this study to live; the commands below assume you
 are inside the cloned `FORGE` directory (`cd ~/FORGE`), but any directory works
@@ -123,12 +109,12 @@ sample_id,batch,sample_type,original_lane_id,rna_file,fragment_file,condition_gr
 my_sample,batch1,lane,L1,my_sample_raw_feature_bc_matrix.h5,my_sample_atac_fragments.tsv.gz,ConditionA,/data/my_study
 ```
 
-Even a single-condition dataset needs a `condition_group` value — use one label
+Even a single-condition dataset needs a `condition_group` value. Use one label
 for every row. Full column semantics: [The manifest CSV](core/manifest.md).
 
 ## Step 5 — Write a dataset config
 
-Create `my_study.config`. Start deliberately small, with the expensive stages
+Create `my_study.config`. Start small with the expensive compute stages
 off:
 
 ```groovy
@@ -170,15 +156,14 @@ params {
 
 ## Step 6 — Validate before you run
 
-This is the highest-value step on the page. It needs **no containers, no
-references, and no GPU**:
+**Highly recommended**:
 
 ```bash
 nextflow run main.nf -preview -c my_study.config
 ```
 
 FORGE builds the whole workflow graph and runs its pre-flight checklist without
-submitting any work. Either you get a clean graph, or you get every problem at
+submitting any work. Either you get a clean graph, or every problem listed at
 once:
 
 ```text
@@ -199,12 +184,11 @@ PRE-FLIGHT CHECKLIST FAILED (5 error(s)):
 ================================================================================
 ```
 
-That is the real output of the Step 5 config, copied verbatim — five errors, not
-a trimmed illustration. They are all the placeholder paths, working as intended:
-every path is checked for *existence*, not merely for being set. Point them at
-your real files and the list empties out.
+That is the real output of the Step 5 config. They are all the placeholder paths, working as intended:
+every path is checked for *existence*. Point them at
+your real files.
 
-Fix, re-run, repeat. Each cycle is seconds. Do not proceed until this is clean.
+Fix and rerun each pre-flight cycle in seconds. Do not proceed until this is clean.
 
 ---
 
@@ -242,7 +226,7 @@ mkdir -p singularity_cache
 ## Step 8 — Download references
 
 FORGE needs external GTFs, blacklists, motif databases, and (for annotation and
-GRN inference) reference atlases — roughly 600 GB for the complete set, though a
+GRN inference) reference atlases — roughly 600 GB for the complete set used in the manuscript, though a
 minimal RNA + ATAC run needs far less. The manifest of files, sizes, and sources
 is in [Reference files](setup/references.md).
 
@@ -291,9 +275,7 @@ coherent, then run. Reasonable order:
 
 1. `pycistopic.run` + `scenicplus.run` — GRN inference (needs cisTarget references)
 2. `differential.run` / `differential_rna.run` — needs ≥ 2 `condition_group` values
-3. `enhancer_footprinting.msfp_enabled` — **the expensive one.** This single stage
-   was 54% of all compute across the four published datasets. Enable it knowingly,
-   and read [the cost breakdown](verification.md#tier-3-the-published-datasets) first.
+3. `enhancer_footprinting.msfp_enabled` — **the expensive one.** Enable it when ready after reading [the cost breakdown](verification.md#tier-3-the-published-datasets) first.
 
 ---
 
