@@ -77,8 +77,7 @@ motif enrichment uses [CIS-BP](https://cisbp.ccbr.utoronto.ca/)
 
 ## Validated genomes
 
-These are the assemblies FORGE has been run and validated against. They are not
-a whitelist — the pipeline takes genome, annotation, and motif resources as
+These are the assemblies FORGE has been run and validated against. The pipeline takes genome, annotation, and motif resources as
 configurable paths, so other assemblies work once you supply the matching
 reference set. See [docs/setup/references.md](docs/setup/references.md) for what a new
 assembly needs.
