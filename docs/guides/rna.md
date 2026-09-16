@@ -31,7 +31,7 @@ cellbender {
 }
 ```
 
-`expected_cells` is the parameter to revisit per experiment — set it near your
+`expected_cells` is the parameter to tune per experiment. Set it near your
 expected recovery. `total_droplets` should comfortably exceed it. CellBender uses
 a GPU.
 
@@ -43,8 +43,8 @@ min_cells    = 3     // minimum cells per gene
 mt_threshold = 20    // max % mitochondrial reads
 ```
 
-These are deliberately permissive. Tighten them after inspecting the QC plots
-under `results/rna_qc/` rather than before.
+These are deliberately permissive. Consider tightening them after inspecting the QC plots
+under `results/rna_qc/`.
 
 ## Integration
 
@@ -55,9 +55,7 @@ n_top_genes   = 4000
 ```
 
 scVI corrects batch effects across samples; the batch axis comes from the
-manifest's `batch` column. For a single-sample dataset this is effectively a
-denoising step.
-
+manifest's `batch` column. 
 ---
 
 ## Annotation
@@ -76,7 +74,7 @@ Three strategies, selected with `rna.annotation_method`:
     !!! warning "Change the model for non-immune tissue"
         `Immune_All_Low.pkl` is the default and is wrong for most tissues. For
         adult mouse brain, for example, use `Mouse_Whole_Brain.pkl`. A mismatched
-        model produces confident, plausible, incorrect labels.
+        model produces confidently incorrect labels.
 
 === "scANVI (recommended)"
 
@@ -89,8 +87,8 @@ Three strategies, selected with `rna.annotation_method`:
 
 === "Marker genes"
 
-    Score-based annotation from your own marker sets — full control, useful when
-    you prefer explicit user-definitions of expression profiles.
+    Score-based annotation from your own marker sets. Useful when
+    you prefer explicit user-definitions of expression profiles with full control.
 
     ```groovy
     rna {
@@ -107,8 +105,8 @@ Three strategies, selected with `rna.annotation_method`:
 
 With no atlas it takes the CellTypist-only path. We anectdotally note the best performance with scANVI and thus we recommend it over CellTypist for annotation trustworthiness. However, we provide the more accessible CellTypist as the default since it does not require a GPU, has a lower compute burden, and pre-loads various models immediately ready for use.
 
-Annotation labels land in the `obs` column that `main.nf` resolves centrally —
-`cell_type` normally, `cell_type_marker` in marker mode. See
+Annotation labels land in the `obs` column that `main.nf` resolves centrally.
+Normally `cell_type` or `cell_type_marker` in marker mode. See
 [main.nf architecture](../core/architecture.md#cell-type-keys-are-resolved-once-centrally).
 
 ---
