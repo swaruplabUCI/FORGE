@@ -5,60 +5,59 @@ FORGE single-cell multiomics pipeline (Swarup Lab, UCI). It is intended for
 power users on HPC clusters who want to extend or rebuild the containers from
 scratch.
 
-> **Canonical build recipes** live in [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs) — five Singularity
+> **Canonical build recipes** live in [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs)
+> comprised of five Singularity
 > definition files, one per container. Build with `singularity build --fakeroot
 > <name>.sif docs/defs/<name>.def`, or use the `hpc_defs/BUILD_ON_HPC.sh` wrapper
 > to build them all with logging and a SHA256 manifest.
 >
-> Every version pin, GitHub commit, and pitfall in this doc is reproduced from
+> Everything in this doc is reproduced from
 > those `.def` files and the v3.4 build logs (`scgpu_build.log`,
-> `seurat_build.log`, `next_build.log`) — the `.def` files remain the
-> authoritative recipes. `mac_build_containers.sh` runs those same builds inside
-> a Lima VM, which is how you build on a laptop when your cluster forbids it, and
-> how you build **your own custom containers to extend FORGE**.
+> `seurat_build.log`, `next_build.log`). The `.def` files remain the
+> authoritative recipes. For users unable to build on a cluster due to security concerns, `mac_build_containers.sh`
+> runs those same builds inside a Lima VM. Launch from a personal computer with admin rights and the "image" outputs can then
+> be safely transferred securely via scp, rsync, etc. Use this same template to build **your own custom containers to extend FORGE**.
 
-## Three artifacts, three very different sizes
+## Three artifacts, three different sizes
 
-It helps to be precise about what "container" refers to, because only one of
-these three things is large enough to be a distribution problem:
+A few definitions for clarity:
 
 | Artifact | What it is | Size | Distribution |
 |---|---|---|---|
 | **Recipe** (`.def`) | A Singularity definition file — plain text listing the base image, packages, and version pins. The authoritative source. | **4–17 KB** | **Ships in this repository**, under [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs) |
-| **Image** (`.sif`) | The built, immutable single-file image that Singularity executes. Produced from the recipe. | **1.8–4.7 GB each, ~14 GB total** | Too large for git; distributed as a download or built by you |
-| **Container** | The running instance Singularity creates from the image at exec time. | n/a | Not an artifact — created and discarded per task |
+| **Image** (`.sif`) | The built, immutable single-file image that Singularity executes. Produced from the recipe. | **1.8–4.7 GB each, ~14 GB total** | Too large for git; built by you |
+| **Container** | The running instance Singularity creates from the image at exec time. | n/a | Automatically created and discarded per task |
 
-The practical consequence is good news: **FORGE's containers are fully
-reproducible from ~40 KB of text in this repository.** You never need to obtain a
-prebuilt image if you can build one yourself.
+The take-home point: **FORGE's containers are fully
+reproducible from the <50 KB of text in this repository.** No need to obtain a
+prebuilt image you can build yourself.
 
 ### If you lack root or `--fakeroot`
 
 Building a `.sif` requires root or `--fakeroot`, and many HPC sites restrict
-both. You have two good options:
+both. You have two options:
 
 1. **Ask your HPC administrators to run the build.** The recipes are small,
-   self-contained, and auditable, which is usually all an admin needs to approve
-   and run `singularity build` on your behalf. Point them at
+   self-contained, and auditable. Point them at
    [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs) and [`hpc_defs/BUILD_ON_HPC.sh`](#build-commands).
 2. **Build somewhere you do have privileges, then copy the image over.** A `.sif`
    is a self-contained file, and *running* one needs no elevated privileges:
 
 ```mermaid
 flowchart LR
-    D["docs/defs/*.def<br/><i>~40 KB, in repo</i>"] --> B["build where you<br/>have privileges<br/><i>laptop / workstation</i>"]
-    B --> S["*.sif<br/><i>~14 GB</i>"]
+    D["Recipe<br/>docs/defs/*.def<br/><i>~40 KB, in repo</i>"] --> B["build where you<br/>have privileges<br/><i>laptop / workstation</i>"]
+    B --> S["Image<br/>*.sif<br/><i>~14 GB</i>"]
     S --> T["scp / rsync<br/>to the cluster"]
-    T --> R["singularity exec<br/><i>no privileges needed</i>"]
+    T --> R["Container<br/>singularity exec<br/><i>no privileges needed</i>"]
 ```
 
 !!! warning "Your build environment must mimic your cluster's Linux environment"
     A `.sif` is portable across Linux hosts of the **same CPU architecture**, so
-    a local build has to target what your HPC actually runs — in practice
+    a local build has to target what your HPC actually runs. In practice
     `x86-64` Linux. Check with `uname -m` on a cluster node before you start.
     On Linux with `--fakeroot`, this is automatic. On macOS you build inside a
-    Linux VM, and on Apple Silicon that VM must run x86-64 under emulation —
-    which is precisely what `mac_build_containers.sh` sets up (Lima + Apptainer,
+    Linux VM, and on Apple Silicon that VM must run x86-64 under emulation. This
+    is precisely what `mac_build_containers.sh` sets up (Lima + Apptainer,
     with Rosetta on Apple Silicon). A natively-built `arm64` image will not run
     on an `x86-64` cluster.
 
@@ -75,17 +74,14 @@ flowchart LR
 Sizes above are the actual `.sif` sizes of the canonical set: cicero,
 scgpu, snapatac, scenicplus from `sif_output/` (v3.4), and seurat from the
 v3.6 clean rebuild (basilisk env baked via `BASILISK_USE_SYSTEM_DIR=1`,
-plus edgeR, ggforestplot, and the Deriv 4.1.6 pin). Build dates: cicero
-2026-03-12, seurat 2026-09-03 (v3.6), scgpu 2026-03-17 (CellBender fix),
-scenicplus 2026-03-30, snapatac 2026-04-08 (scATAnno).
-
+plus edgeR, ggforestplot, and the Deriv 4.1.6 pin). 
 ## Build system
 
 Each container has a standalone Singularity definition file under
 [`docs/defs/`](https://github.com/swaruplabUCI/FORGE/tree/main/docs/defs). The recommended path is:
 
 ```bash
-# On an HPC compute node (NOT a login node)
+# Request a compute node 
 srun --partition=free --time=04:00:00 --mem=24G --cpus-per-task=8 --pty bash
 module load singularity     # or: module load apptainer
 cd /path/to/forge
@@ -112,14 +108,13 @@ identical; only the host orchestration differs.
 ### Build order
 
 Cicero is built first in the `all` target because its mamba solve is the
-longest single step (and is most likely to expose disk-space or networking
-issues early):
+longest single step:
 
 ```
 cicero → scgpu_extended → snapatac_extended → seurat_extended → scenicplus
 ```
 
-There are no inter-container dependencies — any one container can be rebuilt
+There are no inter-container dependencies. Any one container can be rebuilt
 in isolation. The order is purely a matter of failing-fast on the slowest
 solve.
 
@@ -147,9 +142,6 @@ RAM, Rosetta x86_64 emulation):
 | `snapatac_extended.sif`  | ~25–35 min  | ~20 min               |
 | `seurat_extended.sif`    | ~50–70 min  | ~45 min               |
 | `scenicplus.sif`         | ~20–30 min  | ~15 min               |
-
-Native x86_64 Linux builds are ~2–3× faster than Apple Silicon under
-Rosetta.
 
 ---
 
@@ -186,12 +178,10 @@ singularity build --fakeroot scgpu_extended.sif docs/defs/scgpu_extended.def
 ### Pitfalls
 
 - **CellBender 0.3.2 from PyPI is broken on PyTorch 2.x.** Pinning to
-  GitHub commit `4334e89` is mandatory. Do not relax this to "latest" — the
-  upstream PyPI release has not been re-rolled.
+  GitHub commit `4334e89` is mandatory.
 - **The base image already ships PyTorch 2.4.0+cu121 and numpy 2.1.0.** Do
-  not downgrade either; scvi-tools 1.4 and the rest of the stack work with
-  numpy 2.x in this container. (This is the opposite of `snapatac_extended`,
-  where numpy must be held at < 2.0.)
+  not downgrade; scvi-tools 1.4 and the rest of the stack work with
+  numpy 2.x in this container. 
 - **CellTypist models are baked in at build time** so the container works
   offline on compute nodes with no outbound network. They live at
   `~/.celltypist/data/models` inside the container; the pipeline sets
@@ -249,11 +239,9 @@ singularity build --fakeroot snapatac_extended.sif docs/defs/snapatac_extended.d
   patch (`container_rebuild_fix.patch`) was added because kaleido failed
   silently in earlier builds; the `%test` block now exports a PNG to
   confirm it actually works end-to-end.
-- **scPrinter is installed with `--no-deps`** because its `setup.py`
-  over-specifies versions that conflict with the chosen torch / numpy
-  pins. All scPrinter runtime deps are installed manually in the
+- **scPrinter is installed with `--no-deps`** All scPrinter runtime deps are installed manually in the
   preceding step.
-- **MACS3 has no pip wheels — it compiles from source.** Hence the
+- **MACS3 compiles from source.** Hence the
   `gcc/g++/make` system deps. This is fine on x86_64 Debian but is the
   reason the build cannot run on a base image without compilers.
 
@@ -286,14 +274,6 @@ The full recipe is in [`docs/defs/seurat_extended.def`](https://github.com/swaru
 ```bash
 singularity build --fakeroot seurat_extended.sif docs/defs/seurat_extended.def
 ```
-
-> **Note on the request.** The original task list mentioned `DESeq2` and
-> `clusterProfiler`. These are **not** installed in the canonical
-> `seurat_extended.sif`. Instead the container ships `MAST` for
-> single-cell DE, `edgeR` for pseudobulk DE, and `enrichR` + `GSVA` +
-> `UCell` + `GeneOverlap` for pathway / signature analysis. If you need
-> DESeq2 + clusterProfiler, add them to the Bioconductor block above;
-> they have no special build requirements beyond what is already installed.
 
 ### Pitfalls
 
@@ -338,9 +318,7 @@ singularity build --fakeroot seurat_extended.sif docs/defs/seurat_extended.def
   source after creating a `Magick++.pc → Magick++-6.Q16HDRI.pc` symlink so
   pkg-config can find it.
 
-- **hdWGCNA via `install_local` silently fails.** Use `install_github`. The
-  earlier `hpc_defs/seurat_extended.def` used `install_local` with a
-  pre-downloaded tarball — that path is buggy and was abandoned in v3.1.
+- **Prefer `install_github` for hdWGCNA installs** . 
 
 - **`R_LIBS_USER=/dev/null` at runtime.** When the pipeline mounts the user's
   HPC home directory, R picks up a personal library that often contains
@@ -366,8 +344,8 @@ singularity build --fakeroot seurat_extended.sif docs/defs/seurat_extended.def
   `%environment` block re-exports the var for runtime so any code path that
   calls basilisk also uses system-dir resolution.
 
-  No `nextflow.config` change is strictly required — the container's
-  `%environment` already sets the var. Belt-and-suspenders override:
+  No `nextflow.config` change is strictly required. The container's
+  `%environment` sets the var:
 
   ```groovy
   containerOptions = '--env R_LIBS_USER=/dev/null --env BASILISK_USE_SYSTEM_DIR=1'
@@ -403,10 +381,8 @@ Bioconductor genomic-range utilities.
 
 ### Definition file
 
-The cicero build is the most fragile of the five because mamba's solver
-crashes mid-run on a libxml2 self-upgrade. The crash is *expected* and the
-R install is fine afterwards. Translating the build to a clean `.def` is
-possible but the imperative form below is what we actually ship:
+The cicero build experiences some fragility due to mamba's solver
+crashing mid-run on a libxml2 self-upgrade. While it's possible to fix post-crash, the form below is what we actually ship:
 
 The full recipe is in [`docs/defs/cicero.def`](https://github.com/swaruplabUCI/FORGE/blob/main/docs/defs/cicero.def). Build with:
 
@@ -597,8 +573,8 @@ apptainer build sif_output/<name>.sif /tmp/container_builds/<name>_sandbox
 | `cicero.sif`          | None                                                | None                                                     |
 | `scenicplus.sif`      | Mallet 202108 at `/opt/Mallet-202108`                | cistarget databases (NOT baked — user supplies)          |
 
-**scPrinter dispersion models** are not baked into `snapatac_extended.sif` —
-they are downloaded on first use into `$XDG_CACHE_HOME` (which the pipeline
+**scPrinter dispersion models** are not baked into `snapatac_extended.sif`. 
+They are downloaded on first use into `$XDG_CACHE_HOME` (which the pipeline
 points at `/tmp/cache`). On a network-isolated compute node you must
 pre-populate this cache by running scPrinter once on a node with outbound
 network, then copying the cache to a shared path bound into `/tmp/cache`
@@ -627,7 +603,7 @@ The pipeline (`nextflow.config`) uses these `singularity.runOptions`:
 `bind path` directives from `/etc/singularity/singularity.conf`. Everything
 the pipeline needs is then explicitly re-added. Critically:
 
-- **`/dfs7`** — the lab's Swarup Lab share on UCI HPC3. Replace with
+- **`/dfs7`** — the Swarup Lab's share dir on UCI HPC3. Replace with
   your cluster's data path. **You must add it** or the pipeline cannot
   see input or write output.
 - **`/tmp`** — required so the cache env vars above resolve to writable
