@@ -199,13 +199,16 @@ scenicplus {
 }
 ```
 
-pycisTopic runs in three phases — per-group object construction, a parallel LDA
-sweep, then model selection and binarization. Leaving `selected_topics = null`
+pycisTopic runs in three phases.
+— per-group object construction
+- a parallel LDA sweep
+- model selection and binarization.
+Leaving `selected_topics = null`
 lets `evaluate_models()` choose from the sweep, which is what you want unless you
 are reproducing a specific prior result.
 
-SCENIC+ requires all three cisTarget references and is the most memory-hungry
-stage in the pipeline (≥ 256 GB). It also requires `pycistopic.run = true`.
+SCENIC+ requires all three cisTarget references and is among the most memory-hungry
+stages in the pipeline (≥ 256 GB). It also requires `pycistopic.run = true`.
 
 ---
 
