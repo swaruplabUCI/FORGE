@@ -239,9 +239,9 @@ params {
 
 If you use FORGE in your research, please cite:
 
-> Solano LE, Swarup V, et al. Flow Orchestrated Regulatory Genomics Engine
-> (FORGE): A Configurable Nextflow Pipeline for End-to-End snMultiome
-> Analysis. *[manuscript in review]*, 2026. https://doi.org/10.64898/2026.09.10.750690
+> Solano LE, et al. Flow Orchestrated Regulatory Genomics Engine (FORGE):
+> A Configurable Nextflow Pipeline for End-to-End snMultiome Analysis.
+> *[manuscript in review]*, 2026. https://doi.org/10.64898/2026.09.10.750690
 
 ---
 
