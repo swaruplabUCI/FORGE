@@ -49,7 +49,7 @@ And this is a 4 sample, two-condition mouse experiment. Note these columns for c
 | `rna_file` | for RNA runs | Filename (not a path) of the RNA count matrix, resolved relative to the row's data directory. 10x: `*_raw_feature_bc_matrix.h5`. BD Rhapsody: `*_RSEC_MolsPerCell_MEX.zip`. May also name a MEX **directory**. |
 | `fragment_file` | for ATAC runs | Filename of the ATAC fragments file. 10x: `*_atac_fragments.tsv.gz`. BD: `*_ATAC_Fragments.bed.gz`. If you give a value with no extension, FORGE appends `.bed.gz`. |
 | `condition_group` | for differential | Experimental group (e.g. `WT` / `TG`). This is the axis every differential comparison is built on. Single-condition datasets still need a value — use one label for all rows. Empty values warn and default to `Control`. |
-| `data_dir` | see below | Absolute directory holding this row's files. If present it wins outright; if absent, the directory is looked up from `params.batch_dirs[batch]`. |
+| `data_dir` | see below | Absolute directory holding this row's files. If present it wins outright, for **both** modalities. If absent, RNA falls back to `params.batch_dirs[batch]` and ATAC to `params.atac_batch_dirs[batch]` — two separate maps. See [below](#paths-data_dir-vs-the-batch_dirs-family). |
 | `original_lane_id` | optional | Sequencing lane (e.g. `L1`). Only consulted when the batch is listed in `params.batch_dirs_use_lane_subdir`, in which case it becomes a subdirectory under the batch directory. |
 | `coord_data_dir` | optional | Directory of coordinate-sorted ATAC fragments, when they live apart from the barcode-sorted ones. Falls back to `params.atac_coord_batch_dirs[batch]`. |
 
@@ -65,31 +65,46 @@ case-sensitively, so capitalized variants fail the pre-flight check.
     **Write `lane` today.** It is the only value the pre-flight check accepts, and
     a manifest using anything else will be rejected before any work starts.
 
-### Paths: `data_dir` vs `batch_dirs`
+### Paths: `data_dir` vs the `batch_dirs` family
 
-FORGE gives you two ways to say where files live:
+FORGE gives you two ways to say where files live. **Prefer the per-row column
+unless you have many samples across few directories** — it is one value per row
+and it covers both modalities at once.
 
-=== "Per-row (simple)"
+=== "Per-row (simple, recommended)"
 
-    Put an absolute full file path `data_dir` on every row. Best for one or two directories.
+    Put an absolute directory in `data_dir` on every row. It serves RNA and ATAC
+    together, so there is nothing else to configure.
 
     ```csv
-    sample_id,batch,sample_type,rna_file,data_dir
-    S1,b1,lane,S1_raw_feature_bc_matrix.h5,/data/run1
-    S2,b1,lane,S2_raw_feature_bc_matrix.h5,/data/run1
+    sample_id,batch,sample_type,rna_file,fragment_file,data_dir
+    S1,b1,lane,S1_raw_feature_bc_matrix.h5,S1_atac_fragments.tsv.gz,/data/run1
+    S2,b1,lane,S2_raw_feature_bc_matrix.h5,S2_atac_fragments.tsv.gz,/data/run1
     ```
 
-=== "Per-batch (scales better)"
+=== "Per-batch (scales better, needs three maps)"
 
-    Omit `data_dir` and map batches to directories in your config. Best when
-    many samples share a few locations.
+    Omit `data_dir` and map batches to directories in your config. Best when many
+    samples share a few locations — but note that **RNA and ATAC resolve through
+    separate maps**, so a multiome run needs all three:
 
     ```groovy
-    params.batch_dirs = [
+    params.batch_dirs = [                  // RNA
+        june: '/data/june_run',
+        july: '/data/july_run',
+    ]
+    params.atac_batch_dirs = [             // ATAC fragments (barcode-sorted)
+        june: '/data/june_run',
+        july: '/data/july_run',
+    ]
+    params.atac_coord_batch_dirs = [       // ATAC fragments (coordinate-sorted)
         june: '/data/june_run',
         july: '/data/july_run',
     ]
     ```
+
+    They are usually the same three values, as above. They differ only when the
+    coordinate-sorted fragments live apart from the barcode-sorted ones.
 
     ```groovy
     // Optional: append original_lane_id as a subdirectory for these batches
@@ -97,8 +112,25 @@ FORGE gives you two ways to say where files live:
     // → /data/july_run/L1/<rna_file>
     ```
 
-If a row has neither `data_dir` nor a matching `batch_dirs` entry, the run stops
-with `No directory configured for batch '<batch>'`.
+    `configs/datasets/tutorial_pbmc.config` is the shipped example of this
+    pattern — it sets all three so the tutorial dataset can be extracted anywhere.
+
+!!! warning "`atac_batch_dirs` and `atac_coord_batch_dirs` are not declared in `nextflow.config`"
+    Unlike `batch_dirs`, these two have no default entry in the base config —
+    they exist only in dataset configs. Nothing warns you if you leave them out.
+    Setting only `batch_dirs` produces a run where **RNA resolves fine and ATAC
+    fails**, with an error naming a parameter you will not find by searching
+    `nextflow.config`:
+
+    ```text
+    No ATAC directory configured for batch 'june'. Set atac_batch_dirs.june in config.
+    ```
+
+    If you would rather not think about it, use a per-row `data_dir`.
+
+If a row has neither `data_dir` nor a matching entry in the relevant map, the run
+stops with `No directory configured for batch '<batch>'` (RNA) or
+`No ATAC directory configured for batch '<batch>'` (ATAC).
 
 ---
 
