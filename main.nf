@@ -673,13 +673,16 @@ def validateStartupParams() {
     }
 
     // P0-9 (B4): SCENIC+ cisTarget species check
-    if (params.scenicplus?.cistarget_rankings) {
-        def ctStr = params.scenicplus.cistarget_rankings.toString().toLowerCase()
+    // 2026-09-24: this block guarded on params.scenicplus.cistarget_rankings,
+    // a key declared nowhere in nextflow.config, so it was unreachable and the
+    // check never ran. The declared key is scenicplus.ctx_rankings.
+    if (params.scenicplus?.ctx_rankings) {
+        def ctStr = params.scenicplus.ctx_rankings.toString().toLowerCase()
         if (params.species == 'human' && (ctStr.contains('mm10') || ctStr.contains('mm9'))) {
-            errors << "SCENIC+ cisTarget rankings appear to be for mouse but params.species='human': ${params.scenicplus.cistarget_rankings}"
+            errors << "SCENIC+ cisTarget rankings appear to be for mouse but params.species='human': ${params.scenicplus.ctx_rankings}"
         }
         if (params.species == 'mouse' && (ctStr.contains('hg38') || ctStr.contains('hg19'))) {
-            errors << "SCENIC+ cisTarget rankings appear to be for human but params.species='mouse': ${params.scenicplus.cistarget_rankings}"
+            errors << "SCENIC+ cisTarget rankings appear to be for human but params.species='mouse': ${params.scenicplus.ctx_rankings}"
         }
     }
 
