@@ -1,40 +1,30 @@
 # Wiring FORGE with an LLM
 
 FORGE asks you to write two files: a [manifest CSV](core/manifest.md) and a
-[dataset config](core/config.md). Neither is hard, but both reward knowing things
-about this repository that are not obvious from reading it — which defaults are
-expensive, which parameters are frozen before your config is even merged, which
-gate silently does nothing on its own.
+[dataset config](core/config.md). This can be tedious and has a steep learning curve if you are unfamiliar with Nextflow. 
 
-That turns out to be work a coding assistant does well, provided you tell it the
-handful of things it cannot infer. This page gives you that prompt, and a worked
-example of what came back.
+Turns out AI coding assistants do this quite well, provided proper context. This page gives you that prompt, and demonstrates a worked
+example.
 
-!!! info "What this page is, and is not"
-    This is a **setup aid**, not an autopilot. The prompt produces a manifest and
+!!! info "This is a **setup aid**, not an autopilot."
+     The prompt produces a manifest and
     a config, proves they pass FORGE's pre-flight checklist, and reports what it
     assumed. You still read the result before you launch. The
-    [review checklist](#before-you-launch) at the bottom is the part you do.
+    [review checklist](#before-you-launch) at the bottom is the part a human should do.
 
 ---
 
-## What your assistant needs
+## What your AI/LLM/agentic coding assistant needs
 
 !!! tip "Which model"
-    We tested this prompt on two tiers of model against the same PBMC setup
+    We tested this prompt on two tiers of model (Opus vs Haiku) against the same PBMC setup
     below. **Both produced a launchable config that passed pre-flight on the
     first try.** The smaller, faster model got every gate and every required
-    parameter right; where it fell short was the *forward-looking* work — it left
-    `scprinter.gtf_human` stranded at the literal string `'null'`, which is
-    harmless until the day you enable footprinting — and its summary of its own
-    work was less accurate than the file it wrote (it omitted two blocks from the
-    summary that it had correctly disabled).
+    parameter right; where it fell short was in the accuracy of its summary of its own
+    work. 
 
-    So: a fast model is enough to get a first run going. A stronger one is worth
-    it if you intend to enable more of the pipeline later, because it fixes the
-    latent problems now. **Either way, work the
-    [review checklist](#before-you-launch) yourself** — and trust the config file
-    and the pre-flight output over the assistant's description of them.
+    So: a lightweight model is enough to get a first run going. A stronger one might be worth it if you intend to build out and expand the pipeline later. **Either way, work the
+    [review checklist](#before-you-launch) yourself**. Trust the config file and the pre-flight output over the assistant's description of them.
 
 Give it a clone of the repository and the ability to run shell commands. The
 prompt tells it to read `docs/core/`, `nextflow.config`, and
@@ -372,8 +362,7 @@ stage is a single task at one sample.
 
 Four sub-workflows materialize: `RNA` (Path B), `ATAC_INITIAL` → `ATAC_FINAL`
 (scATAnno branch), `REGULATORY_ANALYSIS` (Cicero leg only), and
-`MULTIOME_INTEGRATION`. `MULTIOME_GRN`, `ENHANCER_FOOTPRINTING_RECIPES`, both
-differential workflows and `SHI_FIGURES` never construct.
+`MULTIOME_INTEGRATION`. `MULTIOME_GRN`, `ENHANCER_FOOTPRINTING_RECIPES`.
 
 ---
 
@@ -384,26 +373,6 @@ sample with ATAC restricted to chr21 + chr22. It is the cheapest place to watch
 the reasoning play out, because you can run the result end to end on 8 CPUs with
 no GPU and no reference downloads.
 
-Wiring it exercises three rules the full-scale run never touches, and
-[`configs/datasets/tutorial_pbmc.config`](https://github.com/swaruplabUCI/FORGE/blob/main/configs/datasets/tutorial_pbmc.config)
-is the answer key:
-
-- **Rule 11 fires hard.** ATAC QC thresholds *must* be set explicitly. Leaving
-  `atac.min_counts` null lets the script's own 5000-fragment default through,
-  which retains 47 of 1,000 cells and collapses the ATAC arm. The shipped config
-  sets `min_counts = 500` and explains why in a twenty-line comment.
-- **Rule 10 stops being theoretical.** `cellbender.total_droplets` must drop to
-  15,000, because the subset has only 20,000 barcodes and equality is an
-  `IndexError`. At full scale there are 733,612 barcodes and the default is safe
-  by a factor of 37.
-- **Rule 4 is why the manifest's `data_dir` column is blank** — the dataset has
-  to be extractable anywhere, so it resolves through `batch_dirs`,
-  `atac_batch_dirs` *and* `atac_coord_batch_dirs`, all three.
-
-It is also the one place `atac.marker_file` is the right answer rather than a
-shortcut: the tutorial uses it specifically so readers never download the 2.76 GB
-scATAnno atlas. That is the exception rule 5 warns you not to generalize from.
-
 ---
 
 ## Before you launch
@@ -411,10 +380,9 @@ scATAnno atlas. That is the exception rule 5 warns you not to generalize from.
 The prompt makes the assistant prove the configuration parses. It cannot prove
 the configuration is what you *meant*. Read these yourself:
 
-- [ ] **The config file says what the assistant says it says.** Read the file,
+- [ ] **The config file is the ground truth.** Read the file,
       not the summary. In testing, a model's prose omitted two blocks it had in
-      fact disabled correctly — the error was in the description, not the work,
-      but you cannot tell which way round it went without looking.
+      fact disabled correctly.
 - [ ] **`sample_id` values are what you want to live with.** They prefix nearly
       every output and join RNA to ATAC. Renaming one later invalidates the cache.
 - [ ] **`condition_group` labels are real.** A single-condition study still needs
@@ -438,8 +406,7 @@ the configuration is what you *meant*. Read these yourself:
 
 Be realistic about the boundary:
 
-- **It cannot choose your biology.** Which atlas, which CellTypist model, which
-  QC thresholds suit your tissue — those are yours.
+- **It may not correctly select your biology.** Which atlas, which CellTypist model, which QC thresholds suit your tissue — AI suggestions here should be carefully evaluated.
 - **It cannot validate against data it has not seen.** Pre-flight checks that
   files exist and parameters cohere, not that your fragments are any good.
 - **Site adaptation is out of scope.** SLURM accounts, partitions and QOS are
@@ -448,7 +415,7 @@ Be realistic about the boundary:
   [Adapting to your cluster](setup/cluster.md) — and the prompt deliberately
   tells the assistant to stop and say so rather than improvise.
 - **Trust the pre-flight, not the prose.** If the assistant's explanation and the
-  checklist disagree, the checklist is right.
+  checklist disagree, manually read and understand the checklist.
 
 ---
 
