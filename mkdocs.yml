@@ -73,6 +73,7 @@ nav:
       - The manifest CSV: core/manifest.md
       - nextflow.config: core/config.md
       - main.nf architecture: core/architecture.md
+  - Wiring FORGE with an LLM: agentic.md
   - Setup:
       - Installation: setup/install.md
       - Containers: setup/containers.md
