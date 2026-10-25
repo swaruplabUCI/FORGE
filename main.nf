@@ -42,6 +42,7 @@ include { RUN_CELLCHAT } from './modules/cellchat/cellchat'
 include { CELLCHAT_PER_CONDITION } from './modules/cellchat/cellchat_compare'
 include { CELLCHAT_COMPARE } from './modules/cellchat/cellchat_compare'
 include { CONVERT_H5AD_TO_SEURAT } from './modules/conversion/h5ad_to_seurat'
+include { CONVERT_SEURAT_TO_H5AD } from './modules/conversion/seurat_to_h5ad'
 include { HDWGCNA_PER_CELLTYPE } from './modules/hdwgcna/hdwgcna.nf'
 include { HDWGCNA_DIFFERENTIAL } from './modules/hdwgcna/hdwgcna_differential'
 include { HDWGCNA_ENRICHMENT } from './modules/hdwgcna/hdwgcna_differential'
@@ -908,7 +909,9 @@ def validateStartupParams() {
     // keys with no consumer anywhere. After the D2.1 back-port from PBMC,
     // 14 keys are wired (3 top-level + 10 inside REGULATORY_ANALYSIS + 1 mudata).
     // The keys below remain placeholders and would silently no-op if set.
-    def neverWiredOnrampKeys = ['cistopic_obj_pkl', 'seurat_rds', 'da_peaks_dir',
+    // 2026-10-23: seurat_rds left this list when CONVERT_SEURAT_TO_H5AD was
+    // wired. Its own rules are below.
+    def neverWiredOnrampKeys = ['cistopic_obj_pkl', 'da_peaks_dir',
                                 'cicero_connections_ctrl', 'cicero_connections_trt',
                                 'cicero_ccan_ctrl', 'cicero_ccan_trt']
     if (params.onramp) {
@@ -918,6 +921,39 @@ def validateStartupParams() {
                           "consumer exists in any FORGE main.nf. Unset this key; the " +
                           "producer step will run regardless."
             }
+        }
+    }
+
+    // --- BETA (2026-10-23): Seurat .rds RNA on-ramp.
+    // Both on-ramps terminate at ch_integrated_rna, so setting both leaves no
+    // defensible winner. Reject rather than silently preferring one.
+    if (params.onramp?.seurat_rds) {
+        if (params.onramp?.rna_integrated_h5ad) {
+            errors << "params.onramp.seurat_rds and params.onramp.rna_integrated_h5ad " +
+                      "both set. They are two routes to the same artifact " +
+                      "(the integrated RNA h5ad) -- set exactly one."
+        }
+        def rdsF = file(params.onramp.seurat_rds)
+        if (!rdsF.exists()) {
+            errors << "params.onramp.seurat_rds does not exist: ${params.onramp.seurat_rds}"
+        } else if (!(params.onramp.seurat_rds.toString().toLowerCase() ==~ /.*\.(rds|qs)$/)) {
+            // Not fatal in principle, but a .h5ad here means the user wanted
+            // rna_integrated_h5ad and would otherwise get an R-side class error.
+            errors << "params.onramp.seurat_rds should be a Seurat .rds file, got: " +
+                      "${params.onramp.seurat_rds}. For an h5ad use " +
+                      "params.onramp.rna_integrated_h5ad."
+        }
+        warnings << "params.onramp.seurat_rds is BETA (added 2026-10-23). The " +
+                   "conversion is verified bit-exact for counts, embeddings and " +
+                   "metadata, but the downstream matrix is not yet fully " +
+                   "exercised. Verify results against a native run."
+        // hdWGCNA and CellChat live inside the RNA subworkflow, which every RNA
+        // on-ramp skips. Say so here rather than letting the user infer it from
+        // a silently missing output directory.
+        if (params.hdwgcna?.run || params.cellchat?.run) {
+            warnings << "params.onramp.seurat_rds skips the RNA subworkflow, so " +
+                       "hdWGCNA and CellChat will not run even though they are " +
+                       "enabled. This affects rna_integrated_h5ad identically."
         }
     }
 
@@ -952,9 +988,13 @@ def validateStartupParams() {
         }
     }
     // RNA per-sample dir is required for multiome when rna_integrated is onramped.
-    if (params.onramp?.rna_integrated_h5ad && params.run_multiome_integration &&
+    // seurat_rds lands on the same channel as rna_integrated_h5ad, so it
+    // inherits this requirement verbatim.
+    def rna_onramp_key = params.onramp?.rna_integrated_h5ad ? 'rna_integrated_h5ad' :
+                         (params.onramp?.seurat_rds ? 'seurat_rds' : null)
+    if (rna_onramp_key && params.run_multiome_integration &&
         !params.onramp?.rna_per_sample_h5ads_dir && !params.onramp?.mudata_h5mu) {
-        errors << "rna_integrated_h5ad onramp + run_multiome_integration=true requires " +
+        errors << "${rna_onramp_key} onramp + run_multiome_integration=true requires " +
                   "either rna_per_sample_h5ads_dir (for fresh multiome) or mudata_h5mu " +
                   "(skip multiome). Set one, or set run_multiome_integration=false."
     }
@@ -3423,6 +3463,7 @@ workflow {
 
     On-ramps (wired in src; D2.1 back-port from PBMC instance is deferred):
       rna_integrated_h5ad:    ${params.onramp?.rna_integrated_h5ad ?: 'none'}
+      seurat_rds (BETA):      ${params.onramp?.seurat_rds ?: 'none'}
       atac_peak_matrix_h5ad:  ${params.onramp?.atac_peak_matrix_h5ad ?: 'none'}
       mudata_h5mu:            ${params.onramp?.mudata_h5mu ?: 'none'}
 
@@ -3439,9 +3480,20 @@ workflow {
     def ch_rna_qc_h5ads
     def ch_rna_cellchat_csv
 
-    if (params.onramp?.rna_integrated_h5ad) {
-        log.info "ON-RAMP: Pre-integrated RNA: ${params.onramp.rna_integrated_h5ad}"
-        ch_integrated_rna = Channel.value(file(params.onramp.rna_integrated_h5ad))
+    if (params.onramp?.rna_integrated_h5ad || params.onramp?.seurat_rds) {
+        // BETA (2026-10-23): seurat_rds enters here rather than through a
+        // branch of its own. Once converted it IS the integrated-RNA h5ad, so
+        // every side-key rule, warning and downstream consumer below applies
+        // unchanged -- the two on-ramps differ only in how ch_integrated_rna
+        // is produced. validateStartupParams() rejects setting both.
+        if (params.onramp?.seurat_rds) {
+            log.info "ON-RAMP (BETA): Seurat .rds -> h5ad: ${params.onramp.seurat_rds}"
+            CONVERT_SEURAT_TO_H5AD(Channel.value(file(params.onramp.seurat_rds)))
+            ch_integrated_rna = CONVERT_SEURAT_TO_H5AD.out.h5ad
+        } else {
+            log.info "ON-RAMP: Pre-integrated RNA: ${params.onramp.rna_integrated_h5ad}"
+            ch_integrated_rna = Channel.value(file(params.onramp.rna_integrated_h5ad))
+        }
 
         // Per-sample QC'd h5ads — required by MULTIOME_INTEGRATION (sample-level join with ATAC)
         if (params.onramp?.rna_per_sample_h5ads_dir) {
