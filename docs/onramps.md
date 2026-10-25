@@ -66,6 +66,7 @@ params {
 | Key | Skips | Notes |
 |---|---|---|
 | `rna_integrated_h5ad` | The whole RNA arm through integration | See the pairing rule below |
+| `seurat_rds` | The whole RNA arm through integration | **BETA.** A Seurat `.rds` instead of an h5ad. Mutually exclusive with `rna_integrated_h5ad`; see below |
 | `atac_peak_matrix_h5ad` | ATAC QC, peak calling, clustering | See the side-key warnings below |
 | `mudata_h5mu` | Multiome integration | |
 | `printer_h5ad` | `SCPRINTER_BUILD_PRINTER` | |
@@ -75,6 +76,64 @@ params {
 | `atac_anndataset` | — | Side key: SnapATAC2 binding object, needed by enhancer footprinting |
 | `rna_per_sample_h5ads_dir` | — | Side key: per-sample RNA h5ads, needed by multiome integration |
 | `rna_cellchat_csv` | — | Side key: CellChat input for footprinting recipes |
+
+### `seurat_rds` — the Seurat on-ramp (BETA)
+
+Hand FORGE an existing Seurat object and it converts to the integrated-RNA h5ad
+before anything downstream runs. The converted object *is*
+`rna_integrated_h5ad` from that point on, so every rule in this document that
+applies to one applies to the other — including the multiome pairing rule.
+Setting both is a hard error, because they are two routes to the same artifact
+and there is no defensible winner:
+
+```text
+params.onramp.seurat_rds and params.onramp.rna_integrated_h5ad both set. They
+are two routes to the same artifact (the integrated RNA h5ad) -- set exactly
+one.
+```
+
+```groovy
+params {
+    onramp {
+        seurat_rds = '/data/my_study/integrated_seurat.rds'
+    }
+    onramp_seurat {
+        cell_type_key = 'subclass'      // null = auto-detect
+        assay         = 'RNA'
+        sample_key    = 'orig.ident'
+    }
+}
+```
+
+| `params.onramp_seurat` key | Default | Meaning |
+|---|---|---|
+| `cell_type_key` | `null` | `meta.data` column holding cell type labels. `null` auto-detects with the same precedence as `plot_postscanvi.py`: `cell_type` > `scanvi_prediction` > `celltypist_prediction` > `cell_type_prediction` > `cell_type_marker` > `seurat_annotations`. Set it explicitly for anything non-obvious — an Allen-style object carries `class`/`subclass`/`cluster` and only you know which level the analysis is about |
+| `assay` | `'RNA'` | Assay to export. Must be gene x cell; a Signac `ChromatinAssay` is rejected with a pointer to `atac_peak_matrix_h5ad` |
+| `sample_key` | `'orig.ident'` | `meta.data` column mapped onto `obs['sample']`. Falls back to a single synthetic sample when absent |
+
+Objects older than Seurat 5 are run through `UpdateSeuratObject()` first, and v5
+split layers (`counts.1`, `counts.2`, ...) are `JoinLayers()`'d — without that
+you would silently export only the first sample.
+
+The converted h5ad is published to `<outdir>/converted/onramp_rna_integrated.h5ad`
+when `params.save_converted` is on, so you can inspect exactly what the rest of
+the pipeline saw.
+
+**What BETA means here.** The conversion itself is verified bit-exact for
+counts, per-cell QC, per-gene totals, cell-type composition and cell/gene
+ordering; embeddings agree to ~1e-14 (float64 round-trip, not data movement).
+What is *not* yet exercised is the full downstream matrix. Verify results
+against a native run before publishing off them.
+
+Note that hdWGCNA and CellChat live inside the RNA subworkflow, which **every**
+RNA on-ramp skips — `rna_integrated_h5ad` included. You are warned rather than
+left to infer it from an empty output directory:
+
+```text
+WARN: params.onramp.seurat_rds skips the RNA subworkflow, so hdWGCNA and
+CellChat will not run even though they are enabled. This affects
+rna_integrated_h5ad identically.
+```
 
 ### Bundles are all-or-none
 
@@ -122,14 +181,17 @@ an error, not a silent no-op — it would otherwise look like you had skipped a
 stage that in fact still ran:
 
 ```text
-params.onramp.seurat_rds is set but is forward-declared only — no consumer
+params.onramp.cistopic_obj_pkl is set but is forward-declared only — no consumer
 exists in any FORGE main.nf. Unset this key; the producer step will run
 regardless.
 ```
 
-Currently forward-declared only: `cistopic_obj_pkl`, `seurat_rds`,
-`da_peaks_dir`, and the four stratified Cicero keys
-(`cicero_connections_ctrl/_trt`, `cicero_ccan_ctrl/_trt`).
+Currently forward-declared only: `cistopic_obj_pkl`, `da_peaks_dir`, and the
+four stratified Cicero keys (`cicero_connections_ctrl/_trt`,
+`cicero_ccan_ctrl/_trt`).
+
+`seurat_rds` used to be on this list and no longer is — it became a real
+on-ramp, documented above.
 
 ---
 
