@@ -35,6 +35,15 @@ process CONVERT_SEURAT_TO_H5AD {
     // detection precedence rather than being handed the string "null".
     def ct_key     = params.onramp_seurat?.cell_type_key
                      ? "--cell_type_key '${params.onramp_seurat.cell_type_key}'" : ''
+    // 2026-10-27: hdWGCNA and CellChat now run on on-ramped objects
+    // (RNA_NETWORKS), so the columns their differential tiers are configured
+    // against must actually exist. Assert that during conversion -- seconds
+    // here instead of a failure inside HDWGCNA_DIFFERENTIAL after the whole
+    // network build. Only keys the user actually configured are checked.
+    def req = [params.hdwgcna?.run  ? params.hdwgcna?.condition_key  : null,
+               params.cellchat?.run ? params.cellchat?.condition_key : null]
+              .findAll { it && it != 'none' }.unique()
+    def req_keys = req ? "--require_keys '${req.join(',')}'" : ''
     """
     export HOME=\$(mktemp -d /tmp/nf_home_XXXXXX)
 
@@ -43,6 +52,7 @@ process CONVERT_SEURAT_TO_H5AD {
         --output onramp_rna_integrated.h5ad \\
         --assay '${assay}' \\
         --sample_key '${sample_key}' \\
-        ${ct_key}
+        ${ct_key} \\
+        ${req_keys}
     """
 }

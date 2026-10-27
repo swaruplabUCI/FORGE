@@ -153,7 +153,7 @@ write_dataframe <- function(file, fid, path, df, index) {
 
 parse_args <- function(args) {
     known <- c("--rds", "--output", "--assay", "--cell_type_key",
-               "--sample_key", "--celltypes_out")
+               "--sample_key", "--celltypes_out", "--require_keys")
     out <- list(); i <- 1
     while (i <= length(args)) {
         if (args[i] %in% known && i < length(args)) {
@@ -323,6 +323,27 @@ if (!is.null(requested) && nzchar(requested) && requested != "null") {
 meta$cell_type        <- as.character(meta[[cell_type_col]])
 meta$cell_type_source <- "seurat_onramp"
 message("  Canonical 'cell_type' stamped from '", cell_type_col, "'")
+
+# --- Fail fast on columns the configured downstream analyses depend on. ------
+# Every meta.data column is carried into obs verbatim, so a condition_key the
+# user configured for the hdWGCNA/CellChat differential tiers either survives
+# the conversion or was never in the object. Catching the second case HERE
+# costs seconds; catching it downstream means the failure surfaces inside
+# HDWGCNA_DIFFERENTIAL after the whole network build has already run.
+if (!is.null(opt$require_keys) && nzchar(opt$require_keys)) {
+    req <- trimws(strsplit(opt$require_keys, ",")[[1]])
+    req <- req[nzchar(req) & req != "none" & req != "null"]
+    missing_keys <- req[!(req %in% colnames(meta))]
+    if (length(missing_keys))
+        stop("ERROR: required meta.data column(s) absent from the Seurat ",
+             "object: ", paste(missing_keys, collapse = ", "),
+             ". These are configured as condition/group keys for hdWGCNA or ",
+             "CellChat, which run on the on-ramped object. Available ",
+             "columns: ", paste(colnames(meta), collapse = ", "))
+    if (length(req))
+        message("  Verified required column(s) present: ",
+                paste(req, collapse = ", "))
+}
 
 ctt <- sort(table(meta$cell_type), decreasing = TRUE)
 message("  Cell types (n=", length(ctt), "): ",
