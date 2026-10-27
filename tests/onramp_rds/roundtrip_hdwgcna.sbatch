@@ -69,17 +69,61 @@ cat('Counts  :', paste(head(as.integer(t), $N_CT), collapse=' | '), '\n')
 " 2>&1 | tee "$OUT/logs/00_select.log"
 [[ -s "$OUT/celltypes.txt" ]] || { echo "FATAL: no cell types selected"; exit 1; }
 
+# --- 0b. Seurat version migration for the NATIVE arm ----------------------
+# run_hdwgcna_celltype.R cannot read a pre-v5 Seurat object: the Allen
+# reference is 3.0.0.9000 and has no `images` slot, so even basic accessors
+# throw "no slot of name images" (handoff trap (f)).
+#
+# The ROUND-TRIP arm never hits this because convert_seurat_to_h5ad.R calls
+# UpdateSeuratObject() internally. Applying the same migration to the native
+# arm is what makes the two arms COMPARABLE: it isolates the variable actually
+# under test (our converter round trip) from an incidental Seurat-version
+# difference that the other arm already got for free.
+#
+# This is a test-harness concern only. In FORGE, run_hdwgcna_celltype.R is only
+# ever fed CONVERT_H5AD_TO_SEURAT output -- a freshly built v5 object. It never
+# receives a raw user .rds.
+NATIVE_RDS="$RDS"
+if [[ ! -s "$OUT/native_updated.rds" ]]; then
+    $R -e "
+    suppressPackageStartupMessages(library(Seurat))
+    o <- readRDS('$RDS')
+    v <- package_version(as.character(o@version))
+    cat('Input Seurat version:', as.character(v), '\n')
+    if (v < '5.0.0') {
+        cat('Pre-v5 object -- running UpdateSeuratObject()\n')
+        o <- UpdateSeuratObject(o)
+        saveRDS(o, '$OUT/native_updated.rds')
+        cat('Wrote $OUT/native_updated.rds\n')
+    } else {
+        cat('Already v5+ -- native arm will use the original .rds\n')
+    }
+    " 2>&1 | tee "$OUT/logs/00b_update.log"
+fi
+[[ -s "$OUT/native_updated.rds" ]] && NATIVE_RDS="$OUT/native_updated.rds"
+echo "NATIVE arm will read: $NATIVE_RDS"
+
 # --- 1. round trip through both converters --------------------------------
-echo ">>> [1/4] convert_seurat_to_h5ad.R (new, rhdf5)"
-$R "$REPO/bin/convert_seurat_to_h5ad.R" \
-    --rds "$RDS" --output "$OUT/rt.h5ad" --cell_type_key "$CT_KEY" \
-    2>&1 | tee "$OUT/logs/01_seurat_to_h5ad.log"
+# Steps are cached on their outputs so a resubmit after a harness fix does not
+# redo work that already succeeded.
+if [[ -s "$OUT/rt.h5ad" ]]; then
+    echo ">>> [1/4] SKIP convert_seurat_to_h5ad.R (rt.h5ad present)"
+else
+    echo ">>> [1/4] convert_seurat_to_h5ad.R (new, rhdf5)"
+    $R "$REPO/bin/convert_seurat_to_h5ad.R" \
+        --rds "$RDS" --output "$OUT/rt.h5ad" --cell_type_key "$CT_KEY" \
+        2>&1 | tee "$OUT/logs/01_seurat_to_h5ad.log"
+fi
 [[ -s "$OUT/rt.h5ad" ]] || { echo "FATAL: h5ad not produced"; exit 1; }
 
-echo ">>> [2/4] convert_h5ad_to_seurat.R (existing, zellkonverter)"
-$R "$REPO/bin/convert_h5ad_to_seurat.R" \
-    --h5ad "$OUT/rt.h5ad" --output "$OUT/rt.rds" --cell_type_key cell_type \
-    2>&1 | tee "$OUT/logs/02_h5ad_to_seurat.log"
+if [[ -s "$OUT/rt.rds" ]]; then
+    echo ">>> [2/4] SKIP convert_h5ad_to_seurat.R (rt.rds present)"
+else
+    echo ">>> [2/4] convert_h5ad_to_seurat.R (existing, zellkonverter)"
+    $R "$REPO/bin/convert_h5ad_to_seurat.R" \
+        --h5ad "$OUT/rt.h5ad" --output "$OUT/rt.rds" --cell_type_key cell_type \
+        2>&1 | tee "$OUT/logs/02_h5ad_to_seurat.log"
+fi
 [[ -s "$OUT/rt.rds" ]] || { echo "FATAL: round-trip rds not produced"; exit 1; }
 
 # --- 2+3. both hdWGCNA arms, per cell type --------------------------------
@@ -87,19 +131,27 @@ rc_all=0
 while IFS= read -r CT; do
     [[ -z "$CT" ]] && continue
     SAFE=$(echo "$CT" | tr -c '[:alnum:]' '_')
-    echo ">>> [3/4] hdWGCNA NATIVE    -- $CT"
-    mkdir -p "$OUT/native/$SAFE"
-    ( cd "$OUT/native/$SAFE" && mkdir -p FiguresTables && \
-      $R "$REPO/bin/run_hdwgcna_celltype.R" --seurat_rds "$RDS" \
-         --cell_type "$CT" --cell_type_key "$CT_KEY" --output_dir . \
-         --threads "$THREADS" ) 2>&1 | tee "$OUT/logs/03_native_$SAFE.log"
+    if ls "$OUT/native/$SAFE"/*_seurat_with_wgcna.rds >/dev/null 2>&1; then
+        echo ">>> [3/4] SKIP hdWGCNA NATIVE    -- $CT (result present)"
+    else
+        echo ">>> [3/4] hdWGCNA NATIVE    -- $CT"
+        mkdir -p "$OUT/native/$SAFE"
+        ( cd "$OUT/native/$SAFE" && mkdir -p FiguresTables && \
+          $R "$REPO/bin/run_hdwgcna_celltype.R" --seurat_rds "$NATIVE_RDS" \
+             --cell_type "$CT" --cell_type_key "$CT_KEY" --output_dir . \
+             --threads "$THREADS" ) 2>&1 | tee "$OUT/logs/03_native_$SAFE.log"
+    fi
 
-    echo ">>> [3/4] hdWGCNA ROUNDTRIP -- $CT"
-    mkdir -p "$OUT/roundtrip/$SAFE"
-    ( cd "$OUT/roundtrip/$SAFE" && mkdir -p FiguresTables && \
-      $R "$REPO/bin/run_hdwgcna_celltype.R" --seurat_rds "$OUT/rt.rds" \
-         --cell_type "$CT" --cell_type_key cell_type --output_dir . \
-         --threads "$THREADS" ) 2>&1 | tee "$OUT/logs/03_rt_$SAFE.log"
+    if ls "$OUT/roundtrip/$SAFE"/*_seurat_with_wgcna.rds >/dev/null 2>&1; then
+        echo ">>> [3/4] SKIP hdWGCNA ROUNDTRIP -- $CT (result present)"
+    else
+        echo ">>> [3/4] hdWGCNA ROUNDTRIP -- $CT"
+        mkdir -p "$OUT/roundtrip/$SAFE"
+        ( cd "$OUT/roundtrip/$SAFE" && mkdir -p FiguresTables && \
+          $R "$REPO/bin/run_hdwgcna_celltype.R" --seurat_rds "$OUT/rt.rds" \
+             --cell_type "$CT" --cell_type_key cell_type --output_dir . \
+             --threads "$THREADS" ) 2>&1 | tee "$OUT/logs/03_rt_$SAFE.log"
+    fi
 
     NA_RDS=$(ls "$OUT/native/$SAFE"/*_seurat_with_wgcna.rds 2>/dev/null | head -1)
     RT_RDS=$(ls "$OUT/roundtrip/$SAFE"/*_seurat_with_wgcna.rds 2>/dev/null | head -1)
