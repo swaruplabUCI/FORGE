@@ -98,7 +98,7 @@ params {
         seurat_rds = '/data/my_study/integrated_seurat.rds'
     }
     onramp_seurat {
-        cell_type_key = 'subclass'      // null = auto-detect
+        cell_type_key = 'subclass'      // null = auto-detect; required if hdWGCNA/CellChat run
         assay         = 'RNA'
         sample_key    = 'orig.ident'
     }
@@ -107,7 +107,7 @@ params {
 
 | `params.onramp_seurat` key | Default | Meaning |
 |---|---|---|
-| `cell_type_key` | `null` | `meta.data` column holding cell type labels. `null` auto-detects with the same precedence as `plot_postscanvi.py`: `cell_type` > `scanvi_prediction` > `celltypist_prediction` > `cell_type_prediction` > `cell_type_marker` > `seurat_annotations`. Set it explicitly for anything non-obvious — an Allen-style object carries `class`/`subclass`/`cluster` and only you know which level the analysis is about |
+| `cell_type_key` | `null` | `meta.data` column holding cell type labels. `null` auto-detects with the same precedence as `plot_postscanvi.py`: `cell_type` > `scanvi_prediction` > `celltypist_prediction` > `cell_type_prediction` > `cell_type_marker` > `seurat_annotations`. Set it explicitly for anything non-obvious — an Allen-style object carries `class`/`subclass`/`cluster` and only you know which level the analysis is about. **Required** (auto-detect refused) when `hdwgcna.run` or `cellchat.run` is true |
 | `assay` | `'RNA'` | Assay to export. Must be gene x cell; a Signac `ChromatinAssay` is rejected with a pointer to `atac_peak_matrix_h5ad` |
 | `sample_key` | `'orig.ident'` | `meta.data` column mapped onto `obs['sample']`. Falls back to a single synthetic sample when absent |
 
@@ -125,14 +125,39 @@ ordering; embeddings agree to ~1e-14 (float64 round-trip, not data movement).
 What is *not* yet exercised is the full downstream matrix. Verify results
 against a native run before publishing off them.
 
-Note that hdWGCNA and CellChat live inside the RNA subworkflow, which **every**
-RNA on-ramp skips — `rna_integrated_h5ad` included. You are warned rather than
-left to infer it from an empty output directory:
+### hdWGCNA and CellChat on an on-ramped object
+
+These used to live inside the RNA subworkflow, which **every** RNA on-ramp
+skips — so they silently never ran on an on-ramped object, `rna_integrated_h5ad`
+included. As of 2026-10-27 both are hoisted into `RNA_NETWORKS`, which hangs off
+the integrated RNA h5ad regardless of what produced it. They now run normally.
+
+Because the cell-type labels drive network construction, the column stops being
+a plumbing detail and becomes a scientific choice — it *is* the level your
+co-expression networks get built at. Auto-detection is therefore **not allowed**
+when either analysis is enabled:
 
 ```text
-WARN: params.onramp.seurat_rds skips the RNA subworkflow, so hdWGCNA and
-CellChat will not run even though they are enabled. This affects
-rna_integrated_h5ad identically.
+params.onramp.seurat_rds with hdWGCNA/CellChat enabled requires
+params.onramp_seurat.cell_type_key to be set explicitly — auto-detection is
+not allowed when the labels drive network construction. Name the meta.data
+column holding the annotation level you want networks built at
+(e.g. 'subclass', not 'class').
+```
+
+Set `cell_type_key` and it proceeds. Leave networks disabled and auto-detection
+still applies as before.
+
+Every other `meta.data` column is carried into `obs` verbatim, so a
+`condition_key` you configured for the hdWGCNA or CellChat differential tiers
+either survived the conversion or was never in the object. The converter checks
+those columns up front and dies in seconds rather than failing inside
+`HDWGCNA_DIFFERENTIAL` after the whole network build:
+
+```text
+ERROR: required meta.data column(s) absent from the Seurat object: diagnosis.
+These are configured as condition/group keys for hdWGCNA or CellChat, which
+run on the on-ramped object.
 ```
 
 ### Bundles are all-or-none
