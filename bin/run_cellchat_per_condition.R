@@ -84,8 +84,29 @@ meta[[opts$cell_type_key]] <- droplevels(factor(meta[[opts$cell_type_key]]))
 cat(sprintf("Cells after subsetting: %d\n", ncol(sce_sub)))
 
 # --- Extract expression data (matches run_cellchat.R pattern) ----------------
+# zellkonverter surfaces h5ad layers as additional assays, so `logcounts` here
+# is layers/logcounts. The seurat_rds on-ramp writes X = RAW COUNTS plus
+# layers/logcounts = the user's own normalised data; preferring that layer
+# keeps this consumer consistent with run_cellchat_infer.R and uses the
+# normalisation the user actually chose rather than re-deriving one.
+#
+# GUARDED on the layer's presence, so the native path is bit-for-bit
+# unchanged: PLOT_POST_SCANVI emits layers/counts and no logcounts, so it
+# falls through to exactly the branch it has always taken.
+#
+# *** KNOWN, DELIBERATELY NOT FIXED HERE -- NATIVE-PATH DOUBLE NORMALISATION ***
+# On the native convention X is ALREADY log-normalised and there is no
+# `scvi_normalized` assay (verified: the integrated h5ad carries only
+# layers/counts), so the `X` branch below applies CPM + log1p to data that has
+# already been normalised. That is wrong in principle, but correcting it would
+# change CellChat results on the established native path, so it needs its own
+# decision and its own regression evidence rather than riding along with an
+# on-ramp fix -- the same call made for FindVariableFeatures in 4020d42.
 if ("scvi_normalized" %in% assayNames(sce_sub)) {
     data.input <- assay(sce_sub, "scvi_normalized")
+} else if ("logcounts" %in% assayNames(sce_sub)) {
+    cat("Found logcounts assay -> using it as the normalised matrix\n")
+    data.input <- assay(sce_sub, "logcounts")
 } else if ("X" %in% assayNames(sce_sub)) {
     counts <- assay(sce_sub, "X")
     library.size <- Matrix::colSums(counts)
