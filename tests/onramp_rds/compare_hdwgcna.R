@@ -59,15 +59,24 @@ check <- function(metric, nv, rv, ok) {
 }
 
 # ---- 1. soft power ---------------------------------------------------------
+# @misc[[1]] is "active_wgcna" -- an atomic character vector naming the active
+# slot, NOT the slot itself. Indexing it with $ raises "$ operator is invalid
+# for atomic vectors", which the old tryCatch swallowed into NA; NA vs NA then
+# scored PASS. That silently neutralised the most diagnostic metric in the
+# gate: job 58546541 reported soft_power NA/NA PASS while both arms had in
+# fact selected power 9. Read it through the canonical accessor instead, and
+# treat an unreadable power as a FAIL rather than a pass -- a metric we cannot
+# evaluate is not a metric that agrees.
 sp <- function(o) {
-    t <- tryCatch(GetPowerTable(o), error = function(e) NULL)
-    if (is.null(t)) return(NA_real_)
-    tryCatch(o@misc[[names(o@misc)[1]]]$wgcna_params$soft_power,
-             error = function(e) NA_real_)
+    p <- tryCatch(GetWGCNAParams(o)[["power"]], error = function(e) NULL)
+    if (is.null(p) || length(p) != 1) return(NA_real_)
+    p <- suppressWarnings(as.numeric(p))
+    if (!is.finite(p)) return(NA_real_)
+    p
 }
-spa <- tryCatch(a@misc[[1]]$wgcna_params$soft_power, error = function(e) NA)
-spb <- tryCatch(b@misc[[1]]$wgcna_params$soft_power, error = function(e) NA)
-check("soft_power", spa, spb, isTRUE(all.equal(spa, spb)))
+spa <- sp(a); spb <- sp(b)
+check("soft_power", spa, spb,
+      is.finite(spa) && is.finite(spb) && isTRUE(all.equal(spa, spb)))
 
 # ---- 2. modules ------------------------------------------------------------
 ma <- GetModules(a); mb <- GetModules(b)

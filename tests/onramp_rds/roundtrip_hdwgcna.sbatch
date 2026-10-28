@@ -16,7 +16,9 @@
 # 1e-15 drift could in principle tip a module split.
 #
 # Two arms on the same cell type:
-#   NATIVE    : run_hdwgcna_celltype.R straight off the original .rds
+#   NATIVE    : run_hdwgcna_celltype.R off the original .rds, pre-conditioned
+#               only for the two normalisations the converter performs that
+#               change hdWGCNA's control flow (see step 0b)
 #   ROUNDTRIP : .rds -> convert_seurat_to_h5ad.R (new, rhdf5)
 #                    -> convert_h5ad_to_seurat.R (existing, zellkonverter)
 #                    -> run_hdwgcna_celltype.R
@@ -36,6 +38,10 @@ SIF=$REPO/singularity_cache/seurat_extended.sif
 RDS=${RDS:?set RDS=/path/to/input.rds}
 CT_KEY=${CT_KEY:?set CT_KEY=<meta.data column>}
 N_CT=${N_CT:-2}
+# Must match what convert_seurat_to_h5ad.R uses, or the two arms disagree on
+# what a sample is. Passed to the converter below AND mirrored onto the native
+# object in step 0b, so the two can never drift apart.
+SAMPLE_KEY=${SAMPLE_KEY:-orig.ident}
 OUT=${OUT:?set OUT=/path/to/outdir}
 THREADS=${SLURM_CPUS_PER_TASK:-8}
 
@@ -48,6 +54,7 @@ echo "ROUND-TRIP hdWGCNA EQUIVALENCE"
 echo "  rds      : $RDS"
 echo "  ct_key   : $CT_KEY"
 echo "  n_ct     : $N_CT  (most abundant cell types)"
+echo "  smp_key  : $SAMPLE_KEY"
 echo "  out      : $OUT"
 echo "  threads  : $THREADS"
 echo "  started  : $(date)"
@@ -69,22 +76,44 @@ cat('Counts  :', paste(head(as.integer(t), $N_CT), collapse=' | '), '\n')
 " 2>&1 | tee "$OUT/logs/00_select.log"
 [[ -s "$OUT/celltypes.txt" ]] || { echo "FATAL: no cell types selected"; exit 1; }
 
-# --- 0b. Seurat version migration for the NATIVE arm ----------------------
-# run_hdwgcna_celltype.R cannot read a pre-v5 Seurat object: the Allen
-# reference is 3.0.0.9000 and has no `images` slot, so even basic accessors
-# throw "no slot of name images" (handoff trap (f)).
+# --- 0b. pre-condition the NATIVE arm -------------------------------------
+# The native arm reads a RAW user .rds. The round-trip arm reads an object
+# that convert_seurat_to_h5ad.R has already normalised on the way through.
+# Two of those normalisations change what run_hdwgcna_celltype.R DOES, not
+# merely what it reads, so unless they are mirrored here the two arms run
+# different algorithms and the comparison measures nothing:
 #
-# The ROUND-TRIP arm never hits this because convert_seurat_to_h5ad.R calls
-# UpdateSeuratObject() internally. Applying the same migration to the native
-# arm is what makes the two arms COMPARABLE: it isolates the variable actually
-# under test (our converter round trip) from an incidental Seurat-version
-# difference that the other arm already got for free.
+#   (i)  SEURAT VERSION. The Allen reference is 3.0.0.9000 and has no `images`
+#        slot, so even basic accessors throw "no slot of name images"
+#        (handoff trap (f)). The converter calls UpdateSeuratObject()
+#        internally; a raw object handed straight to the native arm never
+#        gets it. This killed job 58545951 outright.
 #
-# This is a test-harness concern only. In FORGE, run_hdwgcna_celltype.R is only
-# ever fed CONVERT_H5AD_TO_SEURAT output -- a freshly built v5 object. It never
-# receives a raw user .rds.
-NATIVE_RDS="$RDS"
-if [[ ! -s "$OUT/native_updated.rds" ]]; then
+#   (ii) THE `sample` COLUMN. convert_seurat_to_h5ad.R stamps `sample` from
+#        orig.ident when it is absent ("'sample' is read by the QC plots and
+#        by MULTIOME_INTEGRATION's sample join"). run_hdwgcna_celltype.R then
+#        BRANCHES on that column: group.by becomes c(ct_key, 'sample') rather
+#        than c(ct_key, 'dummy_group'), and RunHarmonyMetacells() fires when
+#        there is more than one sample. In job 58546541 this put the
+#        round-trip arm on Harmony-corrected, sample-aware metacells
+#        (991 / 440) and the native arm on uncorrected pooled ones
+#        (1000 / 546) -- different metacell populations feeding WGCNA, which
+#        is why every module-level metric failed while the matrix itself was
+#        bit-exact under Tier 1.
+#
+# Mirroring both is what makes the arms COMPARABLE: it isolates the variable
+# actually under test (our converter round trip) from incidental
+# normalisations the other arm already got for free. It is NOT a loosening of
+# the gate -- no threshold moves, and the matrix, the gene set and the module
+# calls are still compared untouched.
+#
+# Test-harness concern only. In FORGE, run_hdwgcna_celltype.R is only ever fed
+# CONVERT_H5AD_TO_SEURAT output: a freshly built v5 object that has been
+# through exactly these normalisations. It never receives a raw user .rds.
+#
+# NOTE: the per-cell-type hdWGCNA results below are cached. If you change this
+# step, delete $OUT/native/ or the stale native results will be reused.
+if [[ ! -s "$OUT/native_prepped.rds" ]]; then
     $R -e "
     suppressPackageStartupMessages(library(Seurat))
     o <- readRDS('$RDS')
@@ -93,14 +122,30 @@ if [[ ! -s "$OUT/native_updated.rds" ]]; then
     if (v < '5.0.0') {
         cat('Pre-v5 object -- running UpdateSeuratObject()\n')
         o <- UpdateSeuratObject(o)
-        saveRDS(o, '$OUT/native_updated.rds')
-        cat('Wrote $OUT/native_updated.rds\n')
     } else {
-        cat('Already v5+ -- native arm will use the original .rds\n')
+        cat('Already v5+ -- no migration needed\n')
     }
-    " 2>&1 | tee "$OUT/logs/00b_update.log"
+    md <- o@meta.data
+    if (!('sample' %in% colnames(md))) {
+        if ('$SAMPLE_KEY' %in% colnames(md)) {
+            md[['sample']] <- as.character(md[['$SAMPLE_KEY']])
+            cat('  sample stamped from $SAMPLE_KEY --',
+                length(unique(md[['sample']])), 'level(s)\n')
+        } else {
+            md[['sample']] <- 'sample1'
+            cat('  no $SAMPLE_KEY column; sample set to sample1\n')
+        }
+        o@meta.data <- md
+    } else {
+        cat('  sample already present --',
+            length(unique(as.character(md[['sample']]))), 'level(s)\n')
+    }
+    saveRDS(o, '$OUT/native_prepped.rds')
+    cat('Wrote $OUT/native_prepped.rds\n')
+    " 2>&1 | tee "$OUT/logs/00b_prep.log"
 fi
-[[ -s "$OUT/native_updated.rds" ]] && NATIVE_RDS="$OUT/native_updated.rds"
+[[ -s "$OUT/native_prepped.rds" ]] || { echo "FATAL: native arm prep failed"; exit 1; }
+NATIVE_RDS="$OUT/native_prepped.rds"
 echo "NATIVE arm will read: $NATIVE_RDS"
 
 # --- 1. round trip through both converters --------------------------------
@@ -112,6 +157,7 @@ else
     echo ">>> [1/4] convert_seurat_to_h5ad.R (new, rhdf5)"
     $R "$REPO/bin/convert_seurat_to_h5ad.R" \
         --rds "$RDS" --output "$OUT/rt.h5ad" --cell_type_key "$CT_KEY" \
+        --sample_key "$SAMPLE_KEY" \
         2>&1 | tee "$OUT/logs/01_seurat_to_h5ad.log"
 fi
 [[ -s "$OUT/rt.h5ad" ]] || { echo "FATAL: h5ad not produced"; exit 1; }
