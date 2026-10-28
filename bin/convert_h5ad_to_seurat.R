@@ -122,8 +122,41 @@ tryCatch({
     message("  SCE dimensions: ", nrow(sce), " genes x ", ncol(sce), " cells")
 
     # Step 2: Convert SCE to Seurat
+    #
+    # The two producers of the h5ad we read disagree about what X means:
+    #
+    #   native RNA path (PLOT_POST_SCANVI, scanpy)
+    #       X = log-normalised data, layers/counts = raw counts, no logcounts
+    #   seurat_rds on-ramp (bin/convert_seurat_to_h5ad.R)
+    #       X = raw counts, layers/logcounts = normalised data
+    #
+    # as.Seurat(counts = "X", data = NULL) leaves the `data` layer holding
+    # whatever X held. On the native convention that is normalised values, so
+    # it was right by accident. On the on-ramp convention it is RAW COUNTS --
+    # and run_hdwgcna_celltype.R does SetDatExpr(..., layer = 'data'), so the
+    # on-ramp was building hdWGCNA co-expression networks (and feeding
+    # CellChat) from unnormalised counts. No crash, no warning, wrong biology.
+    # Caught by the Tier 2 round-trip gate: the native and round-trip arms
+    # differed in `data` by max 411157 (= 411165 raw max - 8.13 normalised
+    # max) while `counts` was bit-identical, which is exactly why the Tier 1
+    # matrix-fidelity gate could never have seen it.
+    #
+    # Restore logcounts into `data` when the producer supplied it. This is
+    # guarded on the layer's presence, so the native path -- which emits no
+    # logcounts layer -- takes the identical code path it always has and is
+    # bit-for-bit unaffected.
     message("Converting SingleCellExperiment to Seurat...")
-    seurat_obj <- as.Seurat(sce, counts = "X", data = NULL)
+    sce_assays <- SummarizedExperiment::assayNames(sce)
+    message("  SCE assays: ", paste(sce_assays, collapse = ", "))
+    has_logcounts <- "logcounts" %in% sce_assays
+    if (has_logcounts) {
+        message("  logcounts present -> data layer (X stays as counts)")
+    } else {
+        message("  No logcounts layer; X supplies both counts and data ",
+                "(native-path convention)")
+    }
+    seurat_obj <- as.Seurat(sce, counts = "X",
+                            data = if (has_logcounts) "logcounts" else NULL)
 
     message("  Cells: ", ncol(seurat_obj))
     message("  Genes: ", nrow(seurat_obj))
