@@ -160,6 +160,35 @@ These are configured as condition/group keys for hdWGCNA or CellChat, which
 run on the on-ramped object.
 ```
 
+### What X holds, and why your object should already be normalised
+
+The on-ramp and the native RNA path write the integrated h5ad with **opposite
+conventions**, which matters if you ever inspect one by hand:
+
+| | `X` | `layers/` |
+|---|---|---|
+| native path (`plot_postscanvi.py`) | log-normalised | `counts` = raw counts |
+| `seurat_rds` on-ramp | **raw counts** | `logcounts` = log-normalised |
+
+`X` is raw on the on-ramp deliberately: DORC and SCENIC+ model count data, and
+promoting normalised values into `X` would corrupt them silently. Note also
+that a scanpy `/raw/X` group is *not* raw counts — it is `adata.raw`, a
+pre-HVG-subset snapshot taken **after** `log1p`. The actual counts are in
+`layers/counts`.
+
+Consumers that need normalised values read `layers/logcounts` and fall back to
+`X` when it is absent, so both conventions land in the same place. If you are
+writing a new consumer, do the same — do not assume `X` is normalised.
+
+**Normalise before you on-ramp.** If your object's `data` layer is identical to
+its `counts` layer — i.e. you never ran `NormalizeData()` — the converter has no
+normalised values to carry across and writes no `logcounts` layer. FORGE then
+normalises internally (CPM + `log1p`) so CellChat is not handed raw counts, but
+that is a backstop, not a substitute: it uses FORGE's normalisation rather than
+yours, and it cannot reproduce a custom approach such as SCTransform. Run
+`NormalizeData()` (or your own equivalent) on the object first, and the values
+you chose are what the analyses use.
+
 ### Bundles are all-or-none
 
 Some artifacts are only meaningful together, and the pre-flight checklist enforces
