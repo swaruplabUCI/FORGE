@@ -132,10 +132,25 @@ tryCatch({
     #
     # as.Seurat(counts = "X", data = NULL) leaves the `data` layer holding
     # whatever X held. On the native convention that is normalised values, so
-    # it was right by accident. On the on-ramp convention it is RAW COUNTS --
-    # and run_hdwgcna_celltype.R does SetDatExpr(..., layer = 'data'), so the
-    # on-ramp was building hdWGCNA co-expression networks (and feeding
-    # CellChat) from unnormalised counts. No crash, no warning, wrong biology.
+    # it was right by accident. On the on-ramp convention it is RAW COUNTS,
+    # and run_hdwgcna_celltype.R does SetDatExpr(..., layer = 'data').
+    #
+    # PRECISELY WHAT THAT BREAKS (verified in hdWGCNA source; commit 4020d42's
+    # message overstates this and is corrected here). It does NOT put raw
+    # counts into WGCNA's correlation matrix: MetacellsByGroups() defaults to
+    # layer = "counts", and NormalizeMetacells() runs NormalizeData() on the
+    # metacell object before SetDatExpr(use_metacells = TRUE) reads it, so the
+    # matrix WGCNA correlates is normalised by hdWGCNA itself. What the
+    # corrupted `data` layer corrupts is ScaleData -> RunPCA -> the kNN that
+    # COMPOSES the metacells -- measurably: 991 vs 1005 metacells for L6 IT,
+    # 440 vs 502 for Sst, which is what dragged the module calls down to
+    # jaccard 0.41. A metacell-composition defect, not raw counts reaching the
+    # correlation -- still wrong biology, silently, with no crash.
+    #
+    # The blunt "runs on raw counts" wording IS literally true of CellChat,
+    # which has no metacell step: run_cellchat_infer.R hands the `data` layer
+    # straight to CellChat. That path is NOT fixed here -- see the session log.
+    #
     # Caught by the Tier 2 round-trip gate: the native and round-trip arms
     # differed in `data` by max 411157 (= 411165 raw max - 8.13 normalised
     # max) while `counts` was bit-identical, which is exactly why the Tier 1
