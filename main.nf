@@ -945,29 +945,42 @@ def validateStartupParams() {
         }
         warnings << "params.onramp.seurat_rds is BETA (added 2026-10-23). The " +
                    "conversion is verified bit-exact for counts, embeddings and " +
-                   "metadata, but the downstream matrix is not yet fully " +
-                   "exercised. Verify results against a native run."
+                   "metadata, and hdWGCNA and CellChat are gated round-trip " +
+                   "equivalent on it. MAST differential expression and the " +
+                   "multiome/GRN consumers are NOT yet gated -- verify those " +
+                   "against a native run."
         // 2026-10-27: hdWGCNA and CellChat were hoisted out of the RNA
         // subworkflow into RNA_NETWORKS, so they DO now run on an on-ramped
-        // object. That makes the cell-type column a scientific decision rather
-        // than a plumbing detail: RNA_NETWORKS pins obs['cell_type'], and the
-        // converter stamps that from params.onramp_seurat.cell_type_key.
+        // object. That made the cell-type column a scientific decision rather
+        // than a plumbing detail, and the mandate below was gated on those two
+        // analyses being enabled.
         //
-        // Auto-detection (CT_CANDIDATES in bin/convert_seurat_to_h5ad.R) is
-        // fine when nothing consumes the labels, but here it can silently
-        // adopt a stale 'cell_type' column left over from some earlier
-        // analysis and build co-expression networks at the wrong annotation
-        // level -- no crash, no warning, wrong biology. An object carrying
-        // class/subclass/cluster has no single obvious answer and only the
-        // user knows which level the analysis is about. So: mandate it.
-        if ((params.hdwgcna?.run || params.cellchat?.run) &&
-            !params.onramp_seurat?.cell_type_key) {
-            errors << "params.onramp.seurat_rds with hdWGCNA/CellChat enabled " +
-                      "requires params.onramp_seurat.cell_type_key to be set " +
-                      "explicitly -- auto-detection is not allowed when the " +
-                      "labels drive network construction. Name the meta.data " +
-                      "column holding the annotation level you want networks " +
-                      "built at (e.g. 'subclass', not 'class')."
+        // 2026-10-30: THAT GATE IS REMOVED -- the key is now required whenever
+        // seurat_rds is set at all. 03aff21 fixed BUILD_MUDATA to read the
+        // canonical obs['cell_type'] the converter stamps, so the labels now
+        // also drive the MuData's RNA annotation and everything downstream of
+        // it. The blast radius is no longer "the two network analyses", and
+        // gating the mandate on hdwgcna.run/cellchat.run would leave the wider
+        // set silently auto-detected.
+        //
+        // Auto-detection (CT_CANDIDATES in bin/convert_seurat_to_h5ad.R) can
+        // adopt a stale 'cell_type' column left over from an earlier analysis;
+        // an object carrying class/subclass/cluster has no single obvious
+        // answer, and only the user knows which level the analysis is about.
+        // The failure is silent and scientific in every consumer, so the key
+        // is mandatory rather than inferred.
+        //
+        // The converter keeps its auto-detect for standalone use. The pipeline
+        // never exercises it: it always passes --cell_type_key.
+        if (!params.onramp_seurat?.cell_type_key) {
+            errors << "params.onramp.seurat_rds requires " +
+                      "params.onramp_seurat.cell_type_key to be set explicitly " +
+                      "-- auto-detection is not allowed, because the labels " +
+                      "drive co-expression network construction, the MuData's " +
+                      "RNA annotation and every consumer downstream of them. " +
+                      "Name the meta.data column holding the annotation level " +
+                      "you want the analysis run at (e.g. 'subclass', not " +
+                      "'class')."
         }
     }
 
@@ -3529,6 +3542,26 @@ workflow {
             log.info "ON-RAMP (BETA): Seurat .rds -> h5ad: ${params.onramp.seurat_rds}"
             CONVERT_SEURAT_TO_H5AD(Channel.value(file(params.onramp.seurat_rds)))
             ch_integrated_rna = CONVERT_SEURAT_TO_H5AD.out.h5ad
+            // Surface the normalisation verdict on the console as soon as the
+            // conversion finishes -- before RNA_NETWORKS spends the hours. The
+            // converter already logs a banner, but process stdout goes to
+            // .command.out where nobody reads it in time. FORGE normalising on
+            // the user's behalf is a scientific decision, so it gets said out
+            // loud on the path they are actually watching.
+            CONVERT_SEURAT_TO_H5AD.out.norm_status.subscribe { f ->
+                if (f.text.trim() == 'UNNORMALISED') {
+                    log.warn """
+        ON-RAMPED OBJECT CARRIES NO NORMALISATION
+          Its 'data' layer is identical to its 'counts' layer, so
+          NormalizeData() was never run on it.
+          FORGE is normalising internally with CPM + log1p, which is
+          bit-identical to NormalizeData(LogNormalize, scale.factor = 1e4).
+          That is FORGE's normalisation, not yours, and it cannot reproduce
+          a custom approach such as SCTransform.
+          To use your own, run NormalizeData() before on-ramping.
+        """.stripIndent()
+                }
+            }
         } else {
             log.info "ON-RAMP: Pre-integrated RNA: ${params.onramp.rna_integrated_h5ad}"
             ch_integrated_rna = Channel.value(file(params.onramp.rna_integrated_h5ad))

@@ -27,6 +27,11 @@ process CONVERT_SEURAT_TO_H5AD {
     output:
     path "onramp_rna_integrated.h5ad",           emit: h5ad
     path "onramp_rna_integrated_celltypes.txt",  emit: cell_types
+    // Sidecar holding NORMALISED / UNNORMALISED. main.nf subscribes to this
+    // and warns on the console right after conversion, so a user whose object
+    // was never normalised learns that FORGE normalised on their behalf
+    // BEFORE hdWGCNA and CellChat spend the hours, not from a buried log line.
+    path "onramp_rna_integrated_normalisation.txt", emit: norm_status
 
     script:
     def assay      = params.onramp_seurat?.assay      ?: 'RNA'

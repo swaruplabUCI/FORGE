@@ -173,6 +173,8 @@ if (is.null(opt$assay))      opt$assay      <- "RNA"
 if (is.null(opt$sample_key)) opt$sample_key <- "orig.ident"
 if (is.null(opt$celltypes_out))
     opt$celltypes_out <- sub("\\.h5ad$", "_celltypes.txt", opt$output)
+if (is.null(opt$normstatus_out))
+    opt$normstatus_out <- sub("\\.h5ad$", "_normalisation.txt", opt$output)
 
 message("=== Seurat -> h5ad (rhdf5 direct) ===")
 message("Input:  ", opt$rds)
@@ -272,6 +274,38 @@ if (has_logcounts) {
         message("  data layer is identical to counts; not writing logcounts")
         has_logcounts <- FALSE
     }
+}
+
+# Record whether the object arrived normalised, and say so loudly.
+#
+# When `data` is just a copy of `counts` the user never ran NormalizeData(),
+# so there is nothing to carry across and no logcounts layer is written. The
+# consumers then fall back to FORGE's own CPM + log1p (convert_h5ad_to_seurat.R
+# for hdWGCNA/MAST, run_cellchat_infer.R for CellChat). That backstop is
+# bit-identical to NormalizeData(LogNormalize, 1e4), so it is safe -- but it
+# is FORGE choosing a normalisation on the user's behalf, which is a
+# scientific decision and must not be silent.
+#
+# The status is written to a sidecar so main.nf can surface it on the console
+# right after conversion -- before hdWGCNA and CellChat spend the hours.
+if (has_logcounts) {
+    writeLines("NORMALISED", opt$normstatus_out)
+} else {
+    writeLines("UNNORMALISED", opt$normstatus_out)
+    message("")
+    message("  ==================================================================")
+    message("  WARNING: this object carries NO normalisation.")
+    message("    Its 'data' layer is identical to its 'counts' layer, so")
+    message("    NormalizeData() was never run on it. No logcounts layer will")
+    message("    be written, and FORGE will normalise internally with")
+    message("    CPM + log1p -- bit-identical to")
+    message("    NormalizeData(normalization.method = 'LogNormalize',")
+    message("                  scale.factor = 1e4).")
+    message("    That is FORGE's normalisation, not yours, and it cannot")
+    message("    reproduce a custom approach such as SCTransform.")
+    message("    To use your own: run NormalizeData() before on-ramping.")
+    message("  ==================================================================")
+    message("")
 }
 
 genes <- rownames(counts)
