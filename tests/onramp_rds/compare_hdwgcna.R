@@ -18,6 +18,41 @@
 #
 # Exit 0 = within tolerance. Exit 1 = a metric drifted past its threshold.
 # ============================================================================
+
+# ---- thresholds ------------------------------------------------------------
+# 2026-10-30: tightened from 0.90 / 0.95 / 0.80. Those were set before anyone
+# knew what the gate's noise floor was, and they turned out to be far looser
+# than the pipeline needs.
+#
+# The determinism control (tests/onramp_rds/determinism_control.sbatch, job
+# 58561738) ran two replicates of the SAME arm on the SAME input and scored
+# ALL NINE METRICS AT EXACTLY 1.0000. The noise floor is ZERO. Every gate run
+# since has also come back at exactly 1.0000: Allen 12 cell types, SEA-AD 3
+# normalised, SEA-AD 3 unnormalised. There is no scatter for a real regression
+# to hide in, and at 0.90 a substantial drift would still have scored PASS.
+#
+# NOT set to 1.0, deliberately. A zero noise floor is a property of THESE
+# package versions -- hdWGCNA, WGCNA, Seurat, the BLAS the container links
+# against -- not a law. Exact equality would turn a benign library bump into a
+# red gate and train everyone to ignore it. 0.99 leaves room for float drift
+# while still being tight enough that a genuine defect cannot pass: the
+# original logcounts bug scored 0.41.
+#
+# Sensitivity worth knowing before tightening further: hub_gene_jaccard
+# compares the top 25 hubs per module, so with ~16 modules the union is ~400
+# genes and a SINGLE swapped hub costs ~0.005. 0.99 therefore tolerates about
+# two swapped hub genes and no more.
+#
+# If a future run fails here, the FIRST question is whether a package or
+# container version changed -- not whether to loosen the number back. Re-run
+# the determinism control to re-measure the floor before touching anything.
+THRESH <- list(
+    module_jaccard = 0.99,   # mean best-match module overlap
+    genes_same     = 0.99,   # weighted fraction of module genes recovered
+    max_kME        = 0.99,   # correlation of per-gene max kME
+    me_cor         = 0.99,   # mean best |correlation| of module eigengenes
+    hub_jaccard    = 0.99    # top-25-per-module hub gene overlap
+)
 suppressPackageStartupMessages({
     library(Seurat); library(hdWGCNA)
 })
@@ -103,7 +138,7 @@ if (length(shared) > 0 && length(mods_a) > 0 && length(mods_b) > 0) {
     })
     mean_j <- if (length(best)) mean(best) else 0
     check("mean_best_module_jaccard", sprintf("%.4f", mean_j),
-          sprintf("%.4f", mean_j), mean_j >= 0.90)
+          sprintf("%.4f", mean_j), mean_j >= THRESH$module_jaccard)
 
     # weighted agreement: fraction of all module genes recovered in the match
     agree <- sum(sapply(names(ga), function(m) {
@@ -114,7 +149,7 @@ if (length(shared) > 0 && length(mods_a) > 0 && length(mods_b) > 0) {
     tot <- length(unlist(ga))
     frac <- if (tot) agree / tot else 0
     check("frac_genes_same_module", sprintf("%.4f", frac),
-          sprintf("%.4f", frac), frac >= 0.90)
+          sprintf("%.4f", frac), frac >= THRESH$genes_same)
 }
 
 # ---- 4. kME correlation ----------------------------------------------------
@@ -127,7 +162,7 @@ if (length(kme_cols_a) && length(kme_cols_b) && length(shared)) {
     ok <- is.finite(maxa) & is.finite(maxb)
     r <- if (sum(ok) > 2) cor(maxa[ok], maxb[ok]) else NA_real_
     check("cor_max_kME", sprintf("%.6f", r), sprintf("%.6f", r),
-          !is.na(r) && r >= 0.95)
+          !is.na(r) && r >= THRESH$max_kME)
 }
 
 # ---- 5. module eigengenes --------------------------------------------------
@@ -144,7 +179,7 @@ if (!is.null(mea) && !is.null(meb)) {
         bestr <- apply(cm, 1, max)
         mb_r <- mean(bestr)
         check("mean_best_ME_cor", sprintf("%.6f", mb_r), sprintf("%.6f", mb_r),
-              mb_r >= 0.95)
+              mb_r >= THRESH$me_cor)
     }
 }
 
@@ -158,7 +193,7 @@ ha <- hub(a); hb <- hub(b)
 if (length(ha) && length(hb)) {
     ov <- length(intersect(ha, hb)) / length(union(ha, hb))
     check("hub_gene_jaccard", sprintf("%.4f", ov), sprintf("%.4f", ov),
-          ov >= 0.80)
+          ov >= THRESH$hub_jaccard)
 }
 
 # ---- verdict ---------------------------------------------------------------
