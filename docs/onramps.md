@@ -119,11 +119,23 @@ The converted h5ad is published to `<outdir>/converted/onramp_rna_integrated.h5a
 when `params.save_converted` is on, so you can inspect exactly what the rest of
 the pipeline saw.
 
-**What BETA means here.** The conversion itself is verified bit-exact for
-counts, per-cell QC, per-gene totals, cell-type composition and cell/gene
-ordering; embeddings agree to ~1e-14 (float64 round-trip, not data movement).
-What is *not* yet exercised is the full downstream matrix. Verify results
-against a native run before publishing off them.
+**What BETA means here.** The conversion is verified bit-exact for counts,
+per-cell QC, per-gene totals, cell-type composition and cell/gene ordering;
+embeddings agree to ~1e-14 (float64 round-trip, not data movement). Beyond the
+matrix, the analyses that consume it are gated too: running hdWGCNA natively
+and through a full `.rds -> h5ad -> Seurat` round trip gives **identical**
+soft-power selection, module counts, module assignments, kME, module
+eigengenes and hub genes across 12 cell types on one reference and 3 on
+another, and CellChat agrees on all 14 scored quantities including every
+inferred ligand-receptor interaction and its probability. Two runs of the same
+arm on the same input also agree exactly, so "identical" here means identical,
+not "within tolerance".
+
+What is still *not* gated: MAST differential expression goes through the same
+converter but has no equivalence test of its own, and neither do the multiome
+and GRN consumers (MuData assembly, DORC, SCENIC+, pycisTopic). The on-ramp is
+also unreleased. Check those paths against a native run before publishing off
+them.
 
 ### hdWGCNA and CellChat on an on-ramped object
 
@@ -183,9 +195,13 @@ writing a new consumer, do the same — do not assume `X` is normalised.
 **Normalise before you on-ramp.** If your object's `data` layer is identical to
 its `counts` layer — i.e. you never ran `NormalizeData()` — the converter has no
 normalised values to carry across and writes no `logcounts` layer. FORGE then
-normalises internally (CPM + `log1p`) so CellChat is not handed raw counts, but
-that is a backstop, not a substitute: it uses FORGE's normalisation rather than
-yours, and it cannot reproduce a custom approach such as SCTransform. Run
+normalises internally (CPM + `log1p`) on both return paths — the Seurat
+conversion that feeds hdWGCNA and MAST, and the readers that feed CellChat —
+so nothing downstream is handed raw counts. That backstop is bit-identical to
+`NormalizeData(normalization.method = "LogNormalize", scale.factor = 1e4)`,
+but it is still a backstop rather than a substitute: it applies FORGE's
+normalisation rather than yours, and it cannot reproduce a custom approach such
+as SCTransform. Run
 `NormalizeData()` (or your own equivalent) on the object first, and the values
 you chose are what the analyses use.
 
