@@ -69,6 +69,22 @@ if (is.null(opt$assay_name)) {
 # Convert h5ad -> SingleCellExperiment -> Seurat
 # ============================================================================
 
+# Exact integral test, chunked with early exit: a normalised matrix trips on
+# the first chunk, and a 909M-nnz raw matrix never materialises a full logical
+# vector. Mirrors the helper in bin/run_cellchat_infer.R -- the two scripts are
+# standalone by design and share no library.
+is_integral_matrix <- function(m, chunk = 1e7) {
+    x <- m@x
+    n <- length(x)
+    if (n == 0) return(TRUE)
+    starts <- seq(1, n, by = chunk)
+    for (s in starts) {
+        e <- min(s + chunk - 1, n)
+        if (any(x[s:e] != floor(x[s:e]))) return(FALSE)
+    }
+    TRUE
+}
+
 message("=== h5ad -> Seurat Conversion (zellkonverter) ===")
 message("Input: ", opt$h5ad)
 message("Output: ", opt$output)
@@ -149,17 +165,31 @@ tryCatch({
     #
     # The blunt "runs on raw counts" wording IS literally true of CellChat,
     # which has no metacell step: run_cellchat_infer.R hands the `data` layer
-    # straight to CellChat. That path is NOT fixed here -- see the session log.
+    # straight to CellChat. That path does not use this converter at all; it
+    # was fixed separately in 4cf3975.
     #
     # Caught by the Tier 2 round-trip gate: the native and round-trip arms
     # differed in `data` by max 411157 (= 411165 raw max - 8.13 normalised
     # max) while `counts` was bit-identical, which is exactly why the Tier 1
     # matrix-fidelity gate could never have seen it.
     #
-    # Restore logcounts into `data` when the producer supplied it. This is
-    # guarded on the layer's presence, so the native path -- which emits no
-    # logcounts layer -- takes the identical code path it always has and is
-    # bit-for-bit unaffected.
+    # Resolution order, matching bin/run_cellchat_infer.R:
+    #   1. logcounts, when the producer supplied it        (the on-ramp)
+    #   2. X as-is, when X is already non-integral         (the native path)
+    #   3. CPM + log1p, when X is integral and no logcounts exists
+    #
+    # Case 2 is the native path and is bit-for-bit what it has always been:
+    # as.Seurat(data = NULL) leaves `data` holding X, which on that convention
+    # is already log-normalised.
+    #
+    # Case 3 is an on-ramped object that was NEVER NORMALISED -- SEA-AD is
+    # exactly this: its `data` slot is identical to its `counts` slot, so
+    # convert_seurat_to_h5ad.R takes its "not writing logcounts" branch and no
+    # logcounts layer reaches us. Without this branch `data` would hold raw
+    # counts and ScaleData -> RunPCA -> the metacell kNN would run on them,
+    # silently, exactly as the on-ramp convention bug did before 4020d42. The
+    # CellChat readers gained this backstop in 4cf3975; this path did not, and
+    # that asymmetry is what is being closed here.
     message("Converting SingleCellExperiment to Seurat...")
     sce_assays <- SummarizedExperiment::assayNames(sce)
     message("  SCE assays: ", paste(sce_assays, collapse = ", "))
@@ -167,8 +197,40 @@ tryCatch({
     if (has_logcounts) {
         message("  logcounts present -> data layer (X stays as counts)")
     } else {
-        message("  No logcounts layer; X supplies both counts and data ",
-                "(native-path convention)")
+        x_mat <- SummarizedExperiment::assay(sce, "X")
+        if (!inherits(x_mat, "dgCMatrix"))
+            x_mat <- as(as(x_mat, "CsparseMatrix"), "dgCMatrix")
+        if (is_integral_matrix(x_mat)) {
+            message("  No logcounts layer and X is integral (raw counts) ",
+                    "-> normalising with CPM + log1p for the data layer")
+            library.size <- Matrix::colSums(x_mat)
+            if (any(library.size == 0)) {
+                stop("Cannot normalise: ", sum(library.size == 0),
+                     " cells have zero total counts")
+            }
+            # Scale each column by its library size IN PLACE.
+            #
+            # The textbook spelling, log1p(t(t(m) / ls) * 1e4), materialises
+            # two full transposes. On a 909M-non-zero object -- SEA-AD, which
+            # is precisely the kind of never-normalised input that reaches
+            # this branch -- that is tens of GB of temporaries and the process
+            # is OOM-killed with no R traceback at all.
+            #
+            # A dgCMatrix is column-compressed, so every non-zero's column
+            # (and therefore its library size) is recoverable from @p. That
+            # turns the whole normalisation into one pass over @x. Structural
+            # zeros are untouched, which is correct: log1p(0) = 0, so sparsity
+            # is preserved exactly as the dense spelling preserved it.
+            per_nz_libsize <- rep.int(library.size, diff(x_mat@p))
+            x_mat@x <- log1p(x_mat@x / per_nz_libsize * 1e4)
+            SummarizedExperiment::assay(sce, "logcounts") <- x_mat
+            has_logcounts <- TRUE
+            rm(x_mat, per_nz_libsize)
+        } else {
+            message("  No logcounts layer; X is already non-integral, so it ",
+                    "supplies both counts and data (native-path convention)")
+            rm(x_mat)
+        }
     }
     seurat_obj <- as.Seurat(sce, counts = "X",
                             data = if (has_logcounts) "logcounts" else NULL)

@@ -101,6 +101,29 @@ cat('Counts  :', paste(head(as.integer(t), $N_CT), collapse=' | '), '\n')
 #        is why every module-level metric failed while the matrix itself was
 #        bit-exact under Tier 1.
 #
+#  (iii) NORMALISATION. An object whose `data` layer still equals its `counts`
+#        layer carries no normalisation at all -- SEA-AD is exactly this, and
+#        so is any object the user never ran NormalizeData() on.
+#        convert_seurat_to_h5ad.R detects that case and writes NO logcounts
+#        layer, so on the way back convert_h5ad_to_seurat.R has nothing to
+#        restore and falls through to its CPM + log1p backstop.
+#
+#        The NATIVE arm gets no such backstop: it would hand hdWGCNA a raw
+#        `data` layer, which is the very defect the backstop exists to
+#        prevent. Comparing against that would be comparing against the bug.
+#        So when the input is unnormalised the native arm is given
+#        NormalizeData(LogNormalize, 1e4) -- what the user should have run --
+#        and the gate then asks the question actually worth asking:
+#
+#            does FORGE's backstop land in the same place as standard
+#            Seurat normalisation, all the way through to the module calls?
+#
+#        The criterion mirrors convert_seurat_to_h5ad.R's own
+#        all.equal(dat@x, counts@x) test, so the harness and the converter
+#        can never disagree about whether an object is normalised.
+#        A FAIL HERE IS REAL: it means the backstop diverges from
+#        NormalizeData. Do not paper over it by dropping this step.
+#
 # Mirroring both is what makes the arms COMPARABLE: it isolates the variable
 # actually under test (our converter round trip) from incidental
 # normalisations the other arm already got for free. It is NOT a loosening of
@@ -140,6 +163,33 @@ if [[ ! -s "$OUT/native_prepped.rds" ]]; then
         cat('  sample already present --',
             length(unique(as.character(md[['sample']]))), 'level(s)\n')
     }
+    # (iii) normalisation -- see the comment block above. Mirrors
+    # convert_seurat_to_h5ad.R's own has_logcounts criterion exactly.
+    a <- DefaultAssay(o)
+    cnt <- GetAssayData(o, assay = a, layer = 'counts')
+    dat <- tryCatch(GetAssayData(o, assay = a, layer = 'data'),
+                    error = function(e) NULL)
+    if (!inherits(cnt, 'dgCMatrix'))
+        cnt <- as(as(cnt, 'CsparseMatrix'), 'dgCMatrix')
+    has_dat <- !is.null(dat) && prod(dim(dat)) > 0
+    if (has_dat && !inherits(dat, 'dgCMatrix'))
+        dat <- as(as(dat, 'CsparseMatrix'), 'dgCMatrix')
+    unnormalised <- !has_dat ||
+        (identical(length(dat@x), length(cnt@x)) &&
+         isTRUE(all.equal(dat@x, cnt@x)))
+    if (unnormalised) {
+        cat('  data layer == counts: object carries NO normalisation.\n')
+        cat('  Native arm gets NormalizeData(LogNormalize, 1e4) so the gate\n')
+        cat('  measures backstop-vs-standard, not backstop-vs-the-bug.\n')
+        o <- NormalizeData(o, normalization.method = 'LogNormalize',
+                           scale.factor = 1e4, verbose = FALSE)
+        cat('  native data layer max now:', max(GetAssayData(o, assay = a,
+            layer = 'data')@x), '\n')
+    } else {
+        cat('  data layer differs from counts: object is already normalised.\n')
+        cat('  Native arm left as-is; the converter carries logcounts through.\n')
+    }
+    rm(cnt, dat)
     saveRDS(o, '$OUT/native_prepped.rds')
     cat('Wrote $OUT/native_prepped.rds\n')
     " 2>&1 | tee "$OUT/logs/00b_prep.log"
