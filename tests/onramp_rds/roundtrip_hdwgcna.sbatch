@@ -8,9 +8,9 @@
 #SBATCH --mail-user=lesolano@uci.edu
 #SBATCH --mail-type=END,FAIL
 # ============================================================================
-# Tier 2: hdWGCNA round-trip equivalence for the Seurat .rds on-ramp.
+# EQUIVALENCE GATE: hdWGCNA round-trip for the Seurat .rds on-ramp.
 #
-# Tier 1 (compare.py) proves the converted MATRIX is bit-exact. It cannot
+# The fidelity gate (compare.py) proves the converted MATRIX is bit-exact. It cannot
 # prove an ANALYSIS on top of that matrix lands in the same place -- hdWGCNA
 # soft-power selection and the WGCNA tree cut are threshold decisions, so a
 # 1e-15 drift could in principle tip a module split.
@@ -24,7 +24,7 @@
 #                    -> run_hdwgcna_celltype.R
 #
 # This exercises BOTH converters, so it catches a round-trip asymmetry that
-# Tier 1 is blind to.
+# the fidelity gate is blind to.
 #
 # Usage:
 #   sbatch --export=ALL,RDS=/path/x.rds,CT_KEY=subclass,N_CT=2,OUT=/path/out \
@@ -99,7 +99,7 @@ cat('Counts  :', paste(head(as.integer(t), $N_CT), collapse=' | '), '\n')
 #        (991 / 440) and the native arm on uncorrected pooled ones
 #        (1000 / 546) -- different metacell populations feeding WGCNA, which
 #        is why every module-level metric failed while the matrix itself was
-#        bit-exact under Tier 1.
+#        bit-exact under the fidelity gate.
 #
 #  (iii) NORMALISATION. An object whose `data` layer still equals its `counts`
 #        layer carries no normalisation at all -- SEA-AD is exactly this, and

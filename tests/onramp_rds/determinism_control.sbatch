@@ -8,7 +8,7 @@
 #SBATCH --mail-user=lesolano@uci.edu
 #SBATCH --mail-type=END,FAIL
 # ============================================================================
-# DETERMINISM CONTROL for the Tier 2 round-trip gate.
+# DETERMINISM CONTROL for the round-trip equivalence gate.
 #
 # roundtrip_hdwgcna.sbatch scores NATIVE vs ROUNDTRIP against fixed
 # thresholds. That is only meaningful if two runs of the SAME arm on the SAME
@@ -18,7 +18,7 @@
 # This runs run_hdwgcna_celltype.R TWICE on one identical object and scores
 # the pair with the gate's own comparator.
 #
-#   exit 0 -> deterministic; any Tier 2 drift is REAL and attributable to the
+#   exit 0 -> deterministic; any equivalence drift is REAL and attributable to the
 #             converters, with no noise budget to hide in
 #   exit 1 -> the gate is scoring noise; the thresholds, and probably the
 #             gate's design, need rethinking before any converter is blamed
@@ -91,10 +91,10 @@ rc=${PIPESTATUS[0]}
 echo "=============================================================="
 cat "$OUT/compare_determinism.tsv" 2>/dev/null
 if [[ $rc -eq 0 ]]; then
-    echo "DETERMINISM CONTROL: PASS -- deterministic; Tier 2 drift is REAL"
+    echo "DETERMINISM CONTROL: PASS -- deterministic; equivalence drift is REAL"
 else
     echo "DETERMINISM CONTROL: FAIL -- the gate is scoring run-to-run noise."
-    echo "  Do NOT blame the converters on a Tier 2 failure until this passes."
+    echo "  Do NOT blame the converters on an equivalence failure until this passes."
 fi
 echo "=============================================================="
 exit $rc

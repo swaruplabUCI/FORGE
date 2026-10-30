@@ -2,7 +2,7 @@
 # ============================================================================
 # Round-trip hdWGCNA equivalence gate for the Seurat .rds on-ramp.
 #
-# Tier 1 (compare.py) proves the CONVERTED MATRIX is bit-exact. It cannot
+# The fidelity gate (compare.py) proves the CONVERTED MATRIX is bit-exact. It cannot
 # prove that an analysis run on top of that matrix lands in the same place --
 # hdWGCNA soft-power selection and the WGCNA tree cut are both threshold
 # decisions, so a 1e-15 drift could in principle tip a module split.
@@ -14,7 +14,7 @@
 #                            -> run_hdwgcna_celltype.R
 #
 # It therefore exercises BOTH converters and would catch a round-trip
-# asymmetry that Tier 1 alone is blind to.
+# asymmetry that the fidelity gate alone is blind to.
 #
 # Exit 0 = within tolerance. Exit 1 = a metric drifted past its threshold.
 # ============================================================================
