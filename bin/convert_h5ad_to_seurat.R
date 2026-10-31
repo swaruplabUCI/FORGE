@@ -35,9 +35,11 @@ parse_args <- function(args) {
         } else if (args[i] == "--cell_type_key" && i < length(args)) {
             arg_list$cell_type_key <- args[i + 1]
             i <- i + 2
-        } else if (args[i] == "--native_counts_mapping") {
-            # PROBE FLAG, default OFF -- see the block at the as.Seurat call.
-            arg_list$native_counts_mapping <- TRUE
+        } else if (args[i] == "--legacy_counts_mapping") {
+            # Restores the pre-2026-10-30 native mapping (counts = X, i.e.
+            # normalised values in the counts slot). Only for reproducing an
+            # old result, or for the probe harness that measures the delta.
+            arg_list$legacy_counts_mapping <- TRUE
             i <- i + 1
         } else if (args[i] == "--assay_name" && i < length(args)) {
             arg_list$assay_name <- args[i + 1]
@@ -236,37 +238,46 @@ tryCatch({
             rm(x_mat)
         }
     }
-    # --- PROBE: the native convention's counts/data mapping -----------------
-    # OFF BY DEFAULT. Shipped behaviour is unchanged unless the flag is passed.
-    #
+    # --- the native convention's counts/data mapping ------------------------
     # On the native convention X is log-normalised and layers/counts holds the
-    # real raw counts. The shipped mapping is counts = X, data = X, so the
-    # Seurat `counts` slot holds NORMALISED values and the raw counts sitting
-    # in layers/counts go unused. FindVariableFeatures(selection.method="vst")
-    # reads `counts`, so native hdWGCNA runs select variable features from
-    # normalised data. Wrong in principle.
+    # real raw counts. Until 2026-10-30 this mapped counts = X, data = X, so
+    # the Seurat `counts` slot held NORMALISED values and the genuine counts
+    # went unused. Three things downstream read that slot and all three expect
+    # counts:
     #
-    # Fixing it would change results on the established native path -- every
-    # native hdWGCNA run FORGE has ever done -- so the decision was to QUANTIFY
-    # FIRST. This flag exists to make that measurable: the probe harness runs
-    # the converter twice on the same h5ad, once without the flag and once
-    # with, and scores the two hdWGCNA runs against each other.
+    #   FindVariableFeatures(selection.method = "vst")  models a mean-variance
+    #       relationship that only exists in count data; log-normalising first
+    #       destroys it.
+    #   MetacellsByGroups()  defaults to layer = "counts" and AGGREGATES it.
+    #   NormalizeMetacells() then normalises that aggregate -- so on the old
+    #       mapping it was re-normalising already-normalised values.
     #
-    # If the measurement says fix it, this stops being a flag and becomes the
-    # default for the native branch. If it says the effect is negligible, that
-    # is worth knowing too and the flag documents why nothing changed.
-    use_native_mapping <- isTRUE(opt$native_counts_mapping) &&
+    # The last two feed SetDatExpr and therefore WGCNA's correlation matrix
+    # directly. That makes this worse than the logcounts defect (4020d42,
+    # severity corrected in c3d0044), which perturbed metacell COMPOSITION but
+    # never put the wrong values into the correlation itself.
+    #
+    # Measured before changing it, on multiome_90p (237512 cells, real data),
+    # legacy mapping vs this one:
+    #   L2/3 IT          3 vs 3 modules, 83.3% of module genes in the same
+    #                    module, hub jaccard 0.579, metacells 13269 vs 12190
+    #   Oligodendrocyte  6 vs 8 MODULES, 59.1% same module, hub jaccard 0.549,
+    #                    metacells 11554 vs 10692
+    # Variable-feature overlap at the pipeline's own settings was jaccard
+    # ~0.48 -- barely above the ~0.36 expected from two independent draws.
+    #
+    # Guarded on the native convention, so the on-ramp paths are untouched:
+    # they carry logcounts (or get the CPM+log1p backstop) and keep X as
+    # counts, which is already correct there.
+    use_native_mapping <- !isTRUE(opt$legacy_counts_mapping) &&
                           !has_logcounts && "counts" %in% sce_assays
-    if (isTRUE(opt$native_counts_mapping)) {
-        if (use_native_mapping) {
-            message("  PROBE: native counts mapping ON -> counts='counts' ",
-                    "(raw), data='X' (normalised)")
-        } else {
-            message("  PROBE: --native_counts_mapping requested but NOT ",
-                    "applicable (has_logcounts=", has_logcounts,
-                    ", counts assay present=", "counts" %in% sce_assays,
-                    "); using the shipped mapping")
-        }
+    if (use_native_mapping) {
+        message("  Native convention -> counts='counts' (raw), data='X' ",
+                "(normalised)")
+    } else if (isTRUE(opt$legacy_counts_mapping)) {
+        message("  LEGACY counts mapping requested; counts='X'. This puts ",
+                "normalised values in the counts slot -- only correct for ",
+                "reproducing a pre-2026-10-30 result.")
     }
     seurat_obj <- if (use_native_mapping) {
         as.Seurat(sce, counts = "counts", data = "X")

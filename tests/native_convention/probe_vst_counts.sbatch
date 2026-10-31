@@ -25,11 +25,17 @@
 #   from normalised data. Wrong in principle; unknown in magnitude.
 #
 # THE TWO ARMS, on ONE native-convention h5ad:
-#   CURRENT   : convert_h5ad_to_seurat.R as shipped
-#               -> counts = X (normalised), data = X
-#   CORRECTED : convert_h5ad_to_seurat.R --native_counts_mapping
+#   CURRENT   : convert_h5ad_to_seurat.R --legacy_counts_mapping
+#               -> counts = X (normalised), data = X   [pre-2026-10-30]
+#   CORRECTED : convert_h5ad_to_seurat.R as shipped
 #               -> counts = layers/counts (raw), data = X (normalised)
 #   then run_hdwgcna_celltype.R on each, scored with compare_hdwgcna.R.
+#
+# NOTE: the arms swapped roles on 2026-10-30. The measurement below said the
+# legacy mapping changed results materially (Oligodendrocyte 6 vs 8 modules),
+# so the corrected mapping became the default and the flag now restores the
+# old behaviour. This harness is kept as the regression instrument: re-running
+# it must keep reproducing the same delta.
 #
 # Both arms come from the SAME converter invocation path, differing only in
 # that flag, so nothing else can drift between them.
@@ -99,20 +105,20 @@ cat('Native convention confirmed.\n')
 if [[ -s "$OUT/current.rds" ]]; then
     echo ">>> [1/4] SKIP current.rds (present)"
 else
-    echo ">>> [1/4] convert -- CURRENT mapping (shipped)"
+    echo ">>> [1/4] convert -- LEGACY mapping (pre-2026-10-30 behaviour)"
     $R "$REPO/bin/convert_h5ad_to_seurat.R" \
         --h5ad "$H5AD" --output "$OUT/current.rds" --cell_type_key "$CT_KEY" \
+        --legacy_counts_mapping \
         2>&1 | tee "$OUT/logs/01_current.log"
 fi
-[[ -s "$OUT/current.rds" ]] || { echo "FATAL: current arm not built"; exit 1; }
+[[ -s "$OUT/current.rds" ]] || { echo "FATAL: legacy arm not built"; exit 1; }
 
 if [[ -s "$OUT/corrected.rds" ]]; then
     echo ">>> [2/4] SKIP corrected.rds (present)"
 else
-    echo ">>> [2/4] convert -- CORRECTED mapping (--native_counts_mapping)"
+    echo ">>> [2/4] convert -- CORRECTED mapping (the shipped default)"
     $R "$REPO/bin/convert_h5ad_to_seurat.R" \
         --h5ad "$H5AD" --output "$OUT/corrected.rds" --cell_type_key "$CT_KEY" \
-        --native_counts_mapping \
         2>&1 | tee "$OUT/logs/02_corrected.log"
 fi
 [[ -s "$OUT/corrected.rds" ]] || { echo "FATAL: corrected arm not built"; exit 1; }
@@ -135,14 +141,6 @@ if (isint(ca)) stop('CURRENT counts is integral -- the shipped mapping did ',
 if (!isint(cb)) stop('CORRECTED counts is NOT integral -- the flag did not ',
                      'pick up layers/counts. Probe assumption broken.')
 cat('Arms differ as expected.\n')
-# the variable features each arm would select -- the actual mechanism
-va <- VariableFeatures(FindVariableFeatures(a, selection.method='vst',
-                       nfeatures=2000, verbose=FALSE))
-vb <- VariableFeatures(FindVariableFeatures(b, selection.method='vst',
-                       nfeatures=2000, verbose=FALSE))
-ov <- length(intersect(va, vb)) / length(union(va, vb))
-cat(sprintf('\n*** VARIABLE FEATURE OVERLAP (2000 genes): jaccard %.4f, shared %d/2000 ***\n',
-            ov, length(intersect(va, vb))))
 " 2>&1 | tee "$OUT/logs/03_arms_differ.log"
 [[ ${PIPESTATUS[0]} -ne 0 ]] && { echo "FATAL: probe assumptions broken"; exit 1; }
 
@@ -157,6 +155,36 @@ cat('Selected:', paste(head(names(t), $N_CT), collapse=' | '), '\n')
 cat('Counts  :', paste(head(as.integer(t), $N_CT), collapse=' | '), '\n')
 " 2>&1 | tee "$OUT/logs/04_select.log"
 [[ -s "$OUT/celltypes.txt" ]] || { echo "FATAL: no cell types"; exit 1; }
+
+# --- 3b. the mechanism, measured the way the pipeline actually does it -----
+# run_hdwgcna_celltype.R subsets to ONE cell type, then calls
+# FindVariableFeatures(selection.method="vst", nfeatures=12000). An earlier
+# version of this probe measured the overlap on the WHOLE object at
+# nfeatures=2000 and got a number that looked right for the wrong reasons.
+# Measure what the pipeline measures, or do not measure it.
+#
+# Report the rank correlation too: RunPCA consumes VariableFeatures in order,
+# so a reshuffle of the shared genes matters even when membership does not.
+$R -e "
+suppressPackageStartupMessages(library(Seurat))
+a <- readRDS('$OUT/current.rds'); b <- readRDS('$OUT/corrected.rds')
+N <- nrow(a); K <- 12000
+cat(sprintf('genes=%d  nfeatures=%d  jaccard expected from two INDEPENDENT draws: %.4f\n\n',
+            N, K, (K*K/N)/(2*K - K*K/N)))
+for (ct in readLines('$OUT/celltypes.txt')) {
+  sa <- a[, a@meta.data[['$CT_KEY']] == ct]
+  sb <- b[, b@meta.data[['$CT_KEY']] == ct]
+  va <- VariableFeatures(FindVariableFeatures(sa, selection.method='vst',
+                         nfeatures=K, verbose=FALSE))
+  vb <- VariableFeatures(FindVariableFeatures(sb, selection.method='vst',
+                         nfeatures=K, verbose=FALSE))
+  i <- length(intersect(va, vb))
+  ra <- match(intersect(va, vb), va); rb <- match(intersect(va, vb), vb)
+  cat(sprintf('%-20s n=%6d  shared=%5d/%d  jaccard=%.4f  rank_cor=%.4f\n',
+              ct, ncol(sa), i, K, i/length(union(va, vb)),
+              cor(ra, rb, method='spearman')))
+}
+" 2>&1 | tee "$OUT/logs/07_variable_features.log"
 
 rc_all=0
 while IFS= read -r CT; do
@@ -194,6 +222,6 @@ cat "$OUT"/probe_*.tsv 2>/dev/null | awk 'NR==1 || $1!="label"'
 echo
 echo "REMINDER: a FAIL here is the EXPECTED shape of the answer. The arms are"
 echo "deliberately different. Read the MAGNITUDE, not the verdict column."
-grep -h 'VARIABLE FEATURE OVERLAP' "$OUT/logs/03_arms_differ.log" 2>/dev/null
+cat "$OUT/logs/07_variable_features.log" 2>/dev/null | tail -5
 echo "=============================================================="
 exit 0
