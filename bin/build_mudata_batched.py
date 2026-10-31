@@ -130,16 +130,60 @@ def main():
     # ========================================================================
     # Load SCANVI predictions if provided
     # ========================================================================
-    # Canonical cell-type precedence: scanvi > celltypist (aliases) > marker.
+    # Canonical cell-type precedence: cell_type > scanvi > celltypist > marker.
     # We write the chosen value under a unified column name 'cell_type' and
     # record provenance in 'cell_type_source' so downstream modules don't need
     # to juggle annotation-tool-specific column names.
+    #
+    # 'cell_type' MUST COME FIRST, and its absence here was a real on-ramp bug.
+    # The two producers of the integrated RNA h5ad stamp it from different
+    # places:
+    #
+    #   native path (plot_postscanvi.py:674)   stamps cell_type FROM one of the
+    #       tool-specific columns below, and LEAVES that column in place -- so
+    #       scanning for 'scanvi_prediction' happened to work here.
+    #   seurat_rds on-ramp (convert_seurat_to_h5ad.R:290)   stamps cell_type
+    #       from whatever column the user's object actually uses -- Allen and
+    #       SEA-AD both use `subclass_label` -- and carries that column through
+    #       under ITS OWN name. None of the four below exist.
+    #
+    # So on an on-ramped run this scan found nothing, pred_col stayed None, and
+    # the RNA modality's labels ended as NaN ("no usable RNA cell_type column")
+    # while the correct labels sat in obs['cell_type'] the whole time. Worse,
+    # if the user's object happened to carry a STALE 'scanvi_prediction' or
+    # 'cell_type_marker' from an earlier analysis, that was silently preferred
+    # over both the canonical column and the cell_type_key the user configured.
+    #
+    # plot_postscanvi.py:672 says the canonical column exists precisely so
+    # "downstream modules (BUILD_MUDATA, MULTIVI_GAP_FILL) don't have to juggle
+    # tool-specific names". This is BUILD_MUDATA finally honouring that.
+    #
+    # A None provenance means "read it from obs['cell_type_source']", which
+    # both producers stamp alongside the column itself.
     _CT_CANDIDATES = [
+        ('cell_type', None),
         ('scanvi_prediction', 'scanvi'),
         ('celltypist_prediction', 'celltypist'),
         ('cell_type_prediction', 'celltypist'),
         ('cell_type_marker', 'marker'),
     ]
+
+    def _resolve_ct_source(obs, declared):
+        """Provenance for a chosen cell-type column.
+
+        Tool-specific columns declare their own source. The canonical
+        'cell_type' column declares None, so its provenance is whatever the
+        producer recorded in 'cell_type_source' -- 'scanvi' on the native path,
+        'seurat_onramp' on the .rds on-ramp. Falls back to 'canonical' when the
+        producer wrote the column but no provenance.
+        """
+        if declared is not None:
+            return declared
+        if 'cell_type_source' in obs.columns:
+            vals = obs['cell_type_source'].dropna().unique()
+            if len(vals) == 1:
+                return str(vals[0])
+        return 'canonical'
     # Lookup keyed by (sample, stripped_barcode). Built by parsing the scanvi
     # h5ad's obs_names using the `batch`/`sample` column to strip the concat
     # suffix. Falls back to (None, stripped_bc) for sample-agnostic matches.
@@ -159,7 +203,8 @@ def main():
                     vals = scanvi_adata.obs[candidate].dropna().unique()
                     if len(vals) > 1 or (len(vals) == 1 and vals[0] != 'Unknown'):
                         pred_col = candidate
-                        scanvi_source = source
+                        scanvi_source = _resolve_ct_source(
+                            scanvi_adata.obs, source)
                         break
             if pred_col:
                 sample_col = None
@@ -191,6 +236,18 @@ def main():
                     f"for {scanvi_adata.n_obs} cells, {n_unique} unique cell types; "
                     f"sample_col='{sample_col}'",
                     LOG_FILE,
+                )
+            else:
+                # Previously silent: pred_col None fell straight through and
+                # the only clue was a NaN cell_type much later. Say so here,
+                # and name the columns that ARE present so the fix is obvious.
+                log_message(
+                    "⚠ No usable cell-type column in "
+                    f"{args.scanvi_file}. Tried: "
+                    + ", ".join(c for c, _ in _CT_CANDIDATES)
+                    + f". Present in obs: {', '.join(map(str, scanvi_adata.obs.columns))}",
+                    LOG_FILE,
+                    "WARN",
                 )
         except Exception as e:
             log_message(f"⚠ Could not load cell-type file: {e}", LOG_FILE, "WARN")
@@ -463,7 +520,8 @@ def main():
                     vals = rna_obs[candidate].dropna().unique()
                     if len(vals) > 1 or (len(vals) == 1 and str(vals[0]).lower() != 'unknown'):
                         rna_obs['cell_type'] = rna_obs[candidate].values
-                        rna_obs['cell_type_source'] = src
+                        rna_obs['cell_type_source'] = _resolve_ct_source(
+                            rna_obs, src)
                         log_message(
                             f"  RNA cell_type fallback: set from '{candidate}' (source={src})",
                             LOG_FILE,

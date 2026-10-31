@@ -215,3 +215,47 @@ Their configs are in `configs/datasets/`. Measured cost across all four:
 
 Steps 1 and 2 cost seconds and catch the large majority of problems. Do not skip
 them.
+
+---
+
+## On-ramp equivalence gates
+
+The three tiers above ask whether **FORGE** works. There is a separate question
+for anyone using an on-ramp: does the artifact you injected behave like one
+FORGE produced itself?
+
+That is a different axis, so it has its own gates and its own names — they are
+**not** the Tier 1/2/3 above:
+
+| Gate | Asks | Cost |
+|---|---|---|
+| **fidelity** | did the matrix survive conversion? | minutes |
+| **equivalence** | does an *analysis* on that matrix land in the same place? | hours, SLURM |
+| **scale** | does it hold at atlas size, and what does it cost? | hours, SLURM, high memory |
+| **determinism control** | is the equivalence gate readable at all? | ~25 min |
+
+They live in `tests/onramp_rds/`, and
+[`tests/onramp_rds/README.md`](https://github.com/swaruplabUCI/FORGE/blob/main/tests/onramp_rds/README.md)
+has the invocations, the caching rules and how to read a failure.
+
+**Why the analysis-level gates exist.** Every defect found in the `.rds`
+on-ramp so far has been silent — nothing crashed and no warning printed. Three
+of them passed the fidelity gate untouched, because the matrix really was
+bit-exact; what differed was what an analysis *did* with it. A dropped
+`logcounts` layer, for instance, left the matrix perfect and changed which
+cells got grouped into which hdWGCNA metacell. Only a comparison at the
+analysis level could see that.
+
+**If you are on-ramping**, the cheap and genuinely useful one is the
+determinism control plus a single-cell-type equivalence run on your own object
+before you trust a large one. If you are only *changing* FORGE, the relevant
+rule is narrower: a zero noise floor is a property of the installed hdWGCNA,
+WGCNA, Seurat and BLAS, so re-run the determinism control after any of those
+change before trusting an equivalence result.
+
+### What the on-ramp gates do not cover
+
+MAST differential expression goes through the same converter as hdWGCNA but has
+no equivalence test of its own, and neither do the multiome and GRN consumers
+(MuData assembly end to end, DORC, SCENIC+, pycisTopic). Check those against a
+native run before publishing off them.

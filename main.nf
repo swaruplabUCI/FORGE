@@ -42,6 +42,7 @@ include { RUN_CELLCHAT } from './modules/cellchat/cellchat'
 include { CELLCHAT_PER_CONDITION } from './modules/cellchat/cellchat_compare'
 include { CELLCHAT_COMPARE } from './modules/cellchat/cellchat_compare'
 include { CONVERT_H5AD_TO_SEURAT } from './modules/conversion/h5ad_to_seurat'
+include { CONVERT_SEURAT_TO_H5AD } from './modules/conversion/seurat_to_h5ad'
 include { HDWGCNA_PER_CELLTYPE } from './modules/hdwgcna/hdwgcna.nf'
 include { HDWGCNA_DIFFERENTIAL } from './modules/hdwgcna/hdwgcna_differential'
 include { HDWGCNA_ENRICHMENT } from './modules/hdwgcna/hdwgcna_differential'
@@ -908,7 +909,9 @@ def validateStartupParams() {
     // keys with no consumer anywhere. After the D2.1 back-port from PBMC,
     // 14 keys are wired (3 top-level + 10 inside REGULATORY_ANALYSIS + 1 mudata).
     // The keys below remain placeholders and would silently no-op if set.
-    def neverWiredOnrampKeys = ['cistopic_obj_pkl', 'seurat_rds', 'da_peaks_dir',
+    // 2026-10-23: seurat_rds left this list when CONVERT_SEURAT_TO_H5AD was
+    // wired. Its own rules are below.
+    def neverWiredOnrampKeys = ['cistopic_obj_pkl', 'da_peaks_dir',
                                 'cicero_connections_ctrl', 'cicero_connections_trt',
                                 'cicero_ccan_ctrl', 'cicero_ccan_trt']
     if (params.onramp) {
@@ -918,6 +921,66 @@ def validateStartupParams() {
                           "consumer exists in any FORGE main.nf. Unset this key; the " +
                           "producer step will run regardless."
             }
+        }
+    }
+
+    // --- BETA (2026-10-23): Seurat .rds RNA on-ramp.
+    // Both on-ramps terminate at ch_integrated_rna, so setting both leaves no
+    // defensible winner. Reject rather than silently preferring one.
+    if (params.onramp?.seurat_rds) {
+        if (params.onramp?.rna_integrated_h5ad) {
+            errors << "params.onramp.seurat_rds and params.onramp.rna_integrated_h5ad " +
+                      "both set. They are two routes to the same artifact " +
+                      "(the integrated RNA h5ad) -- set exactly one."
+        }
+        def rdsF = file(params.onramp.seurat_rds)
+        if (!rdsF.exists()) {
+            errors << "params.onramp.seurat_rds does not exist: ${params.onramp.seurat_rds}"
+        } else if (!(params.onramp.seurat_rds.toString().toLowerCase() ==~ /.*\.(rds|qs)$/)) {
+            // Not fatal in principle, but a .h5ad here means the user wanted
+            // rna_integrated_h5ad and would otherwise get an R-side class error.
+            errors << "params.onramp.seurat_rds should be a Seurat .rds file, got: " +
+                      "${params.onramp.seurat_rds}. For an h5ad use " +
+                      "params.onramp.rna_integrated_h5ad."
+        }
+        warnings << "params.onramp.seurat_rds is BETA (added 2026-10-23). The " +
+                   "conversion is verified bit-exact for counts, embeddings and " +
+                   "metadata, and hdWGCNA and CellChat are gated round-trip " +
+                   "equivalent on it. MAST differential expression and the " +
+                   "multiome/GRN consumers are NOT yet gated -- verify those " +
+                   "against a native run."
+        // 2026-10-27: hdWGCNA and CellChat were hoisted out of the RNA
+        // subworkflow into RNA_NETWORKS, so they DO now run on an on-ramped
+        // object. That made the cell-type column a scientific decision rather
+        // than a plumbing detail, and the mandate below was gated on those two
+        // analyses being enabled.
+        //
+        // 2026-10-30: THAT GATE IS REMOVED -- the key is now required whenever
+        // seurat_rds is set at all. 03aff21 fixed BUILD_MUDATA to read the
+        // canonical obs['cell_type'] the converter stamps, so the labels now
+        // also drive the MuData's RNA annotation and everything downstream of
+        // it. The blast radius is no longer "the two network analyses", and
+        // gating the mandate on hdwgcna.run/cellchat.run would leave the wider
+        // set silently auto-detected.
+        //
+        // Auto-detection (CT_CANDIDATES in bin/convert_seurat_to_h5ad.R) can
+        // adopt a stale 'cell_type' column left over from an earlier analysis;
+        // an object carrying class/subclass/cluster has no single obvious
+        // answer, and only the user knows which level the analysis is about.
+        // The failure is silent and scientific in every consumer, so the key
+        // is mandatory rather than inferred.
+        //
+        // The converter keeps its auto-detect for standalone use. The pipeline
+        // never exercises it: it always passes --cell_type_key.
+        if (!params.onramp_seurat?.cell_type_key) {
+            errors << "params.onramp.seurat_rds requires " +
+                      "params.onramp_seurat.cell_type_key to be set explicitly " +
+                      "-- auto-detection is not allowed, because the labels " +
+                      "drive co-expression network construction, the MuData's " +
+                      "RNA annotation and every consumer downstream of them. " +
+                      "Name the meta.data column holding the annotation level " +
+                      "you want the analysis run at (e.g. 'subclass', not " +
+                      "'class')."
         }
     }
 
@@ -952,9 +1015,13 @@ def validateStartupParams() {
         }
     }
     // RNA per-sample dir is required for multiome when rna_integrated is onramped.
-    if (params.onramp?.rna_integrated_h5ad && params.run_multiome_integration &&
+    // seurat_rds lands on the same channel as rna_integrated_h5ad, so it
+    // inherits this requirement verbatim.
+    def rna_onramp_key = params.onramp?.rna_integrated_h5ad ? 'rna_integrated_h5ad' :
+                         (params.onramp?.seurat_rds ? 'seurat_rds' : null)
+    if (rna_onramp_key && params.run_multiome_integration &&
         !params.onramp?.rna_per_sample_h5ads_dir && !params.onramp?.mudata_h5mu) {
-        errors << "rna_integrated_h5ad onramp + run_multiome_integration=true requires " +
+        errors << "${rna_onramp_key} onramp + run_multiome_integration=true requires " +
                   "either rna_per_sample_h5ads_dir (for fresh multiome) or mudata_h5mu " +
                   "(skip multiome). Set one, or set run_multiome_integration=false."
     }
@@ -1128,6 +1195,36 @@ workflow RNA {
     // Debug: View what was emitted
     PLOT_POST_SCANVI.out.annotated_updated.view { "H5AD file emitted: $it" }
 
+
+    emit:
+    integrated_rna = PLOT_POST_SCANVI.out.annotated_updated
+    qc_h5ads = RNA_QC.out.filtered_h5ad
+    pre_qc_plots = CONCAT_BATCHES.out.plots
+    post_qc_plots = PLOT_POST_SCANVI.out.plots
+    cellbender_reports = CELLBENDER.out.report
+
+}
+
+// ============================================================================
+// RNA CO-EXPRESSION & SIGNALING  (hdWGCNA + CellChat)
+//
+// 2026-10-27: hoisted verbatim out of `workflow RNA` so it runs off the
+// integrated-RNA h5ad regardless of what produced that h5ad -- the native RNA
+// path, the rna_integrated_h5ad on-ramp, or the seurat_rds on-ramp. Both
+// blocks only ever consumed PLOT_POST_SCANVI.out.annotated_updated plus the
+// cell-type key, so this is a relocation, not a rewrite.
+//
+// Before this change every RNA on-ramp skipped `workflow RNA` wholesale and
+// therefore silently skipped hdWGCNA and CellChat even when both were enabled
+// -- the pre-existing "D2.1 on-ramp gating" gap, not something the seurat_rds
+// work introduced.
+// ============================================================================
+workflow RNA_NETWORKS {
+    take:
+    ch_rna_h5ad   // integrated RNA h5ad, from any source
+    ct_key        // obs column holding the cell-type labels
+
+    main:
     // ====================================================================
     // Step 8: CellChat L-R Analysis (global-first + optional differential)
     // ====================================================================
@@ -1136,12 +1233,12 @@ workflow RNA {
 
         // --- Tier 1: Global CellChat (condition-agnostic) ---
         log.info "  Step 8a: Global CellChat (all cells, no condition split)..."
-        ch_cellchat_input = PLOT_POST_SCANVI.out.annotated_updated
+        ch_cellchat_input = ch_rna_h5ad
             .map { file -> tuple("integrated", file) }
 
         RUN_CELLCHAT(
             ch_cellchat_input,
-            cell_type_key,
+            ct_key,
             "none",
             params.species
         )
@@ -1159,9 +1256,9 @@ workflow RNA {
             ch_conditions = Channel.from(params.cellchat.conditions)
 
             CELLCHAT_PER_CONDITION(
-                PLOT_POST_SCANVI.out.annotated_updated,
+                ch_rna_h5ad,
                 ch_conditions,
-                cell_type_key,
+                ct_key,
                 params.cellchat.condition_key,
                 params.species,
                 file(params.cellchat.group_mapping ?: 'NO_FILE')
@@ -1185,8 +1282,8 @@ workflow RNA {
 
         // --- Step 9a: Convert h5ad to Seurat RDS ---
         CONVERT_H5AD_TO_SEURAT(
-            PLOT_POST_SCANVI.out.annotated_updated,
-            cell_type_key
+            ch_rna_h5ad,
+            ct_key
         )
 
         // --- Step 9b: Create per-cell-type channel ---
@@ -1202,7 +1299,7 @@ workflow RNA {
         log.info "  Step 9c: Tier 1 -- per-cell-type network construction..."
         HDWGCNA_PER_CELLTYPE(
             ch_hdwgcna_input,
-            cell_type_key,
+            ct_key,
             params.hdwgcna.metadata ?: 'NO_FILE'
         )
 
@@ -1231,7 +1328,7 @@ workflow RNA {
             HDWGCNA_DIFFERENTIAL(
                 HDWGCNA_PER_CELLTYPE.out.seurat_obj.map { ct, rds -> rds },
                 HDWGCNA_PER_CELLTYPE.out.seurat_obj.map { ct, rds -> ct },
-                cell_type_key,
+                ct_key,
                 params.hdwgcna.condition_key,
                 params.hdwgcna.control_condition,
                 params.hdwgcna.treatment_condition,
@@ -1244,12 +1341,6 @@ workflow RNA {
     }
 
     emit:
-    integrated_rna = PLOT_POST_SCANVI.out.annotated_updated
-    qc_h5ads = RNA_QC.out.filtered_h5ad
-    pre_qc_plots = CONCAT_BATCHES.out.plots
-    post_qc_plots = PLOT_POST_SCANVI.out.plots
-    cellbender_reports = CELLBENDER.out.report
-
     // CellChat outputs
     cellchat_results    = params.cellchat.run ? RUN_CELLCHAT.out.cellchat_rds : Channel.empty()
     cellchat_plots      = params.cellchat.run ? RUN_CELLCHAT.out.plots : Channel.empty()
@@ -1272,6 +1363,7 @@ workflow RNA {
     hdwgcna_trait_plots = (params.hdwgcna.run && params.hdwgcna.condition_key && params.hdwgcna.condition_key != "none") ?
         HDWGCNA_DIFFERENTIAL.out.module_trait_plots : Channel.empty()
 }
+
 
 // ============================================================================
 // RNA DIFFERENTIAL EXPRESSION WORKFLOW
@@ -3423,6 +3515,7 @@ workflow {
 
     On-ramps (wired in src; D2.1 back-port from PBMC instance is deferred):
       rna_integrated_h5ad:    ${params.onramp?.rna_integrated_h5ad ?: 'none'}
+      seurat_rds (BETA):      ${params.onramp?.seurat_rds ?: 'none'}
       atac_peak_matrix_h5ad:  ${params.onramp?.atac_peak_matrix_h5ad ?: 'none'}
       mudata_h5mu:            ${params.onramp?.mudata_h5mu ?: 'none'}
 
@@ -3439,9 +3532,40 @@ workflow {
     def ch_rna_qc_h5ads
     def ch_rna_cellchat_csv
 
-    if (params.onramp?.rna_integrated_h5ad) {
-        log.info "ON-RAMP: Pre-integrated RNA: ${params.onramp.rna_integrated_h5ad}"
-        ch_integrated_rna = Channel.value(file(params.onramp.rna_integrated_h5ad))
+    if (params.onramp?.rna_integrated_h5ad || params.onramp?.seurat_rds) {
+        // BETA (2026-10-23): seurat_rds enters here rather than through a
+        // branch of its own. Once converted it IS the integrated-RNA h5ad, so
+        // every side-key rule, warning and downstream consumer below applies
+        // unchanged -- the two on-ramps differ only in how ch_integrated_rna
+        // is produced. validateStartupParams() rejects setting both.
+        if (params.onramp?.seurat_rds) {
+            log.info "ON-RAMP (BETA): Seurat .rds -> h5ad: ${params.onramp.seurat_rds}"
+            CONVERT_SEURAT_TO_H5AD(Channel.value(file(params.onramp.seurat_rds)))
+            ch_integrated_rna = CONVERT_SEURAT_TO_H5AD.out.h5ad
+            // Surface the normalisation verdict on the console as soon as the
+            // conversion finishes -- before RNA_NETWORKS spends the hours. The
+            // converter already logs a banner, but process stdout goes to
+            // .command.out where nobody reads it in time. FORGE normalising on
+            // the user's behalf is a scientific decision, so it gets said out
+            // loud on the path they are actually watching.
+            CONVERT_SEURAT_TO_H5AD.out.norm_status.subscribe { f ->
+                if (f.text.trim() == 'UNNORMALISED') {
+                    log.warn """
+        ON-RAMPED OBJECT CARRIES NO NORMALISATION
+          Its 'data' layer is identical to its 'counts' layer, so
+          NormalizeData() was never run on it.
+          FORGE is normalising internally with CPM + log1p, which is
+          bit-identical to NormalizeData(LogNormalize, scale.factor = 1e4).
+          That is FORGE's normalisation, not yours, and it cannot reproduce
+          a custom approach such as SCTransform.
+          To use your own, run NormalizeData() before on-ramping.
+        """.stripIndent()
+                }
+            }
+        } else {
+            log.info "ON-RAMP: Pre-integrated RNA: ${params.onramp.rna_integrated_h5ad}"
+            ch_integrated_rna = Channel.value(file(params.onramp.rna_integrated_h5ad))
+        }
 
         // Per-sample QC'd h5ads — required by MULTIOME_INTEGRATION (sample-level join with ATAC)
         if (params.onramp?.rna_per_sample_h5ads_dir) {
@@ -3473,7 +3597,8 @@ workflow {
         RNA()
         ch_integrated_rna   = RNA.out.integrated_rna
         ch_rna_qc_h5ads     = RNA.out.qc_h5ads
-        ch_rna_cellchat_csv = RNA.out.cellchat_csv
+        // CellChat moved to RNA_NETWORKS (below); its csv is bound there.
+        ch_rna_cellchat_csv = Channel.empty()
         rna_completed = true
         rna_from_onramp = false
     } else {
@@ -3483,6 +3608,35 @@ workflow {
         ch_rna_cellchat_csv = Channel.empty()
         rna_completed = false
         rna_from_onramp = false
+    }
+
+    // ========================================================================
+    // RNA CO-EXPRESSION & SIGNALING  (hdWGCNA + CellChat)
+    //
+    // 2026-10-27: hoisted out of `workflow RNA` so it hangs off
+    // ch_integrated_rna regardless of source. On-ramped objects (seurat_rds
+    // and rna_integrated_h5ad alike) now reach hdWGCNA and CellChat instead of
+    // silently skipping them -- see the RNA_NETWORKS header for the history.
+    // ========================================================================
+    if (rna_completed && (params.cellchat.run || params.hdwgcna.run)) {
+        // The global cell_type_key is derived from params.rna.annotation_method,
+        // which describes a run that never happened on an on-ramped object. The
+        // Seurat on-ramp stamps its canonical labels into obs['cell_type']
+        // (bin/convert_seurat_to_h5ad.R) and rna_integrated_h5ad is documented
+        // to carry the same, so pin 'cell_type' there rather than inheriting a
+        // key that could name a column the object does not have.
+        def rna_net_key = rna_from_onramp ? 'cell_type' : cell_type_key
+        if (rna_from_onramp) {
+            log.info "RNA_NETWORKS on an on-ramped object (cell type key: ${rna_net_key})"
+        }
+
+        RNA_NETWORKS(ch_integrated_rna, rna_net_key)
+
+        // An explicitly on-ramped CellChat csv wins; otherwise take the one we
+        // just produced. Only ENHANCER_FOOTPRINTING_RECIPES Phase 3 reads it.
+        if (params.cellchat.run && !params.onramp?.rna_cellchat_csv) {
+            ch_rna_cellchat_csv = RNA_NETWORKS.out.cellchat_csv
+        }
     }
 
     // ========================================================================

@@ -35,6 +35,12 @@ parse_args <- function(args) {
         } else if (args[i] == "--cell_type_key" && i < length(args)) {
             arg_list$cell_type_key <- args[i + 1]
             i <- i + 2
+        } else if (args[i] == "--legacy_counts_mapping") {
+            # Restores the pre-2026-10-30 native mapping (counts = X, i.e.
+            # normalised values in the counts slot). Only for reproducing an
+            # old result, or for the probe harness that measures the delta.
+            arg_list$legacy_counts_mapping <- TRUE
+            i <- i + 1
         } else if (args[i] == "--assay_name" && i < length(args)) {
             arg_list$assay_name <- args[i + 1]
             i <- i + 2
@@ -68,6 +74,22 @@ if (is.null(opt$assay_name)) {
 # ============================================================================
 # Convert h5ad -> SingleCellExperiment -> Seurat
 # ============================================================================
+
+# Exact integral test, chunked with early exit: a normalised matrix trips on
+# the first chunk, and a 909M-nnz raw matrix never materialises a full logical
+# vector. Mirrors the helper in bin/run_cellchat_infer.R -- the two scripts are
+# standalone by design and share no library.
+is_integral_matrix <- function(m, chunk = 1e7) {
+    x <- m@x
+    n <- length(x)
+    if (n == 0) return(TRUE)
+    starts <- seq(1, n, by = chunk)
+    for (s in starts) {
+        e <- min(s + chunk - 1, n)
+        if (any(x[s:e] != floor(x[s:e]))) return(FALSE)
+    }
+    TRUE
+}
 
 message("=== h5ad -> Seurat Conversion (zellkonverter) ===")
 message("Input: ", opt$h5ad)
@@ -122,8 +144,147 @@ tryCatch({
     message("  SCE dimensions: ", nrow(sce), " genes x ", ncol(sce), " cells")
 
     # Step 2: Convert SCE to Seurat
+    #
+    # The two producers of the h5ad we read disagree about what X means:
+    #
+    #   native RNA path (PLOT_POST_SCANVI, scanpy)
+    #       X = log-normalised data, layers/counts = raw counts, no logcounts
+    #   seurat_rds on-ramp (bin/convert_seurat_to_h5ad.R)
+    #       X = raw counts, layers/logcounts = normalised data
+    #
+    # as.Seurat(counts = "X", data = NULL) leaves the `data` layer holding
+    # whatever X held. On the native convention that is normalised values, so
+    # it was right by accident. On the on-ramp convention it is RAW COUNTS,
+    # and run_hdwgcna_celltype.R does SetDatExpr(..., layer = 'data').
+    #
+    # PRECISELY WHAT THAT BREAKS (verified in hdWGCNA source; commit 4020d42's
+    # message overstates this and is corrected here). It does NOT put raw
+    # counts into WGCNA's correlation matrix: MetacellsByGroups() defaults to
+    # layer = "counts", and NormalizeMetacells() runs NormalizeData() on the
+    # metacell object before SetDatExpr(use_metacells = TRUE) reads it, so the
+    # matrix WGCNA correlates is normalised by hdWGCNA itself. What the
+    # corrupted `data` layer corrupts is ScaleData -> RunPCA -> the kNN that
+    # COMPOSES the metacells -- measurably: 991 vs 1005 metacells for L6 IT,
+    # 440 vs 502 for Sst, which is what dragged the module calls down to
+    # jaccard 0.41. A metacell-composition defect, not raw counts reaching the
+    # correlation -- still wrong biology, silently, with no crash.
+    #
+    # The blunt "runs on raw counts" wording IS literally true of CellChat,
+    # which has no metacell step: run_cellchat_infer.R hands the `data` layer
+    # straight to CellChat. That path does not use this converter at all; it
+    # was fixed separately in 4cf3975.
+    #
+    # Caught by the Tier 2 round-trip gate: the native and round-trip arms
+    # differed in `data` by max 411157 (= 411165 raw max - 8.13 normalised
+    # max) while `counts` was bit-identical, which is exactly why the Tier 1
+    # matrix-fidelity gate could never have seen it.
+    #
+    # Resolution order, matching bin/run_cellchat_infer.R:
+    #   1. logcounts, when the producer supplied it        (the on-ramp)
+    #   2. X as-is, when X is already non-integral         (the native path)
+    #   3. CPM + log1p, when X is integral and no logcounts exists
+    #
+    # Case 2 is the native path and is bit-for-bit what it has always been:
+    # as.Seurat(data = NULL) leaves `data` holding X, which on that convention
+    # is already log-normalised.
+    #
+    # Case 3 is an on-ramped object that was NEVER NORMALISED -- SEA-AD is
+    # exactly this: its `data` slot is identical to its `counts` slot, so
+    # convert_seurat_to_h5ad.R takes its "not writing logcounts" branch and no
+    # logcounts layer reaches us. Without this branch `data` would hold raw
+    # counts and ScaleData -> RunPCA -> the metacell kNN would run on them,
+    # silently, exactly as the on-ramp convention bug did before 4020d42. The
+    # CellChat readers gained this backstop in 4cf3975; this path did not, and
+    # that asymmetry is what is being closed here.
     message("Converting SingleCellExperiment to Seurat...")
-    seurat_obj <- as.Seurat(sce, counts = "X", data = NULL)
+    sce_assays <- SummarizedExperiment::assayNames(sce)
+    message("  SCE assays: ", paste(sce_assays, collapse = ", "))
+    has_logcounts <- "logcounts" %in% sce_assays
+    if (has_logcounts) {
+        message("  logcounts present -> data layer (X stays as counts)")
+    } else {
+        x_mat <- SummarizedExperiment::assay(sce, "X")
+        if (!inherits(x_mat, "dgCMatrix"))
+            x_mat <- as(as(x_mat, "CsparseMatrix"), "dgCMatrix")
+        if (is_integral_matrix(x_mat)) {
+            message("  No logcounts layer and X is integral (raw counts) ",
+                    "-> normalising with CPM + log1p for the data layer")
+            library.size <- Matrix::colSums(x_mat)
+            if (any(library.size == 0)) {
+                stop("Cannot normalise: ", sum(library.size == 0),
+                     " cells have zero total counts")
+            }
+            # Scale each column by its library size IN PLACE.
+            #
+            # The textbook spelling, log1p(t(t(m) / ls) * 1e4), materialises
+            # two full transposes. On a 909M-non-zero object -- SEA-AD, which
+            # is precisely the kind of never-normalised input that reaches
+            # this branch -- that is tens of GB of temporaries and the process
+            # is OOM-killed with no R traceback at all.
+            #
+            # A dgCMatrix is column-compressed, so every non-zero's column
+            # (and therefore its library size) is recoverable from @p. That
+            # turns the whole normalisation into one pass over @x. Structural
+            # zeros are untouched, which is correct: log1p(0) = 0, so sparsity
+            # is preserved exactly as the dense spelling preserved it.
+            per_nz_libsize <- rep.int(library.size, diff(x_mat@p))
+            x_mat@x <- log1p(x_mat@x / per_nz_libsize * 1e4)
+            SummarizedExperiment::assay(sce, "logcounts") <- x_mat
+            has_logcounts <- TRUE
+            rm(x_mat, per_nz_libsize)
+        } else {
+            message("  No logcounts layer; X is already non-integral, so it ",
+                    "supplies both counts and data (native-path convention)")
+            rm(x_mat)
+        }
+    }
+    # --- the native convention's counts/data mapping ------------------------
+    # On the native convention X is log-normalised and layers/counts holds the
+    # real raw counts. Until 2026-10-30 this mapped counts = X, data = X, so
+    # the Seurat `counts` slot held NORMALISED values and the genuine counts
+    # went unused. Three things downstream read that slot and all three expect
+    # counts:
+    #
+    #   FindVariableFeatures(selection.method = "vst")  models a mean-variance
+    #       relationship that only exists in count data; log-normalising first
+    #       destroys it.
+    #   MetacellsByGroups()  defaults to layer = "counts" and AGGREGATES it.
+    #   NormalizeMetacells() then normalises that aggregate -- so on the old
+    #       mapping it was re-normalising already-normalised values.
+    #
+    # The last two feed SetDatExpr and therefore WGCNA's correlation matrix
+    # directly. That makes this worse than the logcounts defect (4020d42,
+    # severity corrected in c3d0044), which perturbed metacell COMPOSITION but
+    # never put the wrong values into the correlation itself.
+    #
+    # Measured before changing it, on multiome_90p (237512 cells, real data),
+    # legacy mapping vs this one:
+    #   L2/3 IT          3 vs 3 modules, 83.3% of module genes in the same
+    #                    module, hub jaccard 0.579, metacells 13269 vs 12190
+    #   Oligodendrocyte  6 vs 8 MODULES, 59.1% same module, hub jaccard 0.549,
+    #                    metacells 11554 vs 10692
+    # Variable-feature overlap at the pipeline's own settings was jaccard
+    # ~0.48 -- barely above the ~0.36 expected from two independent draws.
+    #
+    # Guarded on the native convention, so the on-ramp paths are untouched:
+    # they carry logcounts (or get the CPM+log1p backstop) and keep X as
+    # counts, which is already correct there.
+    use_native_mapping <- !isTRUE(opt$legacy_counts_mapping) &&
+                          !has_logcounts && "counts" %in% sce_assays
+    if (use_native_mapping) {
+        message("  Native convention -> counts='counts' (raw), data='X' ",
+                "(normalised)")
+    } else if (isTRUE(opt$legacy_counts_mapping)) {
+        message("  LEGACY counts mapping requested; counts='X'. This puts ",
+                "normalised values in the counts slot -- only correct for ",
+                "reproducing a pre-2026-10-30 result.")
+    }
+    seurat_obj <- if (use_native_mapping) {
+        as.Seurat(sce, counts = "counts", data = "X")
+    } else {
+        as.Seurat(sce, counts = "X",
+                  data = if (has_logcounts) "logcounts" else NULL)
+    }
 
     message("  Cells: ", ncol(seurat_obj))
     message("  Genes: ", nrow(seurat_obj))
