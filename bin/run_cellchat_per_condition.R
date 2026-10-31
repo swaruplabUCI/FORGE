@@ -25,6 +25,39 @@ suppressPackageStartupMessages({
     library(optparse)
 })
 
+# Exact integral test, chunked with early exit: a normalised matrix trips on
+# the first chunk, and a 909M-nnz raw matrix never materialises a full logical
+# vector. Mirrors the helper in bin/run_cellchat_infer.R -- the bin/ scripts
+# are standalone by design and share no library.
+is_integral_matrix <- function(m, chunk = 1e7) {
+    x <- m@x
+    n <- length(x)
+    if (n == 0) return(TRUE)
+    starts <- seq(1, n, by = chunk)
+    for (s in starts) {
+        e <- min(s + chunk - 1, n)
+        if (any(x[s:e] != floor(x[s:e]))) return(FALSE)
+    }
+    TRUE
+}
+
+# CPM + log1p, written as one in-place pass over the dgCMatrix @x.
+# log1p(t(t(m) / ls) * 1e4) materialises two full transposes; on a large
+# object that is tens of GB of temporaries and the process is OOM-killed with
+# no R traceback. A dgCMatrix is column-compressed, so every non-zero's column
+# -- and therefore its library size -- is recoverable from @p. Structural
+# zeros are untouched, which is correct: log1p(0) = 0.
+normalise_cpm_log1p <- function(m) {
+    if (!inherits(m, "dgCMatrix"))
+        m <- as(as(m, "CsparseMatrix"), "dgCMatrix")
+    library.size <- Matrix::colSums(m)
+    if (any(library.size == 0))
+        stop("Cannot normalise: ", sum(library.size == 0),
+             " cells have zero total counts")
+    m@x <- log1p(m@x / rep.int(library.size, diff(m@p)) * 1e4)
+    m
+}
+
 ## Match run_cellchat.R: allow large globals for future (CellChat parallelization)
 options(future.globals.maxSize = +Inf)
 
@@ -90,27 +123,36 @@ cat(sprintf("Cells after subsetting: %d\n", ncol(sce_sub)))
 # keeps this consumer consistent with run_cellchat_infer.R and uses the
 # normalisation the user actually chose rather than re-deriving one.
 #
-# GUARDED on the layer's presence, so the native path is bit-for-bit
-# unchanged: PLOT_POST_SCANVI emits layers/counts and no logcounts, so it
-# falls through to exactly the branch it has always taken.
+# GUARDED on the layer's presence, so the on-ramp and native paths each take
+# the branch that is correct for them.
 #
-# *** KNOWN, DELIBERATELY NOT FIXED HERE -- NATIVE-PATH DOUBLE NORMALISATION ***
-# On the native convention X is ALREADY log-normalised and there is no
-# `scvi_normalized` assay (verified: the integrated h5ad carries only
-# layers/counts), so the `X` branch below applies CPM + log1p to data that has
-# already been normalised. That is wrong in principle, but correcting it would
-# change CellChat results on the established native path, so it needs its own
-# decision and its own regression evidence rather than riding along with an
-# on-ramp fix -- the same call made for FindVariableFeatures in 4020d42.
+# 2026-10-30: the `X` branch is now GUARDED ON INTEGRALITY, which is what
+# run_cellchat_infer.R has done since 4cf3975. It previously applied
+# CPM + log1p unconditionally, and on the native convention X is ALREADY
+# log-normalised -- so it normalised data that was already normalised. Worse,
+# colSums() of log-normalised values is not a library size at all; it is a sum
+# of logs, so every cell was divided by an arbitrary per-cell constant
+# (measured spread on real data: 2.13 to 19.25) and log1p'd again.
+#
+# Resolution order, now identical in all three CellChat readers:
+#   1. scvi_normalized, when present
+#   2. logcounts, when the producer supplied it        (the seurat_rds on-ramp)
+#   3. X as-is, when X is already non-integral          (the native path)
+#   4. CPM + log1p, when X is integral and nothing else is available
 if ("scvi_normalized" %in% assayNames(sce_sub)) {
     data.input <- assay(sce_sub, "scvi_normalized")
 } else if ("logcounts" %in% assayNames(sce_sub)) {
     cat("Found logcounts assay -> using it as the normalised matrix\n")
     data.input <- assay(sce_sub, "logcounts")
 } else if ("X" %in% assayNames(sce_sub)) {
-    counts <- assay(sce_sub, "X")
-    library.size <- Matrix::colSums(counts)
-    data.input <- log1p(Matrix::t(Matrix::t(counts) / library.size) * 10000)
+    data.input <- assay(sce_sub, "X")
+    if (is_integral_matrix(data.input)) {
+        cat("X is integral (raw counts) -> normalising with CPM + log1p\n")
+        data.input <- normalise_cpm_log1p(data.input)
+    } else {
+        cat("X is already non-integral -> using it as the normalised matrix",
+            "(native-path convention)\n")
+    }
 } else {
     stop("Cannot find appropriate expression matrix in h5ad")
 }

@@ -12,6 +12,39 @@ suppressPackageStartupMessages({
     library(Matrix)
 })
 
+# Exact integral test, chunked with early exit: a normalised matrix trips on
+# the first chunk, and a 909M-nnz raw matrix never materialises a full logical
+# vector. Mirrors the helper in bin/run_cellchat_infer.R -- the bin/ scripts
+# are standalone by design and share no library.
+is_integral_matrix <- function(m, chunk = 1e7) {
+    x <- m@x
+    n <- length(x)
+    if (n == 0) return(TRUE)
+    starts <- seq(1, n, by = chunk)
+    for (s in starts) {
+        e <- min(s + chunk - 1, n)
+        if (any(x[s:e] != floor(x[s:e]))) return(FALSE)
+    }
+    TRUE
+}
+
+# CPM + log1p, written as one in-place pass over the dgCMatrix @x.
+# log1p(t(t(m) / ls) * 1e4) materialises two full transposes; on a large
+# object that is tens of GB of temporaries and the process is OOM-killed with
+# no R traceback. A dgCMatrix is column-compressed, so every non-zero's column
+# -- and therefore its library size -- is recoverable from @p. Structural
+# zeros are untouched, which is correct: log1p(0) = 0.
+normalise_cpm_log1p <- function(m) {
+    if (!inherits(m, "dgCMatrix"))
+        m <- as(as(m, "CsparseMatrix"), "dgCMatrix")
+    library.size <- Matrix::colSums(m)
+    if (any(library.size == 0))
+        stop("Cannot normalise: ", sum(library.size == 0),
+             " cells have zero total counts")
+    m@x <- log1p(m@x / rep.int(library.size, diff(m@p)) * 1e4)
+    m
+}
+
 # Parse command line arguments
 option_list <- list(
     make_option(c("--input"), type="character", help="Input h5ad file"),
@@ -41,15 +74,30 @@ options(future.globals.maxSize = +Inf)
 message("Loading h5ad file: ", opt$input)
 sce <- readH5AD(file = opt$input)
 
-# Extract normalized counts
-# scVI/SCANVI typically stores normalized data in layers
+# Resolution order, identical to run_cellchat_infer.R and
+# run_cellchat_per_condition.R:
+#   1. scvi_normalized, when present
+#   2. logcounts, when the producer supplied it        (the seurat_rds on-ramp)
+#   3. X as-is, when X is already non-integral          (the native path)
+#   4. CPM + log1p, when X is integral and nothing else is available
+#
+# Step 3 is the 2026-10-30 correction. This previously CPM + log1p'd X
+# unconditionally, which on the native convention normalises already-normalised
+# data using colSums() of logged values as if it were a library size.
 if ("scvi_normalized" %in% assayNames(sce)) {
     data.input <- assay(sce, "scvi_normalized")
+} else if ("logcounts" %in% assayNames(sce)) {
+    message("Found logcounts assay -> using it as the normalised matrix")
+    data.input <- assay(sce, "logcounts")
 } else if ("X" %in% assayNames(sce)) {
-    # If normalized data not available, normalize counts
-    counts <- assay(sce, "X")
-    library.size <- Matrix::colSums(counts)
-    data.input <- log1p(Matrix::t(Matrix::t(counts)/library.size) * 10000)
+    data.input <- assay(sce, "X")
+    if (is_integral_matrix(data.input)) {
+        message("X is integral (raw counts) -> normalising with CPM + log1p")
+        data.input <- normalise_cpm_log1p(data.input)
+    } else {
+        message("X is already non-integral -> using it as the normalised ",
+                "matrix (native-path convention)")
+    }
 } else {
     stop("Cannot find appropriate expression matrix in h5ad")
 }
