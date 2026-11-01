@@ -1,0 +1,42 @@
+# Unit tests that need no cluster, no containers and no reference data.
+#
+# The on-ramp's other gates (fidelity, equivalence, scale) need SLURM, tens of
+# GB of RAM and hours of wall clock, so they stay manual -- see
+# tests/onramp_rds/README.md. This runs the one that doesn't.
+name: Tests
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'bin/**'
+      - 'tests/**'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'bin/**'
+      - 'tests/**'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas
+
+      - name: BUILD_MUDATA cell-type precedence
+        run: python3 tests/onramp_rds/test_build_mudata_celltype.py
+
+      - name: Python syntax check on bin/
+        run: |
+          # Catches a broken edit to any shipped python script without needing
+          # their (heavy, container-only) runtime dependencies.
+          python3 -m compileall -q bin/
